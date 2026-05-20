@@ -1,0 +1,96 @@
+# Copyright © 2025–2026 Stefano Noferi & Admina contributors
+# Licensed under the Apache License, Version 2.0
+#
+# Dependabot configuration for Admina.
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+
+updates:
+  # ── Python dependencies (root project) ───────────────────────
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Rome"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "python"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    groups:
+      python-minor:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── Rust dependencies (core engine) ──────────────────────────
+  - package-ecosystem: "cargo"
+    directory: "/core-rust"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Rome"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "rust"
+    commit-message:
+      prefix: "chore(deps-rust)"
+      include: "scope"
+    groups:
+      rust-minor:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── GitHub Actions ───────────────────────────────────────────
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "dependencies"
+      - "ci"
+    commit-message:
+      prefix: "chore(ci)"
+      include: "scope"
+
+  # ── Docker base images ───────────────────────────────────────
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "chore(docker)"
+  - package-ecosystem: "docker"
+    directory: "/proxy"
+    schedule: { interval: "weekly" }
+    labels: ["dependencies", "docker"]
+    commit-message: { prefix: "chore(docker-proxy)" }
+  - package-ecosystem: "docker"
+    directory: "/dashboard"
+    schedule: { interval: "weekly" }
+    labels: ["dependencies", "docker"]
+    commit-message: { prefix: "chore(docker-dashboard)" }
+  - package-ecosystem: "docker"
+    directory: "/mock-mcp-server"
+    schedule: { interval: "weekly" }
+    labels: ["dependencies", "docker"]
+    commit-message: { prefix: "chore(docker-mock-mcp)" }
+  - package-ecosystem: "docker"
+    directory: "/mock-agent"
+    schedule: { interval: "weekly" }
+    labels: ["dependencies", "docker"]
+    commit-message: { prefix: "chore(docker-mock-agent)" }

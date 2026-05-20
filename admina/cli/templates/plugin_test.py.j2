@@ -1,0 +1,48 @@
+"""Tests for {{ plugin_name }} plugin."""
+from __future__ import annotations
+
+from {{ plugin_name.replace('-', '_') }} import {{ class_name }}
+
+
+class Test{{ class_name }}:
+    """Basic tests for {{ class_name }}."""
+
+    def test_instantiation(self) -> None:
+        plugin = {{ class_name }}()
+        assert plugin is not None
+{% if name_property == "name" %}
+
+    def test_name(self) -> None:
+        plugin = {{ class_name }}()
+        assert plugin.name == "{{ plugin_name }}"
+{% elif name_property == "framework_name" %}
+
+    def test_framework_name(self) -> None:
+        plugin = {{ class_name }}()
+        assert plugin.framework_name == "{{ plugin_name }}"
+{% elif name_property == "protocol_name" %}
+
+    def test_protocol_name(self) -> None:
+        plugin = {{ class_name }}()
+        assert plugin.protocol_name == "{{ plugin_name }}"
+{% elif name_property == "store_name" %}
+
+    def test_store_name(self) -> None:
+        plugin = {{ class_name }}()
+        assert plugin.store_name == "{{ plugin_name }}"
+{% elif name_property == "provider_name" %}
+
+    def test_provider_name(self) -> None:
+        plugin = {{ class_name }}()
+        assert plugin.provider_name == "{{ plugin_name }}"
+{% elif name_property == "channel_name" %}
+
+    def test_channel_name(self) -> None:
+        plugin = {{ class_name }}()
+        assert plugin.channel_name == "{{ plugin_name }}"
+{% elif name_property == "supported_languages" %}
+
+    def test_supported_languages(self) -> None:
+        plugin = {{ class_name }}()
+        assert "en" in plugin.supported_languages
+{% endif %}

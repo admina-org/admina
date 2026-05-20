@@ -1,0 +1,61 @@
+
+# Copyright © 2025–2026 Stefano Noferi & Admina contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "admina-core"
+version = "0.9.0"
+description = "Admina governance engines — Rust core with Python bindings (firewall, PII, loop breaker, hash chain)"
+readme = "../README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [
+    {name = "Stefano Noferi", email = "info@admina.org"},
+]
+maintainers = [
+    {name = "Stefano Noferi", email = "info@admina.org"},
+]
+keywords = [
+    "ai", "governance", "compliance", "eu-ai-act", "pii", "llm",
+    "agent-security", "injection-firewall", "rust", "pyo3",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Security",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Homepage = "https://admina.org"
+Repository = "https://github.com/admina-org/admina"
+Documentation = "https://github.com/admina-org/admina#readme"
+Issues = "https://github.com/admina-org/admina/issues"
+Changelog = "https://github.com/admina-org/admina/blob/main/CHANGELOG.md"
+Security = "https://github.com/admina-org/admina/blob/main/SECURITY.md"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]

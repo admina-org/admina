@@ -1,0 +1,16 @@
+{
+  "name": "admina-governance",
+  "version": "1.0.0",
+  "description": "Route all Cheshire Cat interactions through Admina governance proxy for PII redaction, injection firewall, loop detection, and forensic audit. Required for EU AI Act compliance.",
+  "author_name": "Admina contributors",
+  "author_url": "https://admina.org",
+  "plugin_url": "https://github.com/admina-org/admina/tree/main/integrations/cheshirecat",
+  "tags": "governance, security, compliance, pii, firewall, eu-ai-act, audit",
+  "thumb": "https://admina.org/admina-heimdall-the-governance-owl.png",
+  "hooks": [
+    "before_cat_sends_message",
+    "before_cat_recalls_memories",
+    "agent_fast_reply"
+  ],
+  "tools": []
+}

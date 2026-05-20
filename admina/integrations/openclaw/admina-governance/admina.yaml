@@ -1,0 +1,79 @@
+
+# Copyright © 2025–2026 Stefano Noferi & Admina contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Admina governance config — OpenClaw sidecar defaults
+#
+# This config is optimized for governing an OpenClaw agent.
+# All governance features are enabled; data stays local.
+
+schema_version: 1
+
+# ── Data sovereignty ────────────────────────────────────────
+data_sovereignty:
+  default_zone: local
+  zones:
+    local:
+      label: "Local machine"
+      residency: local
+      allowed_destinations: ["local"]
+
+# ── Agent security ──────────────────────────────────────────
+agent_security:
+  firewall:
+    enabled: true
+    # Block prompt injection, SQL injection, path traversal
+    sensitivity: high
+
+  loop_breaker:
+    enabled: true
+    window_size: 5
+    similarity_threshold: 0.85
+    max_repetitions: 3
+
+  pii_redaction:
+    enabled: true
+    engine: spacy-regex
+    # Redact these entity types in all requests/responses
+    entities:
+      - EMAIL
+      - PHONE
+      - SSN
+      - CREDIT_CARD
+      - IBAN
+      - IP_ADDRESS
+
+# ── Compliance ──────────────────────────────────────────────
+compliance:
+  eu_ai_act:
+    enabled: true
+    risk_category: limited  # OpenClaw agents are typically "limited risk"
+    auto_classify: true
+
+# ── Forensic logging ───────────────────────────────────────
+forensic:
+  enabled: true
+  store: filesystem
+  # Logs stored inside the container; mount a volume for persistence
+  path: /app/data/forensic
+
+# ── Dashboard ──────────────────────────────────────────────
+dashboard:
+  enabled: true
+  # Accessible at http://localhost:18790/dashboard
+  port: 3000
+
+# ── Inference mode ─────────────────────────────────────────
+# All governance checks run locally. No data leaves the machine.
+inference_mode: local

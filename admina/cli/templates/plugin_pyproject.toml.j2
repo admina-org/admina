@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "{{ plugin_name }}"
+version = "0.1.0"
+description = "Admina {{ plugin_type.replace('_', ' ') }} plugin: {{ plugin_name }}"
+requires-python = ">=3.10"
+dependencies = [
+    "admina>=0.9.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]

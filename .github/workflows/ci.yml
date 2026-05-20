@@ -1,0 +1,162 @@
+# Copyright © 2025–2026 Stefano Noferi & Admina contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Python: lint ────────────────────────────────────────────
+  lint:
+    name: Python Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: uv sync --group dev --frozen
+
+      - name: ruff check
+        run: uv run ruff check .
+
+      - name: ruff format check
+        run: uv run ruff format --check .
+
+  # ── Python: security scan ───────────────────────────────────
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: uv sync --group dev --frozen
+
+      - name: bandit (source code)
+        # `-lll` blocks CI only on HIGH-severity findings. The repo has a
+        # handful of acknowledged MEDIUM findings that are safe in context
+        # (B608 f-string SQL with int-cast or validated identifiers, B104
+        # bind to 0.0.0.0 inside a Docker container, B603 subprocess calls
+        # with fixed arguments). Reduce to `-ll` once those are annotated
+        # with explicit `# nosec` comments.
+        run: uv run bandit -r admina/ -lll -q
+
+      # Dependency vulnerability scanning is handled by GitHub Dependabot
+      # (Settings → Code security) which runs continuously against the same
+      # manifest. The legacy `safety check` is deprecated; `safety scan`
+      # requires a Safety CLI account login that does not work in CI.
+
+  # ── Python: tests + coverage ────────────────────────────────
+  python-tests:
+    name: Python Tests (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: "latest"
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        # --all-extras pulls in [proxy] (fastapi/uvicorn/redis/clickhouse/
+        # boto3/minio), [nlp] (spacy/sklearn/numpy) and [telemetry] (otel)
+        # so the dashboard / integration tests can import them.
+        run: uv sync --group dev --all-extras --python ${{ matrix.python-version }}
+
+      - name: Download spaCy model
+        run: uv run --python ${{ matrix.python-version }} python -m spacy download en_core_web_sm
+
+      - name: Run pytest with coverage
+        # The `--cov-fail-under=70` gate in pyproject.toml prevents
+        # regressions locally and in CI; no external coverage service
+        # is required.
+        run: uv run --python ${{ matrix.python-version }} pytest tests/ -v --tb=short
+
+  # ── Rust: tests + clippy (Linux + macOS) ───────────────────
+  rust-tests:
+    name: Rust Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9  # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Cache Cargo
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            core-rust/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('core-rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install uv (for PyO3 interpreter)
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: "latest"
+
+      - name: Set up Python 3.11 (required by PyO3)
+        run: uv python install 3.11
+
+      - name: cargo test --lib
+        # --lib builds against the rlib crate type (not cdylib), so it does NOT
+        # need to link libpython dynamically. This works identically on Linux and
+        # macOS regardless of how Python was installed (Homebrew, python.org, uv).
+        # Pure Rust logic (firewall, PII, loop-breaker, forensic) is fully covered.
+        run: |
+          cd core-rust
+          PYO3_PYTHON=$(uv python find 3.11) cargo test --lib
+
+      - name: cargo clippy
+        run: |
+          cd core-rust
+          PYO3_PYTHON=$(uv python find 3.11) cargo clippy -- -D warnings
