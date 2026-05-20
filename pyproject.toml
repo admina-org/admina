@@ -71,7 +71,7 @@ proxy = [
     "pydantic>=2.5,<3",
     "pydantic-settings>=2.3,<3",
     "python-dotenv>=1.0,<2",
-    "redis>=5.0,<6",
+    "redis>=5.0,<8",
     # Forensic blackbox: ship boto3 by default (works with any
     # S3-compatible incl. SeaweedFS/Garage/R2/B2). The minio SDK is
     # kept for backward compatibility but pinned and will be dropped
