@@ -1,0 +1,57 @@
+# macOS Framework Python — linker configuration
+#
+# WHEN THIS FILE IS NEEDED
+# ────────────────────────
+# Only when you run `cargo test` (full binary link) on macOS with a
+# Framework-style Python installation (Homebrew, python.org installer).
+# The CONTRIBUTING.md guide uses `cargo test --lib`, which builds against
+# the `rlib` crate type and does NOT need to link libpython — so most
+# contributors never need to touch this file.
+#
+# WHAT THIS FILE DOES
+# ───────────────────
+# Homebrew Python does not install a standalone `libpython3.x.dylib`.
+# Instead it ships a `.framework` bundle.  The Apple linker finds it via
+# `-F <framework-search-dir> -framework Python`.
+#
+# HOW TO USE IT
+# ─────────────
+# 1. Identify your Python install path:
+#      python3 -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR'))"
+#    Example output: /opt/homebrew/opt/python@3.14/Frameworks/Python.framework/Versions/3.14/lib
+#
+# 2. Set the framework search directory (the path BEFORE "Python.framework"):
+#    E.g.  /opt/homebrew/opt/python@3.14/Frameworks
+#          /opt/homebrew/opt/python@3.13/Frameworks
+#          /opt/homebrew/opt/python@3.11/Frameworks
+#
+# 3. Update the -F flag below to match, then run:
+#      PYO3_PYTHON=python3 cargo test
+#
+# ALTERNATIVE (no config needed)
+# ───────────────────────────────
+# Use a uv-managed Python, which DOES expose a shared library:
+#   PYO3_PYTHON=$(uv python find 3.11) cargo test --lib
+# This is what CI does. It works on macOS and Linux without any flags.
+#
+# NOTE FOR LINUX
+# ──────────────
+# The [target.*-apple-darwin] sections below are ignored on Linux entirely.
+# Linux cargo test works out of the box:
+#   PYO3_PYTHON=$(uv python find 3.11) cargo test --lib
+
+[target.aarch64-apple-darwin]
+# Update python@3.14 to match your installed Homebrew Python version.
+rustflags = [
+    "-C", "link-arg=-F/opt/homebrew/opt/python@3.14/Frameworks",
+    "-C", "link-arg=-framework",
+    "-C", "link-arg=Python",
+]
+
+[target.x86_64-apple-darwin]
+# Update python@3.14 to match your installed Homebrew Python version.
+rustflags = [
+    "-C", "link-arg=-F/opt/homebrew/opt/python@3.14/Frameworks",
+    "-C", "link-arg=-framework",
+    "-C", "link-arg=Python",
+]

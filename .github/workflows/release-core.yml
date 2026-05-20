@@ -1,0 +1,154 @@
+# Copyright © 2025–2026 Stefano Noferi & Admina contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Release pipeline — admina-core (Rust accelerator).
+#
+# Split from release.yml because PyPI Trusted Publishers had a transient
+# issue accepting two pending publishers from the same workflow file
+# under the same account. Two distinct workflow filenames sidestep the
+# problem (PyPI tracks publishers per workflow, not just per repo).
+#
+# ── PyPI authentication ────────────────────────────────────────────────────
+# Configure the trusted publisher on pypi.org once:
+#
+#   https://pypi.org/manage/account/publishing/  →  Add pending publisher
+#     PyPI Project Name: admina-core
+#     Owner:             admina-org
+#     Repository name:   admina
+#     Workflow name:     release-core.yml          (this file)
+#     Environment name:  pypi-core
+#
+# The matching trusted publisher for admina-framework is configured for
+# release.yml (the other workflow).
+#
+# ── How to cut a release ───────────────────────────────────────────────────
+# Both workflows share the same tag pattern, so a single tag triggers
+# both pipelines in parallel:
+#
+#   git tag -a v0.9.0 -m "v0.9.0"
+#   git push origin v0.9.0
+
+name: Release admina-core
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+concurrency:
+  group: release-core-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write   # to publish via PyPI Trusted Publishers (OIDC)
+
+jobs:
+  # ── 1. Sanity check: tag matches pyproject version ──────────────────────
+  check-version:
+    name: Check tag matches core-rust/pyproject.toml version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Verify version alignment
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CORE_VER=$(python3 -c "import tomllib; print(tomllib.load(open('core-rust/pyproject.toml','rb'))['project']['version'])")
+          echo "tag=$TAG  core=$CORE_VER"
+          if [ "$TAG" != "$CORE_VER" ]; then
+            echo "::error::Tag $TAG does not match core-rust/pyproject version $CORE_VER"
+            exit 1
+          fi
+
+  # ── 2. Build admina-core wheels (Rust extension) ────────────────────────
+  build-core-wheels:
+    name: admina-core wheel (${{ matrix.target }})
+    needs: check-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu,  maturin-target: x86_64,  manylinux: auto }
+          - { os: ubuntu-latest,  target: aarch64-unknown-linux-gnu, maturin-target: aarch64, manylinux: auto }
+          - { os: macos-13,       target: x86_64-apple-darwin,       maturin-target: x86_64,  manylinux: off  }
+          - { os: macos-14,       target: aarch64-apple-darwin,      maturin-target: aarch64, manylinux: off  }
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Build wheels (maturin)
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1
+        with:
+          working-directory: core-rust
+          target: ${{ matrix.maturin-target }}
+          args: --release --out dist --interpreter 3.11 3.12 3.13
+          manylinux: ${{ matrix.manylinux }}
+          sccache: "true"
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: admina-core-wheel-${{ matrix.target }}
+          path: core-rust/dist/*.whl
+          if-no-files-found: error
+          retention-days: 7
+
+  # ── 3. Build admina-core sdist (for platforms without pre-built wheels) ─
+  build-core-sdist:
+    name: admina-core sdist
+    needs: check-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Build sdist (maturin)
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b  # v1
+        with:
+          working-directory: core-rust
+          command: sdist
+          args: --out dist
+
+      - name: Upload sdist artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: admina-core-sdist
+          path: core-rust/dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  # ── 4. Publish admina-core to PyPI ──────────────────────────────────────
+  publish-core:
+    name: Publish admina-core to PyPI
+    needs: [build-core-wheels, build-core-sdist]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi-core
+      url: https://pypi.org/project/admina-core/
+    steps:
+      - name: Download all admina-core artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: admina-core-*
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
+        with:
+          packages-dir: dist/
+          skip-existing: true

@@ -1,0 +1,170 @@
+# Copyright © 2025–2026 Stefano Noferi & Admina contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Release pipeline — fires on version tags (vX.Y.Z).
+#
+# Publishes the pure-Python root package admina-framework to PyPI and
+# creates the GitHub Release. The Rust accelerator admina-core is built
+# and published by a sibling workflow (.github/workflows/release-core.yml)
+# triggered by the same tag — they run in parallel, independently.
+#
+# Why two workflows? PyPI Trusted Publishers had a transient issue
+# accepting two pending publishers from the same workflow file under
+# the same account; using two distinct workflow filenames sidesteps it.
+#
+# ── PyPI authentication ────────────────────────────────────────────────────
+# This workflow uses PyPI Trusted Publishers (OIDC), NOT API tokens.
+# Before the first run, configure the publisher on pypi.org:
+#
+#   https://pypi.org/manage/account/publishing/  →  Add pending publisher
+#     PyPI Project Name: admina-framework
+#     Owner:             admina-org
+#     Repository name:   admina
+#     Workflow name:     release.yml
+#     Environment name:  pypi
+#
+# The matching publisher for admina-core is configured for release-core.yml.
+# See https://docs.pypi.org/trusted-publishers/ for details.
+#
+# ── How to cut a release ───────────────────────────────────────────────────
+#   git tag -a v0.9.0 -m "v0.9.0"
+#   git push origin v0.9.0
+# A single tag triggers both this workflow and release-core.yml in parallel.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+# Prevent multiple release jobs stepping on each other if two tags land at once
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # to create GitHub Releases
+  id-token: write   # to publish via PyPI Trusted Publishers (OIDC)
+
+jobs:
+  # ── 1. Sanity check: tag matches pyproject version ──────────────────────
+  check-version:
+    name: Check tag matches pyproject.toml version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Verify version alignment
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          ROOT_VER=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "tag=$TAG  root=$ROOT_VER"
+          if [ "$TAG" != "$ROOT_VER" ]; then
+            echo "::error::Tag $TAG does not match pyproject root version $ROOT_VER"
+            exit 1
+          fi
+
+  # ── 2. Build root admina package (pure Python sdist + wheel) ────────────
+  build-root:
+    name: admina sdist + wheel (pure Python)
+    needs: check-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: "latest"
+
+      - name: Build sdist + wheel
+        run: |
+          uv build --out-dir dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: admina-root-dist
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # ── 3. Publish root admina-framework to PyPI ────────────────────────────
+  publish-root:
+    name: Publish admina-framework to PyPI
+    needs: [build-root]
+    # admina-core (the optional Rust accelerator) is published by the
+    # sibling workflow release-core.yml, in parallel with this one.
+    # The two packages have no compile- or run-time dependency on
+    # each other; either can ship without the other.
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/admina-framework/
+    steps:
+      - name: Download root artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: admina-root-dist
+          path: dist
+
+      - name: List artifacts
+        run: ls -la dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # v1.14.0
+        with:
+          packages-dir: dist/
+          skip-existing: true
+
+  # ── 4. Create GitHub Release ────────────────────────────────────────────
+  github-release:
+    name: Create GitHub Release
+    needs: [publish-root]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0   # needed to extract the CHANGELOG section for this tag
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          # Extract the section between "## [TAG]" and the next "## [" heading
+          python3 - <<PY > release-notes.md
+          import re, pathlib
+          text = pathlib.Path("CHANGELOG.md").read_text()
+          tag = "${{ github.ref_name }}".lstrip("v")
+          pattern = rf"(## \[{re.escape(tag)}\].*?)(?=\n## \[|\Z)"
+          m = re.search(pattern, text, re.DOTALL)
+          print(m.group(1).strip() if m else f"Release ${{ github.ref_name }}")
+          PY
+          echo "Generated release notes:"
+          cat release-notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.4.0
+        with:
+          files: artifacts/**/*
+          body_path: release-notes.md
+          generate_release_notes: false
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}

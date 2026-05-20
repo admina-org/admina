@@ -1,0 +1,59 @@
+{
+  "dashboard": {
+    "title": "Admina — Governance Overview",
+    "uid": "admina-overview",
+    "timezone": "browser",
+    "refresh": "10s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Welcome to Admina",
+        "type": "text",
+        "gridPos": {"h": 4, "w": 24, "x": 0, "y": 0},
+        "options": {
+          "content": "# 🦉 Admina Governance Dashboard\n\nMonitored by **Heimdall — the Governance Owl**. Every agent request passes through the governance pipeline.\n\n**Services:** Proxy (`:8080`) | Dashboard (`:3000`) | ClickHouse (`:8123`) | MinIO (`:9090`)",
+          "mode": "markdown"
+        }
+      },
+      {
+        "id": 2,
+        "title": "OTEL Collector — Active Spans",
+        "type": "stat",
+        "gridPos": {"h": 6, "w": 8, "x": 0, "y": 4},
+        "targets": [
+          {
+            "expr": "admina_otelcol_exporter_sent_spans_total",
+            "legendFormat": "Spans Sent"
+          }
+        ],
+        "datasource": "Prometheus (OTEL)"
+      },
+      {
+        "id": 3,
+        "title": "OTEL Collector — Metrics Exported",
+        "type": "stat",
+        "gridPos": {"h": 6, "w": 8, "x": 8, "y": 4},
+        "targets": [
+          {
+            "expr": "admina_otelcol_exporter_sent_metric_points_total",
+            "legendFormat": "Metric Points"
+          }
+        ],
+        "datasource": "Prometheus (OTEL)"
+      },
+      {
+        "id": 4,
+        "title": "OTEL Collector — Logs Exported",
+        "type": "stat",
+        "gridPos": {"h": 6, "w": 8, "x": 16, "y": 4},
+        "targets": [
+          {
+            "expr": "admina_otelcol_exporter_sent_log_records_total",
+            "legendFormat": "Log Records"
+          }
+        ],
+        "datasource": "Prometheus (OTEL)"
+      }
+    ]
+  }
+}

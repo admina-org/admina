@@ -1,0 +1,127 @@
+# Admina — EU AI Act compliance template (structured requirements)
+#
+# This file defines the requirements for EU AI Act compliance
+# in a machine-readable format.  The EUAIActComplianceTemplate
+# plugin loads this file at runtime.
+
+framework_name: "EU AI Act"
+# Primary deadline = Annex III high-risk application date.
+# After the Omnibus VII agreement (Council/Parliament, 7 May 2026) this
+# moved from 2 Aug 2026 to 2 Dec 2027. See `deadlines` below for the full
+# timeline of applicable dates.
+enforcement_deadline: "2027-12-02"
+
+# Full EU AI Act timeline after Omnibus VII (2026-05-07).
+deadlines:
+  prohibitions: "2025-02-02"                  # Art. 5 — in force
+  gpai_obligations: "2025-08-02"              # Art. 50–55 — in force
+  transparency_synthetic_content: "2026-12-02"  # Art. 50 watermarking
+  prohibitions_ncii_csam: "2026-12-02"        # NEW Art. 5 prohibition
+  high_risk_annex_iii: "2027-12-02"           # postponed by Omnibus VII
+  national_sandboxes: "2027-08-02"            # postponed by Omnibus VII
+  high_risk_annex_i: "2028-08-02"             # postponed by Omnibus VII
+  full_application: "2028-08-02"
+
+risk_categories:
+  unacceptable:
+    level: 4
+    description: "Prohibited AI practices"
+    examples:
+      - "social scoring"
+      - "real-time biometric identification"
+      - "manipulation of vulnerable groups"
+    action: "PROHIBITED — Must not deploy"
+
+  high:
+    level: 3
+    description: "High-risk AI systems requiring conformity assessment"
+    examples:
+      - "credit scoring"
+      - "recruitment"
+      - "law enforcement"
+      - "critical infrastructure"
+      - "healthcare diagnostics"
+    action: "Requires conformity assessment, logging, human oversight"
+
+  limited:
+    level: 2
+    description: "Limited risk with transparency obligations"
+    examples:
+      - "chatbots"
+      - "emotion recognition"
+      - "deepfakes"
+      - "content generation"
+    action: "Must inform users they are interacting with AI"
+
+  minimal:
+    level: 1
+    description: "Minimal or no risk"
+    examples:
+      - "spam filters"
+      - "inventory management"
+      - "video game AI"
+    action: "No specific obligations, voluntary codes of conduct"
+
+requirements:
+  risk_management:
+    name: "Risk Management System"
+    article: "Art. 9"
+    checks:
+      - "Documented risk management process"
+      - "Risk identification and analysis"
+      - "Risk mitigation measures implemented"
+      - "Residual risk assessment completed"
+
+  data_governance:
+    name: "Data Governance"
+    article: "Art. 10"
+    checks:
+      - "Training data quality measures"
+      - "Data bias examination"
+      - "Data provenance documentation"
+      - "Privacy impact assessment"
+
+  technical_documentation:
+    name: "Technical Documentation"
+    article: "Art. 11"
+    checks:
+      - "System description and purpose"
+      - "Development process documentation"
+      - "Performance metrics documented"
+      - "Limitations and risks documented"
+
+  record_keeping:
+    name: "Record Keeping / Logging"
+    article: "Art. 12"
+    checks:
+      - "Automatic event logging enabled"
+      - "Log retention period defined (min 6 months)"
+      - "Logs include traceability data"
+      - "Tamper-proof logging mechanism"
+
+  transparency:
+    name: "Transparency"
+    article: "Art. 13"
+    checks:
+      - "Instructions for use provided"
+      - "Capabilities and limitations documented"
+      - "Human oversight measures described"
+      - "Performance characteristics disclosed"
+
+  human_oversight:
+    name: "Human Oversight"
+    article: "Art. 14"
+    checks:
+      - "Human oversight interface exists"
+      - "Override mechanism available"
+      - "Escalation procedures defined"
+      - "Monitoring dashboards operational"
+
+  accuracy_robustness:
+    name: "Accuracy, Robustness, Cybersecurity"
+    article: "Art. 15"
+    checks:
+      - "Accuracy metrics defined and monitored"
+      - "Robustness testing performed"
+      - "Cybersecurity measures implemented"
+      - "Adversarial attack resistance tested"

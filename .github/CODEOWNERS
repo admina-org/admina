@@ -1,0 +1,19 @@
+# CODEOWNERS — Admina
+#
+# These owners are automatically requested for review on pull requests.
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default: all files require review from the lead maintainer
+* @stefanoferi
+
+# Rust engine — requires core maintainer sign-off
+core-rust/ @stefanoferi
+
+# Security-sensitive modules
+proxy/ @stefanoferi
+domains/agent_security/ @stefanoferi
+domains/data_sovereignty/ @stefanoferi
+domains/compliance/ @stefanoferi
+
+# CI/CD pipeline
+.github/ @stefanoferi

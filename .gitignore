@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Rust
+core-rust/target/
+*.whl
+
+# IDE & editor / AI-tooling caches
+.idea/
+.vscode/
+.claude/
+.cursor/
+.aider/
+.continue/
+*.swp
+*.swo
+
+# Docker
+.docker/
+
+# Reports
+benchmark-reports/
+
+# MkDocs output
+site/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Admina secret vault (auto-generated, never commit)
+.admina/
+
+# Test artifacts
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Lint/type-check caches
+.ruff_cache/
+.mypy_cache/
+.tox/
+
+# JS deps (currently no JS bundler, but reserve)
+node_modules/
+
+# Auto-generated build artifacts
+dashboard/git_commit.txt
+
+# Internal scratch dir — never publish
+internal/
