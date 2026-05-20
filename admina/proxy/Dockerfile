@@ -2,7 +2,7 @@
 # Build context must be repo root (docker-compose handles this)
 
 # Stage 1: Build Rust core
-FROM python:3.11-slim AS rust-builder
+FROM python:3.14-slim AS rust-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl build-essential rustc cargo && \
@@ -22,7 +22,7 @@ RUN cd core-rust && maturin build --release && echo "Rust build OK" \
     || (echo "WARNING: Rust build failed — image will use Python fallback" && mkdir -p target/wheels && exit 0)
 
 # Stage 2: Final image
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 WORKDIR /app
 
