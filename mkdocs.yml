@@ -1,0 +1,72 @@
+site_name: Admina Documentation
+site_description: "Admina — the open framework for governed AI"
+site_url: https://admina.org/docs
+repo_url: https://github.com/admina-org/admina
+repo_name: admina-org/admina
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: amber
+  features:
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+    - search.highlight
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+            members_order: source
+            merge_init_into_class: true
+            show_if_no_docstring: false
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Quick Start: guides/quickstart.md
+      - Architecture: guides/architecture.md
+      - Integrations: guides/integrations.md
+      - Air-gapped deployment: guides/airgapped-deployment.md
+  - SDK Reference:
+      - Overview: api/sdk.md
+      - GovernedModel: api/governed-model.md
+      - GovernedData: api/governed-data.md
+      - GovernedAgent: api/governed-agent.md
+      - ComplianceKit: api/compliance-kit.md
+  - Core:
+      - Types & Enums: api/core-types.md
+      - Event Bus: api/event-bus.md
+      - Configuration: api/config.md
+  - Governance Domains:
+      - Data Sovereignty: api/domain-data-sovereignty.md
+      - Agent Security: api/domain-agent-security.md
+      - Compliance: api/domain-compliance.md
+      - AI Infrastructure: api/domain-ai-infra.md
+  - Integration API:
+      - REST Endpoints: api/integration-api.md
+  - Plugin System:
+      - Plugin Interfaces: api/plugins-base.md
+      - Plugin Registry: api/plugins-registry.md
+      - Builtin Plugins: api/plugins-builtin.md

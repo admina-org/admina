@@ -1,0 +1,33 @@
+# macOS linker configuration for Python extension modules.
+#
+# WHY THIS FILE EXISTS
+# ────────────────────
+# When PyO3's `extension-module` feature is enabled, the resulting cdylib
+# must NOT hard-link a specific libpython / Python.framework. Instead the
+# Python symbols (PyInterpreterState_Get, PyDict_New, ...) should be
+# resolved dynamically at load time against whichever Python interpreter
+# actually loads the .so file.
+#
+# On macOS the magic incantation is `-undefined dynamic_lookup` passed to
+# the linker. Without this flag, the linker pulls in whichever Python
+# Framework happens to be available at build time (typically Homebrew's
+# current `python@3.X` package) — even if maturin is told to build a
+# wheel for a different Python version. The result is a wheel tagged
+# `cp311` that actually contains a hard reference to a Python 3.14
+# framework: importing it on Python 3.11 then aborts with
+# "PyInterpreterState_Get: ... the GIL is released".
+#
+# `-undefined dynamic_lookup` removes the build-time Python framework
+# reference entirely. The same .so then works against any Python 3.x
+# that loads it (with abi3-py311+ guaranteeing source compatibility).
+#
+# Note: these settings apply to both `cargo build`/`cargo test` and to
+# `maturin build`, since maturin invokes Cargo under the hood. The Linux
+# `[target.*-unknown-linux-gnu]` build uses ELF rules and does not need
+# this flag.
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-undefined,dynamic_lookup"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-undefined,dynamic_lookup"]

@@ -1,0 +1,172 @@
+# Admina configuration
+# Copy to admina.yaml and customize for your deployment.
+# If admina.yaml is absent, Admina falls back to .env variables.
+#
+# schema_version is an incremental integer bumped only on breaking
+# config-format changes; unrelated to the Admina product version.
+
+schema_version: 1
+
+domains:
+  data_sovereignty:
+    enabled: true
+    pii:
+      enabled: true
+      categories: [email, phone, credit_card, ssn, iban, ip, person, org]
+      ner_model: en_core_web_sm
+    residency:
+      enabled: true
+      allowed_zones: [local, eu]
+      block_outbound: true
+    classification:
+      enabled: true
+
+  ai_infra:
+    enabled: false              # opt-in
+    llm:
+      backend: ollama
+      model: llama3.1:8b
+      gpu_autodetect: true
+    rag:
+      backend: chromadb
+      chunk_size: 512
+      chunk_overlap: 50
+    webui:
+      enabled: true
+      port: 3080
+
+  agent_security:
+    enabled: true
+    proxy:
+      port: 8080
+      upstream: "http://localhost:9000"
+    firewall:
+      enabled: true
+      heuristic_threshold: 0.7
+      # Governance reaction mode (see ADMINA_GOVERNANCE_MODE):
+      #   enforce  → block flagged requests (default, restrictive)
+      #   observe  → never block, log "would have blocked" (use for the
+      #              first 1-2 weeks of a new deployment)
+      #   dry-run  → like observe + tag the response so downstream tools
+      #              know the request was analysed
+      mode: enforce
+      # Categories you want SILENCED in this deployment (e.g. because
+      # they trigger too many FPs in your domain). Builtin set:
+      # instruction_override, role_hijack, prompt_extraction, jailbreak,
+      # delimiter_injection, data_exfiltration, tool_abuse, obfuscation,
+      # multilang_evasion. Stays empty = all categories active.
+      disabled_categories: []
+      # Add domain-specific rules here without forking. Each entry:
+      #   - regex: a Python regex (case-insensitive)
+      #     category: short label shown in dashboards/logs
+      #     risk_level: low | medium | high | critical
+      custom_patterns: []
+      # Example:
+      # custom_patterns:
+      #   - regex: "delete\\s+user\\s+\\d+"
+      #     category: "destructive_user_op"
+      #     risk_level: high
+      #   - regex: "(production|prod)\\s+(database|db)\\s+drop"
+      #     category: "prod_db_destructive"
+      #     risk_level: critical
+    loop_breaker:
+      enabled: true
+      window_size: 10
+      similarity_threshold: 0.85
+      max_consecutive: 3
+    # GuardrailsAI content validation (optional plugin)
+    domains:
+      guardrailsai:
+        enabled: false            # opt-in: pip install admina[guardrailsai]
+        inference_mode: local     # local | remote
+        validators:
+          - name: toxic_language
+            threshold: 0.5
+          - name: detect_pii
+            entities: ["EMAIL_ADDRESS", "PHONE_NUMBER", "IBAN"]
+          - name: detect_jailbreak
+            threshold: 0.8
+
+  compliance:
+    enabled: true
+    forensic:
+      # backend: memory | filesystem | s3 | minio
+      # Default is "memory" — events hashed and chained but LOST on
+      # restart. Set explicitly to opt in to persistence.
+      backend: memory
+      bucket: forensic-blackbox
+      # Required when backend=filesystem (no default — explicit opt-in)
+      # base_dir: /var/lib/admina/forensic
+      # Required when backend=s3 (boto3-based, works with any
+      # S3-compatible store: AWS S3, R2, B2, SeaweedFS, Garage, …)
+      # s3_endpoint: ""
+      # s3_object_lock: false           # WORM (COMPLIANCE mode, 7y default)
+    eu_ai_act:
+      enabled: true
+    nis2:
+      # Self-assessment of the 10 Art. 21(2) measure areas.
+      # Endpoint: GET /api/compliance/nis2/areas, POST /api/compliance/nis2/assess
+      enabled: true
+    gdpr:
+      # Art. 30 RoPA registry + Art. 35 DPIA template scaffold.
+      # By default the registry is in-memory only — set ropa_path
+      # explicitly (or set ADMINA_GDPR_ROPA_PATH env var) to persist.
+      enabled: true
+      # ropa_path: /var/lib/admina/gdpr/ropa.json
+    cross_regulation:
+      # Constant matrix mapping operational controls across AI Act,
+      # NIS2, GDPR. No configuration — exposed at GET /api/compliance/matrix.
+      enabled: true
+    otel:
+      endpoint: "http://localhost:4317"
+
+dashboard:
+  enabled: true
+  port: 3000
+
+forensic_store: minio
+auth_provider: apikey
+pii_engine: spacy-regex
+alert_channels:
+  - type: log
+  - type: webhook
+    url: "https://hooks.example.com/admina"
+    events: [HIGH, CRITICAL]
+
+plugins: []
+
+# ── Integrations ────────────────────────────────────────────
+# External framework integrations. Each integration connects
+# Admina's governance pipeline to a third-party ecosystem.
+
+integrations:
+  # OpenClaw agent governance skill
+  openclaw:
+    enabled: false              # opt-in
+    proxy_port: 18790           # sidecar proxy port for OpenClaw agents
+    # Install: cd integrations/openclaw/admina-governance && ./setup.sh
+
+  # n8n workflow automation nodes
+  n8n:
+    enabled: false              # opt-in
+    # Install: npm install n8n-nodes-admina in your n8n instance
+    # Nodes: Admina Govern (inline), Admina Audit (passive), Admina Dashboard (trigger)
+
+  # Cheshire Cat AI governance plugin
+  cheshirecat:
+    enabled: false              # opt-in
+    proxy_port: 18790           # sidecar proxy port
+    # Install: cd integrations/cheshirecat/admina-plugin && ./setup.sh
+    # Hooks: agent_fast_reply, before_cat_sends_message, before_cat_recalls_memories
+
+  # LangChain callback handler (in-process, no sidecar)
+  langchain:
+    enabled: false              # opt-in
+    # Usage: ChatOpenAI(callbacks=[AdminaCallbackHandler()])
+    # Governs: on_llm_start, on_llm_end, on_tool_start, on_tool_end
+
+  # CrewAI step/task callbacks (in-process, no sidecar)
+  crewai:
+    enabled: false              # opt-in
+    # Usage: Agent(step_callback=admina_step_callback)
+    # Governs: each agent step (LLM reasoning, tool use, task output)

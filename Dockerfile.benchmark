@@ -1,0 +1,54 @@
+# Admina — Benchmark Image
+# Runs the Rust pipeline microbenchmark suite inside Docker.
+#
+# Usage:
+#   docker build -f Dockerfile.benchmark -t admina-bench .
+#   docker run --rm admina-bench
+
+# Stage 1: Build Rust core
+FROM python:3.11-slim AS rust-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl build-essential rustc cargo && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+RUN uv pip install --system --no-cache maturin
+
+WORKDIR /build
+COPY core-rust/ ./core-rust/
+RUN cd core-rust && maturin build --release
+
+# Stage 2: Benchmark runner
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+
+# Install Python deps
+COPY pyproject.toml uv.lock .python-version ./
+RUN uv sync --frozen --no-dev --no-install-project --extra proxy --extra nlp --extra telemetry
+ENV VIRTUAL_ENV="/app/.venv"
+ENV PATH="/app/.venv/bin:$PATH"
+
+# Install Rust core wheel
+COPY --from=rust-builder /build/core-rust/target/wheels/ /tmp/wheels/
+RUN uv pip install /tmp/wheels/*.whl && rm -rf /tmp/wheels
+
+# Install test dependencies
+RUN uv pip install pytest
+
+# Copy source code needed by tests
+COPY core/ ./core/
+COPY domains/ ./domains/
+COPY proxy/ ./proxy/
+COPY plugins/ ./plugins/
+COPY admina/ ./admina/
+COPY sdk/ ./sdk/
+COPY tests/test_benchmark_14us.py ./tests/
+
+# Download spaCy model for PII benchmarks
+RUN uv pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl
+
+CMD ["pytest", "tests/test_benchmark_14us.py", "-v", "-s", "--tb=short", "--no-header", "-p", "no:cacheprovider", "--override-ini=addopts="]

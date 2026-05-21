@@ -1,0 +1,189 @@
+
+# Copyright © 2025–2026 Stefano Noferi & Admina contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "admina-framework"
+version = "0.9.1"
+description = "Admina — governed AI development framework"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [
+    {name = "Stefano Noferi", email = "info@admina.org"},
+]
+maintainers = [
+    {name = "Stefano Noferi", email = "info@admina.org"},
+]
+keywords = [
+    "ai", "governance", "compliance", "eu-ai-act", "pii", "llm",
+    "mcp", "proxy", "agent-security", "injection-firewall", "sdk",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Security",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    # SDK core — always installed
+    "pyyaml>=6.0,<7",
+    "click>=8.1,<9",
+    "jinja2>=3.1,<4",
+    "cryptography>=41.0,<48",
+]
+
+[project.urls]
+Homepage = "https://admina.org"
+Repository = "https://github.com/admina-org/admina"
+Documentation = "https://github.com/admina-org/admina#readme"
+Issues = "https://github.com/admina-org/admina/issues"
+Changelog = "https://github.com/admina-org/admina/blob/main/CHANGELOG.md"
+Security = "https://github.com/admina-org/admina/blob/main/SECURITY.md"
+
+[project.optional-dependencies]
+proxy = [
+    "fastapi>=0.104,<1",
+    "uvicorn[standard]>=0.24,<1",
+    "httpx>=0.25,<1",
+    "pydantic>=2.5,<3",
+    "pydantic-settings>=2.3,<3",
+    "python-dotenv>=1.0,<2",
+    "redis>=5.0,<6",
+    # Forensic blackbox: ship boto3 by default (works with any
+    # S3-compatible incl. SeaweedFS/Garage/R2/B2). The minio SDK is
+    # kept for backward compatibility but pinned and will be dropped
+    # in a future release once boto3 is the only path.
+    "boto3>=1.34,<2",
+    "minio>=7.2,<8",
+    "clickhouse-connect>=0.7,<1",
+    "typer>=0.9,<1",
+]
+nlp = [
+    # spacy 3.7.x ships an old blis (0.7.11) that fails to build on Python 3.13
+    # because of CPython API churn (_PyDict_SetItem_KnownHash, _PyLong_AsByteArray).
+    # 3.8.0+ pulls in blis 1.x with the fix.
+    "spacy>=3.8,<4",
+    # NOTE: the `en_core_web_sm` model is NOT declared as a direct
+    # dependency here because PyPI rejects wheels with URL-pinned
+    # dependencies (PEP 440 "direct references"). After installing
+    # `admina-framework[nlp]`, run:
+    #   python -m spacy download en_core_web_sm
+    # The PIIRedactor logs a clear error if the model is missing.
+    "scikit-learn>=1.3,<2",
+    "numpy>=1.24,<2",
+]
+telemetry = [
+    "opentelemetry-api>=1.20,<2",
+    "opentelemetry-sdk>=1.20,<2",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.20,<2",
+    "opentelemetry-instrumentation-fastapi>=0.40b0,<1",
+]
+# NOTE: the [guardrailsai] extra was removed in v0.9.0 because the
+# upstream `guardrails-ai` package is currently in PyPI quarantine
+# (see https://pypi.org/simple/guardrails-ai/). The plugin in
+# admina/plugins/builtin/guards/guardrailsai_guard.py is preserved; if
+# you have a local copy of guardrails-ai installed, the plugin will
+# detect it and work. Re-introduce the extra once upstream is restored.
+full = ["admina-framework[proxy,nlp,telemetry]"]
+
+[dependency-groups]
+dev = [
+    # Test runner
+    "pytest>=9.0,<10",
+    # Async test support (asyncio backend)
+    "anyio>=4.0,<5",
+    # Coverage measurement and reporting
+    "pytest-cov>=5.0,<7",
+    # Python linter — replaces flake8 + isort + pyupgrade
+    "ruff>=0.4,<1",
+    # Security linter — detects common Python security issues
+    "bandit>=1.7,<2",
+    # Dependency vulnerability scanner
+    "safety>=3.0,<4",
+    # Documentation
+    "mkdocs>=1.6,<2",
+    "mkdocs-material>=9.5,<10",
+    "mkdocstrings[python]>=0.25,<1",
+]
+
+[tool.setuptools.packages.find]
+include = ["admina*"]
+
+[tool.setuptools.package-data]
+admina = [
+    "py.typed",
+    "dashboard/static/*",
+    "dashboard/static/vendor/*",
+    "cli/templates/*",
+]
+
+[project.scripts]
+admina = "admina.cli.main:app"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=admina --cov-report=term-missing --cov-report=xml --cov-fail-under=70"
+
+[tool.coverage.run]
+branch = true
+source = ["admina"]
+omit = [
+    "tests/*",
+    "*/conftest.py",
+    "*/__pycache__/*",
+    # proxy and integrations are exercised via integration tests / live runs,
+    # not covered by the unit-test threshold
+    "admina/proxy/*",
+    "admina/integrations/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = [
+    "E501",     # line-length handled separately
+    "UP042",    # str + Enum inheritance is intentional for JSON serialization
+    "UP031",    # percent-format in logger.xxx(fmt, *args) is the idiomatic
+                # lazy-logging pattern (recommended by Python docs)
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Utility scripts use short loop variables and stats buffers that
+# may not always be consumed in every branch.
+"scripts/*.py" = ["F841", "E741"]
+# Benchmark test imports InjectionFirewall / LoopBreaker / PIIRedactor
+# as availability probes (try-import pattern), not for direct use.
+"tests/test_benchmark_14us.py" = ["F401"]

@@ -1,0 +1,110 @@
+# Copyright © 2025–2026 Stefano Noferi & Admina contributors
+# Licensed under the Apache License, Version 2.0
+#
+# Extended security pipeline.
+# Complements the existing `bandit` + `safety` jobs in ci.yml with:
+#   - cargo-audit:  Rust dependency CVE scan
+#   - gitleaks:     secret leak detection
+#   - SBOM:         CycloneDX SBOM for Python and Rust
+
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 4 * * 1"   # Monday 04:17 UTC — weekly CVE re-scan
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  id-token: write
+
+jobs:
+  # ── Rust: cargo-audit ──────────────────────────────────────────────────
+  cargo-audit:
+    name: Rust dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9  # stable
+        with:
+          toolchain: stable
+
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+
+      - name: Run cargo audit
+        working-directory: core-rust
+        run: cargo audit --deny warnings
+
+  # ── Secret scanning ────────────────────────────────────────────────────
+  # Handled natively by GitHub Advanced Security (Secret scanning + Push
+  # protection enabled at repo level under Settings → Code security). The
+  # `gitleaks/gitleaks-action` wrapper requires a paid licence on
+  # organisation accounts, so we rely on GitHub's first-party scanner
+  # instead. To re-enable the gitleaks action, get a key from gitleaks.io
+  # and store it as `secrets.GITLEAKS_LICENSE`.
+
+  # ── Python SBOM ────────────────────────────────────────────────────────
+  sbom-python:
+    name: Python SBOM (CycloneDX)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          uv pip install cyclonedx-bom
+          uv run cyclonedx-py environment \
+            --output-format json \
+            --output-file admina-python.cdx.json
+          uv run cyclonedx-py environment \
+            --output-format xml \
+            --output-file admina-python.cdx.xml
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: sbom-python
+          path: admina-python.cdx.*
+          retention-days: 90
+
+  # ── Rust SBOM ──────────────────────────────────────────────────────────
+  sbom-rust:
+    name: Rust SBOM (CycloneDX)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9  # stable
+        with:
+          toolchain: stable
+
+      - name: Install cargo-cyclonedx
+        run: cargo install --locked cargo-cyclonedx
+
+      - name: Generate Rust SBOM
+        working-directory: core-rust
+        run: cargo cyclonedx --format json --override-filename admina-core.cdx
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: sbom-rust
+          path: core-rust/admina-core.cdx.json
+          retention-days: 90

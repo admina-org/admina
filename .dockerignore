@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Rust (keep core-rust/src and Cargo files, exclude build output)
+core-rust/target/
+
+# Tests (keep benchmark test for Dockerfile.benchmark)
+tests/
+!tests/test_benchmark_14us.py
+benchmark-reports/
+
+# Docs
+*.md
+LICENSE
+NOTICE
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Environment (NEVER include .env in Docker image)
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# CI
+.github/

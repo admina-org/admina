@@ -1,0 +1,51 @@
+{
+  "name": "n8n-nodes-admina",
+  "version": "1.0.0",
+  "description": "n8n community nodes for Admina AI governance — inline validation, forensic audit logging, and live dashboard triggers.",
+  "keywords": [
+    "n8n-community-node-package",
+    "n8n",
+    "admina",
+    "governance",
+    "ai",
+    "eu-ai-act",
+    "compliance",
+    "pii",
+    "firewall",
+    "forensic"
+  ],
+  "license": "Apache-2.0",
+  "homepage": "https://admina.org",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/admina-org/admina.git",
+    "directory": "integrations/n8n/n8n-nodes-admina"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "n8n": {
+    "n8nNodesApiVersion": 1,
+    "credentials": [
+      "dist/credentials/AdminaApi.credentials.js"
+    ],
+    "nodes": [
+      "dist/nodes/AdminaGovern/AdminaGovern.node.js",
+      "dist/nodes/AdminaAudit/AdminaAudit.node.js",
+      "dist/nodes/AdminaDashboard/AdminaDashboard.trigger.js"
+    ]
+  },
+  "devDependencies": {
+    "n8n-workflow": "^1.0.0",
+    "typescript": "^5.3.0"
+  },
+  "peerDependencies": {
+    "n8n-workflow": "^1.0.0"
+  },
+  "files": [
+    "dist/**/*"
+  ]
+}

@@ -1,0 +1,27 @@
+# {{ plugin_name }}
+
+Admina {{ plugin_type.replace('_', ' ') }} plugin.
+
+## Installation
+
+```bash
+pip install {{ plugin_name }}
+# or
+admina plugin install {{ plugin_name }}
+```
+
+## Usage
+
+Add to your `admina.yaml`:
+
+```yaml
+plugins:
+  - {{ plugin_name.replace('-', '_') }}
+```
+
+## Development
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
