@@ -932,36 +932,43 @@ function dashboard() {
 
     // ── Fetch all data ─────────────────────────────────
     async refresh() {
-      try {
-        const [scoreRes, compRes, sovRes, statsRes, feedRes, infraRes, modelsRes, oisgRes] = await Promise.all([
-          fetch('/api/dashboard/score').then(r => r.json()),
-          fetch('/api/dashboard/compliance').then(r => r.json()),
-          fetch('/api/dashboard/sovereignty').then(r => r.json()),
-          fetch('/api/stats').then(r => r.json()),
-          fetch('/api/dashboard/feed?limit=50').then(r => r.json()),
-          fetch('/api/dashboard/infra').then(r => r.json()),
-          fetch('/api/dashboard/models').then(r => r.json()),
-          fetch('/api/dashboard/oisg').then(r => r.json()).catch(() => ({})),
-        ]);
+      // allSettled so one failing endpoint never blanks the whole dashboard.
+      const okJson = async (url) => {
+        const r = await fetch(url);
+        if (!r.ok) throw new Error(`${url} -> ${r.status}`);
+        return r.json();
+      };
+      const results = await Promise.allSettled([
+        okJson('/api/dashboard/score'),
+        okJson('/api/dashboard/compliance'),
+        okJson('/api/dashboard/sovereignty'),
+        okJson('/api/stats'),
+        okJson('/api/dashboard/feed?limit=50'),
+        okJson('/api/dashboard/infra'),
+        okJson('/api/dashboard/models'),
+        okJson('/api/dashboard/oisg'),
+      ]);
+      const [scoreRes, compRes, sovRes, statsRes, feedRes, infraRes, modelsRes, oisgRes] =
+        results.map(r => r.status === 'fulfilled' ? r.value : null);
 
-        this.score = scoreRes;
-        this.complianceData = compRes;
-        this.sovereignty = sovRes;
-        this.stats = statsRes;
-        this.infraData = infraRes;
-        this.modelData = modelsRes;
-        this.oisg = oisgRes;
-        this.healthy = true;
-        this.lastUpdate = new Date().toLocaleTimeString();
+      if (scoreRes) this.score = scoreRes;
+      if (compRes) this.complianceData = compRes;
+      if (sovRes) this.sovereignty = sovRes;
+      if (statsRes) this.stats = statsRes;
+      if (infraRes) this.infraData = infraRes;
+      if (modelsRes) this.modelData = modelsRes;
+      if (oisgRes) this.oisg = oisgRes;
 
-        // Seed the feed with historical events if WS hasn't provided any yet
-        if (this.feedEvents.length === 0 && feedRes.events && feedRes.events.length > 0) {
-          this.feedEvents = feedRes.events.slice(0, 50).map(e => this._formatFeedEvent(e));
-        }
-      } catch (err) {
-        console.error('Dashboard refresh failed:', err);
-        this.healthy = false;
-        this.lastUpdate = 'error';
+      const failed = results.filter(r => r.status === 'rejected');
+      if (failed.length) {
+        failed.forEach(r => console.warn('[Admina] endpoint failed:', r.reason));
+      }
+      this.healthy = failed.length === 0;
+      this.lastUpdate = new Date().toLocaleTimeString();
+
+      // Seed the feed with historical events if WS hasn't provided any yet
+      if (this.feedEvents.length === 0 && feedRes?.events?.length > 0) {
+        this.feedEvents = feedRes.events.slice(0, 50).map(e => this._formatFeedEvent(e));
       }
     },
 

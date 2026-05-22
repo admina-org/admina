@@ -731,6 +731,83 @@ class TestDashboardInfra:
         data = _run(go())
         assert "checked_at" in data
 
+    def test_infra_empty_upstream_marked_not_configured(self) -> None:
+        """Empty UPSTREAM_MCP_URL must not crash the endpoint."""
+        settings = _FakeSettings(UPSTREAM_MCP_URL="")
+        http = httpx.AsyncClient()
+        app = _build_test_app(settings=settings)
+        app.dependency_overrides = {}
+        # Rebuild with real http client to exercise the upstream branch
+        from admina.proxy.api.dashboard import create_dashboard_endpoints
+
+        app2 = FastAPI()
+        app2.include_router(
+            create_dashboard_endpoints(
+                get_metrics=lambda: {
+                    "requests_total": 0,
+                    "requests_blocked": 0,
+                    "requests_allowed": 0,
+                    "requests_redacted": 0,
+                    "avg_latency_ms": 0.0,
+                    "started_at": datetime.now(UTC).isoformat(),
+                },
+                get_forensic_box=lambda: _FakeForensicBox(),
+                get_compliance=lambda: _FakeCompliance(),
+                get_clickhouse=lambda: None,
+                get_settings=lambda: settings,
+                get_redis=lambda: None,
+                get_minio=lambda: None,
+                get_engine_status=lambda: {},
+                get_http_client=lambda: http,
+            )
+        )
+
+        async def go():
+            async with _client(app2) as c:
+                resp = await c.get("/api/dashboard/infra")
+                return resp.status_code, resp.json()
+
+        status, data = _run(go())
+        assert status == 200
+        assert data["services"]["upstream_mcp"]["status"] == "not_configured"
+
+    def test_infra_unreachable_upstream_marked_unreachable(self) -> None:
+        """httpx connection errors must be caught — endpoint stays 200."""
+        settings = _FakeSettings(UPSTREAM_MCP_URL="http://127.0.0.1:1")
+        http = httpx.AsyncClient(timeout=0.5)
+        from admina.proxy.api.dashboard import create_dashboard_endpoints
+
+        app2 = FastAPI()
+        app2.include_router(
+            create_dashboard_endpoints(
+                get_metrics=lambda: {
+                    "requests_total": 0,
+                    "requests_blocked": 0,
+                    "requests_allowed": 0,
+                    "requests_redacted": 0,
+                    "avg_latency_ms": 0.0,
+                    "started_at": datetime.now(UTC).isoformat(),
+                },
+                get_forensic_box=lambda: _FakeForensicBox(),
+                get_compliance=lambda: _FakeCompliance(),
+                get_clickhouse=lambda: None,
+                get_settings=lambda: settings,
+                get_redis=lambda: None,
+                get_minio=lambda: None,
+                get_engine_status=lambda: {},
+                get_http_client=lambda: http,
+            )
+        )
+
+        async def go():
+            async with _client(app2) as c:
+                resp = await c.get("/api/dashboard/infra")
+                return resp.status_code, resp.json()
+
+        status, data = _run(go())
+        assert status == 200
+        assert data["services"]["upstream_mcp"]["status"] == "unreachable"
+
 
 # ══════════════════════════════════════════════════════════════
 #  Model status endpoint tests

@@ -450,9 +450,13 @@ def create_dashboard_endpoints(
 
         # Upstream MCP
         http = get_http_client() if get_http_client else None
-        if http is not None:
-            upstream = get_settings().UPSTREAM_MCP_URL
+        upstream = get_settings().UPSTREAM_MCP_URL if get_settings else ""
+        if http is None or not upstream.startswith(("http://", "https://")):
+            services["upstream_mcp"] = {"status": "not_configured"}
+        else:
             try:
+                import httpx
+
                 t0 = time.perf_counter()
                 resp = await http.get(f"{upstream}/health", timeout=3.0)
                 latency = round((time.perf_counter() - t0) * 1000, 2)
@@ -461,13 +465,11 @@ def create_dashboard_endpoints(
                     "latency_ms": latency,
                     "url": upstream,
                 }
-            except (OSError, RuntimeError):
+            except (OSError, RuntimeError, httpx.HTTPError):
                 services["upstream_mcp"] = {
                     "status": "unreachable",
                     "url": upstream,
                 }
-        else:
-            services["upstream_mcp"] = {"status": "not_configured"}
 
         healthy_count = sum(1 for s in services.values() if s.get("status") == "healthy")
         return {
