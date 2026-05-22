@@ -221,4 +221,4 @@ class TestInitCommand:
     def test_version_flag(self, runner: CliRunner) -> None:
         result = runner.invoke(app, ["--version"])
         assert result.exit_code == 0
-        assert "0.9.1" in result.output
+        assert "0.9.2" in result.output

@@ -11,6 +11,42 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ---
 
+## [0.9.2] — 2026-05-22
+
+Hotfix release. Fixes three day-one bugs that prevented new users from
+seeing a working `admina dev` after `pip install`.
+
+### Fixed
+
+- **`admina dev` now boots with `[proxy]` only.** Previous versions
+  crashed at startup with `ModuleNotFoundError: No module named 'spacy'`
+  unless the `[nlp]` extra was also installed. spaCy is now imported
+  lazily; without it, PII redaction runs in regex-only mode (still
+  covers email, phone, SSN, IBAN, IP, credit card and EU national IDs).
+- **`numpy` and `scikit-learn` moved from `[nlp]` to `[proxy]`.** They
+  are core dependencies of the LoopBreaker (proxy guardrail), not
+  NLP-specific. `pip install admina-framework[proxy]` now installs
+  everything the proxy actually needs.
+- **Dashboard no longer blanks out when one endpoint fails.**
+  `/api/dashboard/infra` previously returned HTTP 500 when
+  `UPSTREAM_MCP_URL` was empty or unreachable, which (via `Promise.all`
+  in the SPA) blanked every widget. The endpoint now reports
+  `not_configured` / `unreachable` cleanly, and the dashboard uses
+  `Promise.allSettled` so a single failing endpoint never wipes the
+  rest of the UI.
+- **`admina doctor` no longer prints tracebacks for missing optional
+  plugin dependencies.** A plugin whose import fails because of a
+  missing optional dep now logs a single `Skipping plugin … — optional
+  dependency '…' not installed` line. Real plugin bugs still log a full
+  traceback.
+
+### Internal
+
+- Funding link in `.github/FUNDING.yml` points to the dedicated sponsor
+  landing page (`https://admina.org/sponsor/`).
+
+---
+
 ## [0.9.1] — 2026-05-21
 
 Hotfix release.
