@@ -21,7 +21,12 @@ import logging
 import os
 import re
 
-import spacy
+# spaCy is part of the [nlp] extra. When absent, PIIRedactor falls back
+# to regex-only mode (still covers EMAIL/PHONE/SSN/IBAN/IP/credit-card/EU IDs).
+try:
+    import spacy as _spacy
+except ImportError:
+    _spacy = None  # type: ignore[assignment]
 
 logger = logging.getLogger("admina.pii_redactor")
 
@@ -152,12 +157,24 @@ class PIIRedactor:
     def __init__(self, config=None):
         # Resolve NLP model: config.ner_model > ADMINA_SPACY_MODEL env var > default
         model_name = getattr(config, "ner_model", None) or SPACY_MODEL
-        try:
-            self.nlp = spacy.load(model_name)
-            logger.info("[OK] spaCy model loaded: %s", model_name)
-        except OSError:
-            logger.warning("[WARN] spaCy model '%s' not found, using regex-only mode", model_name)
+        if _spacy is None:
+            logger.info(
+                "spaCy not installed — PII redaction running in regex-only mode "
+                "(install admina-framework[nlp] for NER-based detection)"
+            )
             self.nlp = None
+        else:
+            try:
+                self.nlp = _spacy.load(model_name)
+                logger.info("[OK] spaCy model loaded: %s", model_name)
+            except OSError:
+                logger.warning(
+                    "spaCy model '%s' not found — using regex-only mode "
+                    "(run: python -m spacy download %s)",
+                    model_name,
+                    model_name,
+                )
+                self.nlp = None
 
         # Build active categories: start from PII_CATEGORIES defaults, then
         # disable any category not listed in config.categories (if provided).

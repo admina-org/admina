@@ -295,6 +295,23 @@ class TestEngineBridge:
         assert hasattr(pii, "redact")
         assert hasattr(pii, "get_stats")
 
+    def test_pii_factory_without_spacy_installed(self, monkeypatch):
+        """Regression: admina dev must boot even when spaCy is not installed.
+
+        Simulates a user who ran `pip install admina-framework[proxy]` without
+        the [nlp] extra. The PII bridge must fall back to regex-only mode
+        instead of crashing the proxy lifespan with ModuleNotFoundError.
+        """
+        from admina.domains.data_sovereignty import pii as pii_mod
+
+        monkeypatch.setattr(pii_mod, "_spacy", None)
+
+        redactor = pii_mod.PIIRedactor()
+        assert redactor.nlp is None
+        r = redactor.redact("Contact john@example.com")
+        assert "john@example.com" not in r["redacted_text"]
+        assert r["count"] >= 1
+
     def test_loop_breaker_factory(self):
         from admina.proxy.engine_bridge import get_loop_breaker
 
