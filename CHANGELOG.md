@@ -44,6 +44,14 @@ seeing a working `admina dev` after `pip install`.
 
 - Funding link in `.github/FUNDING.yml` points to the dedicated sponsor
   landing page (`https://admina.org/sponsor/`).
+- **admina-core bumped to 0.9.2 (sync release)** — no Rust changes,
+  but the crate / wheel / sdist versions now track admina-framework so
+  the two artefacts always carry the same number on PyPI, crates.io,
+  and ghcr.io. From this release on, every published artefact in the
+  monorepo (admina-framework, admina-core, admina-proxy image,
+  admina-dashboard image) ships with the same version. A new CI job
+  (`scripts/check-versions.py`) blocks PRs that drift the manifests
+  out of alignment.
 
 ---
 

@@ -21,6 +21,19 @@ on:
     branches: [main]
 
 jobs:
+  # ── Version alignment ───────────────────────────────────────
+  # Cross-manifest guard: pyproject (framework), __init__, core-rust
+  # (pyproject + Cargo.toml + Cargo.lock) must all carry the same
+  # version.  Independent of release-time tag checks; catches drift
+  # at PR time.
+  versions:
+    name: Version alignment
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - name: Check artefact versions are aligned
+        run: python3 scripts/check-versions.py
+
   # ── Python: lint ────────────────────────────────────────────
   lint:
     name: Python Lint
