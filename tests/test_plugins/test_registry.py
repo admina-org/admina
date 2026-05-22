@@ -379,9 +379,7 @@ class TestDiscover:
         )
         assert count == 0
 
-    def test_discover_missing_optional_dep_logs_clean_warning(
-        self, tmp_path, caplog
-    ):
+    def test_discover_missing_optional_dep_logs_clean_warning(self, tmp_path, caplog):
         """Missing optional dependency = single-line WARN, no traceback."""
         import logging
 
