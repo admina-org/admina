@@ -284,6 +284,13 @@ class PluginRegistry:
             mod = importlib.util.module_from_spec(spec)
             sys.modules[mod_name] = mod
             spec.loader.exec_module(mod)
+        except ModuleNotFoundError as exc:
+            logger.warning(
+                "Skipping plugin %s — optional dependency %r not installed",
+                py_file.stem,
+                exc.name or "?",
+            )
+            return 0
         except (ImportError, AttributeError, RuntimeError):
             logger.warning("Failed to import plugin file %s", py_file, exc_info=True)
             return 0
@@ -294,6 +301,13 @@ class PluginRegistry:
         """Import a module by dotted path and register all plugin classes."""
         try:
             mod = importlib.import_module(mod_path)
+        except ModuleNotFoundError as exc:
+            logger.warning(
+                "Skipping plugin module %r — optional dependency %r not installed",
+                mod_path,
+                exc.name or "?",
+            )
+            return 0
         except ImportError:
             logger.warning("Failed to import plugin module %r", mod_path, exc_info=True)
             return 0

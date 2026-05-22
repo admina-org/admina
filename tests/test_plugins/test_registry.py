@@ -379,6 +379,50 @@ class TestDiscover:
         )
         assert count == 0
 
+    def test_discover_missing_optional_dep_logs_clean_warning(
+        self, tmp_path, caplog
+    ):
+        """Missing optional dependency = single-line WARN, no traceback."""
+        import logging
+
+        builtin = tmp_path / "builtin"
+        builtin.mkdir()
+        (builtin / "needs_thing.py").write_text(
+            "import admina_optional_dep_that_does_not_exist  # noqa: F401\n"
+        )
+
+        reg = PluginRegistry()
+        with caplog.at_level(logging.WARNING, logger="admina.plugins.registry"):
+            count = reg.discover(
+                builtin_path=builtin,
+                user_path=tmp_path / "no_user",
+            )
+
+        assert count == 0
+        msgs = [r for r in caplog.records if r.name == "admina.plugins.registry"]
+        assert msgs, "expected a warning to be logged"
+        rec = msgs[-1]
+        assert rec.exc_info is None, "missing-dep warning must not carry a traceback"
+        assert "admina_optional_dep_that_does_not_exist" in rec.getMessage()
+        assert "needs_thing" in rec.getMessage()
+
+    def test_discover_unexpected_error_keeps_traceback(self, tmp_path, caplog):
+        """RuntimeError at import time keeps the full traceback for debugging."""
+        import logging
+
+        builtin = tmp_path / "builtin"
+        builtin.mkdir()
+        (builtin / "boom.py").write_text("raise RuntimeError('boom')\n")
+
+        reg = PluginRegistry()
+        with caplog.at_level(logging.WARNING, logger="admina.plugins.registry"):
+            reg.discover(
+                builtin_path=builtin,
+                user_path=tmp_path / "no_user",
+            )
+        msgs = [r for r in caplog.records if r.name == "admina.plugins.registry"]
+        assert msgs and msgs[-1].exc_info is not None
+
     def test_discover_multiple_plugins_one_module(self, tmp_path):
         """A single module can contribute multiple plugin types."""
         builtin = tmp_path / "builtin"
