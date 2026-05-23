@@ -262,20 +262,61 @@ def init(
         else:
             click.echo("  ⚠ docker compose pull failed (you can run it later)")
 
-    # 5. Print next steps
-    click.echo(f"""
-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Project ready!
+    # 5. Print next steps — tailored to what the user actually has installed.
+    click.echo(_format_next_steps(project_name))
 
-  Next steps:
-    cd {project_name}
-    admina dev          # local mode (no Docker): proxy + dashboard on :3000
-    admina dev --stack  # full Docker stack (proxy, redis, clickhouse, minio, grafana)
-    python main.py      # run example (works without admina dev)
 
-  Docs: https://admina.org/docs
-  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-""")
+def _format_next_steps(project_name: str) -> str:
+    """Build the post-init "Next steps" message based on detected extras.
+
+    Honest output: only suggest commands that will work with the user's
+    current install. Missing prerequisites are surfaced explicitly with
+    the exact upgrade command.
+    """
+    proxy_ok = _proxy_extra_installed()
+    docker_ok = shutil.which("docker") is not None
+
+    lines: list[str] = [
+        "",
+        "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "  Project ready!",
+        "",
+        "  Next steps:",
+        f"    cd {project_name}",
+        "    python main.py                # SDK example — works with any install",
+    ]
+    if proxy_ok:
+        lines.append("    admina dev                    # local proxy + dashboard on :3000")
+    else:
+        lines.extend(
+            [
+                "",
+                "  To run the local proxy + dashboard (admina dev), install the [proxy] extra:",
+                "    pip install 'admina-framework[proxy]' --upgrade",
+            ]
+        )
+    if docker_ok:
+        lines.append(
+            "    admina dev --stack            # full Docker stack "
+            "(proxy + redis + clickhouse + minio + grafana)"
+        )
+    else:
+        lines.extend(
+            [
+                "",
+                "  To run the full Docker stack (admina dev --stack), install Docker:",
+                "    https://docs.docker.com/get-docker/",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "  Docs: https://admina.org/docs",
+            "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+        ]
+    )
+    return "\n".join(lines)
 
 
 # ── admina dev helpers ─────────────────────────────────────
@@ -482,6 +523,46 @@ def _list_local_ipv4() -> list[str]:
     return sorted(ips, key=lambda ip: (ip != "127.0.0.1", ip))
 
 
+def _proxy_extra_installed() -> bool:
+    """True if uvicorn + fastapi (the [proxy] extra) are importable."""
+    try:
+        import fastapi  # noqa: F401
+        import uvicorn  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _require_proxy_extra_for_local_dev() -> None:
+    """Exit cleanly with an actionable message when [proxy] is missing.
+
+    Local-mode `admina dev` shells out to uvicorn, which lives only in the
+    [proxy] extra. Without an early check, the user sees a cryptic
+    `No module named uvicorn` from python -m uvicorn.
+    """
+    if _proxy_extra_installed():
+        return
+    click.echo("", err=True)
+    click.echo("  admina dev (local mode) requires the [proxy] extra.", err=True)
+    click.echo("  Install one of:", err=True)
+    click.echo(
+        "    pip install 'admina-framework[proxy]' --upgrade",
+        err=True,
+    )
+    click.echo(
+        "    pip install 'admina-framework[full]' --upgrade   # adds NLP + telemetry",
+        err=True,
+    )
+    click.echo("", err=True)
+    click.echo(
+        "  Or run the full Docker stack (no [proxy] extra required):",
+        err=True,
+    )
+    click.echo("    admina dev --stack", err=True)
+    click.echo("", err=True)
+    raise SystemExit(1)
+
+
 def _run_local(
     project_dir: Path,
     vault: SecretVault,
@@ -491,6 +572,8 @@ def _run_local(
     host: str,
 ) -> None:
     """Run proxy + dashboard as a single uvicorn process (no Docker)."""
+    _require_proxy_extra_for_local_dev()
+
     # Auto-detect free port: if preferred is taken (Docker Desktop, Grafana,
     # another node dev server on :3000…), fall back to the next free port.
     try:
@@ -1032,6 +1115,8 @@ def doctor() -> None:
             issues.append(f"Missing: pip install {pkg_name}")
 
     # ── Optional extras ──────────────────────────────────────
+    # Each group lists (import_name, pypi_name) tuples. numpy + scikit-learn
+    # are part of [proxy] (LoopBreaker requires them), not [nlp].
     click.echo("\n  Optional extras:")
     extras = {
         "proxy": [
@@ -1042,16 +1127,17 @@ def doctor() -> None:
             ("redis", "redis"),
             ("minio", "minio"),
             ("clickhouse_connect", "clickhouse-connect"),
+            ("numpy", "numpy"),
+            ("sklearn", "scikit-learn"),
         ],
         "nlp": [
             ("spacy", "spacy"),
-            ("sklearn", "scikit-learn"),
-            ("numpy", "numpy"),
         ],
         "telemetry": [
             ("opentelemetry", "opentelemetry-api"),
         ],
     }
+    extras_status: dict[str, str] = {}
     for group, mods in extras.items():
         present = 0
         for mod_name, _ in mods:
@@ -1062,12 +1148,25 @@ def doctor() -> None:
                 pass
         if present == len(mods):
             click.echo(f"    [{group}]{' ' * (16 - len(group))} {ok_mark}  ({present}/{len(mods)})")
+            extras_status[group] = "ok"
         elif present > 0:
             click.echo(
                 f"    [{group}]{' ' * (16 - len(group))} {warn_mark} ({present}/{len(mods)})"
             )
+            extras_status[group] = "partial"
         else:
             click.echo(f"    [{group}]{' ' * (16 - len(group))} --    not installed")
+            extras_status[group] = "missing"
+
+    if extras_status.get("proxy") != "ok":
+        click.echo(
+            f"    {warn_mark}  admina dev (local mode) needs the [proxy] extra — "
+            "pip install 'admina-framework[proxy]' --upgrade"
+        )
+        issues.append(
+            "admina dev (local mode) requires the [proxy] extra — "
+            "run: pip install 'admina-framework[proxy]' --upgrade"
+        )
 
     # ── spaCy NER model ──────────────────────────────────────
     click.echo("\n  NLP engine:")
@@ -1078,12 +1177,28 @@ def doctor() -> None:
             spacy.load("en_core_web_sm")
             click.echo(f"    en_core_web_sm       {ok_mark}")
         except OSError:
+            # PII still works in regex-only mode without the spaCy model, so
+            # this is a soft warning rather than a blocking issue.
             click.echo(
-                f"    en_core_web_sm       {warn_mark}  (run: python -m spacy download en_core_web_sm)"
+                f"    en_core_web_sm       {warn_mark}  not loadable "
+                "(PII falls back to regex-only — install for NER coverage)"
             )
-            issues.append("spaCy model not installed — PII uses regex-only mode")
+            # The model is not on PyPI — it ships as a direct wheel URL
+            # from explosion/spacy-models on GitHub. `python -m spacy
+            # download` is the canonical command but needs pip in the
+            # venv; for uv venvs (which omit pip) point at the wheel URL.
+            model_ver = "3.8.0"  # matches spacy>=3.8,<4 pinned in [nlp]
+            wheel_url = (
+                "https://github.com/explosion/spacy-models/releases/download/"
+                f"en_core_web_sm-{model_ver}/en_core_web_sm-{model_ver}-py3-none-any.whl"
+            )
+            click.echo(f"        Install with:  {sys.executable} -m spacy download en_core_web_sm")
+            click.echo(f"        For uv venvs:  uv pip install {wheel_url}")
     except ImportError:
-        click.echo("    spacy                --    not installed (PII disabled)")
+        click.echo(
+            "    spacy                --    not installed "
+            "(PII falls back to regex-only — install [nlp] extra for NER)"
+        )
 
     # ── Rust engine ──────────────────────────────────────────
     click.echo("\n  Governance engine:")

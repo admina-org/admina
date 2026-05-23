@@ -11,6 +11,50 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ---
 
+## [0.9.3] — 2026-05-23
+
+UX hotfix for first-time users. Removes every cryptic "module not
+found" error from the install → init → dev path: every failure now
+prints an actionable upgrade command, and the README leads with the
+install that actually makes `admina dev` work.
+
+### Fixed
+
+- **`admina dev` no longer crashes with `ModuleNotFoundError: uvicorn`
+  when the `[proxy]` extra is missing.** Local-mode dev now does an
+  early check and prints an actionable message: which extras to
+  install, or how to fall back to the Docker stack. No traceback.
+- **`admina doctor` no longer reports "All checks passed" when
+  `admina dev` is guaranteed to fail.** Missing `[proxy]` is now a
+  surfaced issue with the exact upgrade command.
+- **`admina doctor` extras table fixed.** `numpy` and `scikit-learn`
+  are now correctly grouped under `[proxy]` (where they actually
+  belong since 0.9.2), not `[nlp]`.
+- **`admina doctor` spaCy diagnostic is venv-safe.** Previously
+  suggested `python -m spacy download en_core_web_sm`, which on uv
+  managed virtualenvs silently installs into a different interpreter
+  (the one that owns `pip` on PATH). The new message points at the
+  canonical `python -m spacy download` command **and** the direct
+  wheel URL (`uv pip install <github-url>`) so users on either tool
+  have a path that lands the model in the right venv. The missing
+  model is now a soft warning (PII redaction still works in
+  regex-only mode), not a `doctor` failure.
+- **`admina init` "Next steps" adapts to the install.** Only suggests
+  `admina dev` when `[proxy]` is installed; only suggests `admina dev
+  --stack` when Docker is on PATH. Missing prerequisites are surfaced
+  inline with the upgrade command. `python main.py` is always shown
+  because the SDK works with any install.
+
+### Docs
+
+- README Quick Start leads with `pip install
+  "admina-framework[proxy]"` (the install that makes `admina dev`
+  work). `pip install admina-framework` (SDK only) is demoted to an
+  "Advanced" footnote for users embedding the SDK without the local
+  dev server.
+
+---
+
 ## [0.9.2] — 2026-05-22
 
 Hotfix release. Fixes three day-one bugs that prevented new users from

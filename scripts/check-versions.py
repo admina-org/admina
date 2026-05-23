@@ -26,6 +26,8 @@ Tracked points of truth:
     3. core-rust/pyproject.toml       →  admina-core       (PyPI)
     4. core-rust/Cargo.toml           →  admina_core crate
     5. core-rust/Cargo.lock           →  resolved admina_core entry
+    6. uv.lock                        →  resolved admina-framework entry
+    7. core-rust/uv.lock              →  resolved admina-core entry
 
 Docker images and dashboard HTML derive their version dynamically from
 pyproject.toml at build time, so they need no separate check here.
@@ -66,13 +68,24 @@ def _cargo_lock_admina_core(path: Path) -> str:
     return m.group(1)
 
 
+def _uv_lock_package(path: Path, pkg: str) -> str:
+    """Pull the version of a specific package out of an uv.lock TOML."""
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    for entry in data.get("package", []):
+        if entry.get("name") == pkg:
+            return entry["version"]
+    raise RuntimeError(f"{pkg!r} entry not found in {path}")
+
+
 def main() -> int:
     versions: dict[str, str] = {
         "pyproject.toml": _toml_version(REPO / "pyproject.toml"),
         "admina/__init__.py": _python_dunder_version(REPO / "admina" / "__init__.py"),
+        "uv.lock": _uv_lock_package(REPO / "uv.lock", "admina-framework"),
         "core-rust/pyproject.toml": _toml_version(REPO / "core-rust" / "pyproject.toml"),
         "core-rust/Cargo.toml": _toml_version(REPO / "core-rust" / "Cargo.toml", table="package"),
         "core-rust/Cargo.lock": _cargo_lock_admina_core(REPO / "core-rust" / "Cargo.lock"),
+        "core-rust/uv.lock": _uv_lock_package(REPO / "core-rust" / "uv.lock", "admina-core"),
     }
 
     canonical = versions["pyproject.toml"]

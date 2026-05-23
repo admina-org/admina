@@ -221,4 +221,106 @@ class TestInitCommand:
     def test_version_flag(self, runner: CliRunner) -> None:
         result = runner.invoke(app, ["--version"])
         assert result.exit_code == 0
-        assert "0.9.2" in result.output
+        assert "0.9.3" in result.output
+
+
+class TestFormatNextSteps:
+    """Regression: `admina init` Next steps must adapt to installed extras."""
+
+    def test_next_steps_when_proxy_installed_shows_admina_dev(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from admina.cli import main as cli_main
+
+        monkeypatch.setattr(cli_main, "_proxy_extra_installed", lambda: True)
+        out = cli_main._format_next_steps("foo")
+        assert "admina dev" in out
+        # No upgrade hint when [proxy] is already there.
+        assert "pip install 'admina-framework[proxy]'" not in out
+
+    def test_next_steps_when_proxy_missing_omits_admina_dev_command(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from admina.cli import main as cli_main
+
+        monkeypatch.setattr(cli_main, "_proxy_extra_installed", lambda: False)
+        out = cli_main._format_next_steps("foo")
+        # No raw "admina dev<space>" command line that pretends to work.
+        # The "admina dev" string may still appear in the explanatory text
+        # ("To run admina dev, install ..."), but not as a runnable line.
+        for line in out.splitlines():
+            stripped = line.strip()
+            if stripped == "admina dev" or stripped.startswith("admina dev "):
+                # Only --stack is acceptable here, and only if docker is around.
+                assert stripped.startswith("admina dev --stack"), line
+        assert "pip install 'admina-framework[proxy]'" in out
+
+    def test_next_steps_python_main_always_shown(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from admina.cli import main as cli_main
+
+        monkeypatch.setattr(cli_main, "_proxy_extra_installed", lambda: False)
+        out = cli_main._format_next_steps("foo")
+        assert "python main.py" in out
+
+
+class TestDevRequiresProxyExtra:
+    """Regression: `admina dev` local mode must not blow up cryptically when
+    [proxy] is missing. It must print an actionable message and exit cleanly.
+    """
+
+    def test_require_proxy_extra_exits_with_actionable_message(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        from admina.cli import main as cli_main
+
+        monkeypatch.setattr(cli_main, "_proxy_extra_installed", lambda: False)
+        with pytest.raises(SystemExit) as excinfo:
+            cli_main._require_proxy_extra_for_local_dev()
+        assert excinfo.value.code == 1
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "[proxy]" in combined
+        assert "pip install 'admina-framework[proxy]'" in combined
+        assert "Traceback" not in combined
+
+    def test_require_proxy_extra_noop_when_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from admina.cli import main as cli_main
+
+        monkeypatch.setattr(cli_main, "_proxy_extra_installed", lambda: True)
+        # Must not raise, must not print anything.
+        cli_main._require_proxy_extra_for_local_dev()
+
+
+class TestDoctorFlagsMissingProxy:
+    """Regression: `admina doctor` must flag missing [proxy] as a real issue,
+    not say 'All checks passed'."""
+
+    def test_doctor_warns_when_proxy_missing(
+        self,
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        import builtins
+
+        from admina.cli import main as cli_main
+
+        real_import = builtins.__import__
+        blocked = {"fastapi", "uvicorn", "httpx", "redis", "minio", "clickhouse_connect"}
+
+        def fake_import(name: str, *args: object, **kwargs: object) -> object:
+            top = name.split(".", 1)[0]
+            if top in blocked:
+                raise ImportError(f"blocked-by-test: {name}")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        # Also override the helper used elsewhere in main.
+        monkeypatch.setattr(cli_main, "_proxy_extra_installed", lambda: False)
+
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            result = runner.invoke(app, ["doctor"])
+        assert "[proxy]" in result.output
+        assert "All checks passed" not in result.output
+        # Doctor should exit non-zero so CI / users notice
+        assert result.exit_code != 0

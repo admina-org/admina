@@ -62,20 +62,22 @@ report = kit.gap_analysis(risk_category="high", current_compliance={...})
 ### Install from PyPI
 
 ```bash
-# SDK only (lightweight, pure Python)
-pip install admina-framework
-
-# Proxy + infrastructure deps
+# Recommended for new users: SDK + proxy + dashboard.
+# Lets you run `admina dev` and see the dashboard out of the box.
 pip install "admina-framework[proxy]"
 
-# Everything (proxy + NLP + telemetry)
+# Everything (proxy + NLP + telemetry). Use this if you also want
+# spaCy-based NER for PII detection or OpenTelemetry export.
 pip install "admina-framework[full]"
+python -m spacy download en_core_web_sm   # for [full] only
 
-# After [nlp] / [full] install: download the spaCy NER model
-python -m spacy download en_core_web_sm
-
-# Optional: Rust-accelerated engine (auto-detected at runtime)
+# Optional: Rust-accelerated engine (auto-detected at runtime).
 pip install admina-core
+
+# Advanced: SDK only (no proxy, no dashboard, no `admina dev`).
+# Use this when embedding the SDK into another service and you don't
+# need the local dev server.
+pip install admina-framework
 ```
 
 > The PyPI distribution name is `admina-framework`; the Python import
@@ -93,28 +95,27 @@ pip install admina-core
 git clone https://github.com/admina-org/admina.git
 cd admina
 
-# Option 1: SDK only (lightweight)
-pip install -e .
-python -c "from admina import GovernedModel; print('SDK ready')"
+# Recommended: proxy + dashboard + infra deps (enables `admina dev`)
+pip install -e ".[proxy]"
+
+# Everything (proxy + NLP + telemetry)
+pip install -e ".[full]"
+
+# CLI workflow
+admina init my-project   # Scaffold a governed AI project
+cd my-project            # admina dev runs from the project directory
+admina dev               # Start the local proxy + dashboard
+
+# Full stack via Docker (no [proxy] extra required)
+./scripts/bootstrap-secrets.sh   # Auto-generate .env with random credentials
+docker compose up --build        # Credentials printed at bootstrap
 
 # Note: To use the OllamaAdapter, install Ollama (https://ollama.ai)
 # and pull a model first: ollama pull llama3.1:8b
 
-# Option 2: Proxy + infra deps
-pip install -e ".[proxy]"
-
-# Option 3: Everything (proxy + NLP + telemetry)
-pip install -e ".[full]"
-
-# Option 4: Full stack (proxy + dashboard + infra via Docker)
-./scripts/bootstrap-secrets.sh   # Auto-generate .env with random credentials
-docker compose up --build        # Credentials printed at bootstrap
-
-# Option 5: CLI
+# Advanced: SDK only (no proxy, no dashboard)
 pip install -e .
-admina init my-project   # Scaffold a governed AI project
-cd my-project            # admina dev runs from the project directory
-admina dev               # Start local dev stack
+python -c "from admina import GovernedModel; print('SDK ready')"
 ```
 
 Dashboard: [http://localhost:3000](http://localhost:3000) | API docs: [http://localhost:8080/docs](http://localhost:8080/docs)
