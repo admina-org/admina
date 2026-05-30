@@ -1,36 +1,100 @@
-# Admina — Governed AI Development Framework
+<!--
+<p align="center">
+  <img src="resources/banner.png" alt="Admina — Governed AI by Default" width="100%">
+</p>
+-->
 
-**Install once, get governed AI. The open framework for building AI applications that are governed by design.**
+<p align="center">
+  <strong>Install once, get governed AI.</strong><br>
+  <em>PII redacted · Injections blocked · Loops broken · Actions audited · EU AI Act tracked</em>
+</p>
 
-Admina gives you an SDK, a transparent proxy, a plugin system, a CLI, and a dashboard — all in one install. Every AI interaction is governed: PII redacted, injections blocked, loops broken, actions audited, EU AI Act compliance tracked. Works in-process (SDK) and over the network (proxy). Zero code changes to add governance to existing applications.
+<p align="center">
+  <a href="https://pypi.org/project/admina-framework/"><img src="https://img.shields.io/pypi/v/admina-framework?style=flat-square&color=32CD32" alt="PyPI version"></a>
+  &nbsp;<a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-32CD32?style=flat-square" alt="License"></a>
+  &nbsp;<img src="https://img.shields.io/badge/python-3.11%2B-32CD32?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
+  &nbsp;<img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-6C757D?style=flat-square" alt="Platform">
+</p>
 
-> ⚖️ **Compliance disclaimer.** Admina is a self-assessment and
-> defense-in-depth tool. The EU AI Act gap-analysis and risk
-> classification features are **decision-support aids, not legal
-> advice**. They do not replace the conformity assessment required
-> under EU AI Act Art. 43 for high-risk systems, nor the involvement
-> of a notified body where the regulation requires one.
->
-> **EU AI Act timeline (after the Omnibus VII agreement of 7 May 2026):**
-> Art. 5 prohibitions in force since 2 February 2025; GPAI obligations
-> in force since 2 August 2025; Art. 50 transparency for synthetic
-> content and the new NCII / synthetic-CSAM prohibition apply from
-> 2 December 2026; **Annex III high-risk obligations from 2 December
-> 2027** (postponed from 2 Aug 2026); Annex I high-risk from 2 August
-> 2028 (postponed from 2 Aug 2027). The full machine-readable timeline
-> ships with Admina as `admina.domains.compliance.eu_ai_act.EU_AI_ACT_DEADLINES`.
-> See [`MODEL_CARD.md`](MODEL_CARD.md) for the full scope, limitations,
-> and known failure modes of every Admina component.
+<p align="center">
+  <a href="https://github.com/admina-org/admina/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/admina-org/admina/ci.yml?style=flat-square&label=CI&logo=githubactions&logoColor=white" alt="CI"></a>
+  &nbsp;<a href="https://github.com/admina-org/admina/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/admina-org/admina/release.yml?style=flat-square&label=release" alt="Release"></a>
+  &nbsp;<a href="https://github.com/admina-org/admina/actions/workflows/security.yml"><img src="https://img.shields.io/github/actions/workflow/status/admina-org/admina/security.yml?style=flat-square&label=security%20scan&logo=shield&logoColor=white" alt="Security scan"></a>
+  &nbsp;<a href="https://pypi.org/project/admina-framework/"><img src="https://img.shields.io/pypi/dm/admina-framework?style=flat-square&label=downloads" alt="PyPI downloads"></a>
+</p>
 
-[![PyPI version](https://img.shields.io/pypi/v/admina-framework.svg)](https://pypi.org/project/admina-framework/)
-[![PyPI downloads](https://img.shields.io/pypi/dm/admina-framework.svg)](https://pypi.org/project/admina-framework/)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.11+-green.svg)](https://python.org)
-[![Rust](https://img.shields.io/badge/Rust-Engine-orange.svg)](core-rust/)
-[![CI](https://github.com/admina-org/admina/actions/workflows/ci.yml/badge.svg)](https://github.com/admina-org/admina/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/badge/docs-admina.org-blue.svg)](https://admina.org/docs)
-[![Version](https://img.shields.io/badge/version-0.9.0-blue.svg)](CHANGELOG.md)
-[![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS-lightgrey.svg)](CONTRIBUTING.md#supported-platforms)
+<p align="center">
+  <a href="https://deepwiki.com/admina-org/admina"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
+  &nbsp;<a href="https://github.com/admina-org/admina/discussions"><img src="https://img.shields.io/github/discussions/admina-org/admina?style=flat-square&logo=github" alt="Discussions"></a>
+  &nbsp;<a href="https://admina.org/docs"><img src="https://img.shields.io/badge/docs-admina.org-blue?style=flat-square" alt="Docs"></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start"><img src="https://img.shields.io/badge/⚡%20Quick%20Start-2%20min-32CD32?style=for-the-badge" alt="Quick Start" height="40"></a>
+  &nbsp;<a href="#see-it-in-action"><img src="https://img.shields.io/badge/▶%20Live%20Demo-Dashboard-3B82F6?style=for-the-badge" alt="Live Demo" height="40"></a>
+  &nbsp;<a href="https://admina.org/docs"><img src="https://img.shields.io/badge/📖%20Read%20the%20Docs-admina.org-6C757D?style=for-the-badge" alt="Docs" height="40"></a>
+  &nbsp;<a href="https://deepwiki.com/admina-org/admina"><img src="https://img.shields.io/badge/🤖%20Ask%20DeepWiki-AI%20wiki-7C3AED?style=for-the-badge" alt="DeepWiki" height="40"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/admina-org/admina/stargazers"><img src="https://img.shields.io/github/stars/admina-org/admina?style=social" alt="Stars"></a>
+  &nbsp;<a href="https://github.com/admina-org/admina/network/members"><img src="https://img.shields.io/github/forks/admina-org/admina?style=social" alt="Forks"></a>
+  &nbsp;<a href="https://github.com/admina-org/admina/graphs/contributors"><img src="https://img.shields.io/github/contributors/admina-org/admina?style=flat-square&label=contributors" alt="Contributors"></a>
+  &nbsp;<img src="https://img.shields.io/github/last-commit/admina-org/admina?style=flat-square" alt="Last commit">
+</p>
+
+---
+
+## See it in action
+
+**Scaffold a project and boot the governed proxy + dashboard — no Docker:**
+
+<p align="center">
+  <img src="resources/admina-init-dev.gif" alt="admina init → admina dev → Ready on localhost:3000" width="900">
+</p>
+
+**Wrap any model in a few lines — PII is stripped before the model ever sees it:**
+
+<p align="center">
+  <img src="resources/sdk-3lines.gif" alt="GovernedModel redacts PERSON, EMAIL and credit card before the LLM call" width="900">
+</p>
+
+**The governance dashboard, before and after simulated traffic — Admina Score 40 → 60:**
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="resources/dashboard-firstuser.png" alt="Dashboard at first boot — score 40/100" width="100%"><br>
+      <em>First boot — Admina Score <strong>40/100</strong></em>
+    </td>
+    <td align="center" width="50%">
+      <img src="resources/dashboard-traffic.png" alt="Dashboard after simulated traffic — score 60/100" width="100%"><br>
+      <em>After <code>python scripts/simulate.py</code> — <strong>60/100</strong></em>
+    </td>
+  </tr>
+</table>
+
+---
+
+## Why Admina?
+
+|                                | Plain LLM / RAG app                  | **With Admina**                                                          |
+| :----------------------------- | :----------------------------------- | :----------------------------------------------------------------------- |
+| PII in prompts/responses       | leaks unless you build redaction     | **Redacted by default** — email, SSN, IBAN, phone, IP, names             |
+| Prompt injections              | reach the model                      | **Blocked at the proxy** — 15 regex + Rust heuristic scoring             |
+| Agent tool calls               | unaudited                            | **Validated pre-action + logged post-action** (forensic chain)           |
+| Loop / runaway agents          | burn tokens / budget                 | **Broken** — TF-IDF cosine similarity over the action stream             |
+| EU AI Act readiness            | manual                               | **Gap analysis + risk classification** built-in                          |
+| Audit trail                    | logs you hope nobody deletes         | **SHA-256 hash chain** — tamper-evident by design                        |
+| Adding governance to existing code | rewrite the call sites           | **Zero code changes** via proxy, or 3 lines via SDK                      |
+| Performance overhead           | unknown                              | **~6 µs per pipeline** (Rust engine), in-process or networked            |
+| License                        | varies                               | **Apache 2.0**, open core                                                |
+
+> Admina is **decision-support and defense-in-depth**, not legal advice. See [Compliance scope](#compliance-scope) for the full disclaimer and limitations.
+
+---
+
+## 30-second example
 
 ```python
 from admina import GovernedModel, GovernedData, GovernedAgent, ComplianceKit
@@ -122,27 +186,20 @@ Dashboard: [http://localhost:3000](http://localhost:3000) | API docs: [http://lo
 
 ## Architecture
 
-Admina is organized into 4 governance domains:
+Admina runs in **dual mode** — in-process via SDK or networked via proxy — but both modes feed the **same governance pipeline**.
 
-| Domain | What it governs | Key features |
-|--------|----------------|--------------|
-| **Data Sovereignty** | Where data lives and how it's protected | PII redaction (spaCy + regex), residency zones, data classification |
-| **AI Infrastructure** | LLM and RAG stack | Ollama backend, ChromaDB vectors, Open WebUI, GPU auto-detect |
-| **Agent Security** | What agents can do | Injection firewall (Rust), loop breaker, proxy governance |
-| **Compliance** | Regulatory obligations | EU AI Act (Art. 6-15), forensic black box (SHA-256 chain), OTEL |
-
-Every governance feature works in **dual mode** — both via SDK (in-process) and proxy (network):
-
+```mermaid
+flowchart LR
+    A1["your code → GovernedModel.ask()"] --> P
+    A2["AI agent → POST /mcp"] --> P
+    P["governance pipeline"]
+    P --> U1["Ollama / OpenAI"]
+    P --> U2["MCP server / LLM"]
+    classDef pipe fill:#0ea5e9,stroke:#0369a1,color:#fff;
+    class P pipe;
 ```
-SDK Mode:                           Proxy Mode:
-  your code                           AI Agent
-    |                                   |
-  GovernedModel.ask()               POST /mcp
-    |                                   |
-  [governance pipeline]             [governance pipeline]
-    |                                   |
-  Ollama / OpenAI                   MCP Server / LLM
-```
+
+Pipeline (identical in both modes): `PII redaction → firewall → loop-breaker → audit → forensic chain (SHA-256) → OTEL`
 
 ## The 4 Governance Domains
 
@@ -209,49 +266,6 @@ dependency: one uvicorn serves the proxy API and the dashboard SPA on the
 same port. Use `--stack` for the production-like Docker compose, or
 `--with-llm` to also boot local LLM services.
 
-## Forensic backend — choose deliberately
-
-The forensic blackbox (the SHA-256 hash chain that makes the audit trail
-tamper-evident) supports four backends. Read this before picking one for
-production.
-
-| Backend | License | When to use | Caveats |
-|---------|---------|-------------|---------|
-| **`memory`** *(default)* | n/a | Local development, tests, demos | Records are LOST on restart — no audit persistence. Loud warning at startup. |
-| **`filesystem`** | n/a | Single-host on-prem, air-gapped, smaller deployments | Persistence depends on the host filesystem; not ideal for HA. Requires `FORENSIC_BASE_DIR`. |
-| **`s3`** *(boto3)* | Apache 2.0 (boto3) | Production / HA / multi-region | Works with **any S3-compatible service** — AWS S3, Cloudflare R2, Backblaze B2, **SeaweedFS** (Apache 2.0), **Garage** (AGPLv3), **Ceph RGW** (LGPLv2). Recommended new default. |
-| **`minio`** *(legacy)* | see below ⚠️ | Backwards compatibility with existing MinIO clusters | Two distinct concerns; read the disclaimer. |
-
-> ⚠️ **MinIO disclaimer — what users of Admina need to know.**
->
-> MinIO has two separate licensing/maintenance issues that can affect
-> downstream users of Admina, even though Admina itself is Apache 2.0:
->
-> 1. **MinIO Server is AGPLv3.** If you deploy MinIO Server as part of a
->    network-accessible service (e.g. a SaaS that exposes Admina's
->    dashboard or API to the public Internet), AGPLv3's network clause
->    can be read to require you to publish the source code of the
->    *combined* application that interacts with MinIO over the network.
->    The MinIO commercial license removes this obligation, but is paid.
->    This is **not** an Admina obligation — Apache 2.0 is permissive —
->    but it is an obligation MinIO Server itself imposes on whoever
->    runs it.
-> 2. **The MinIO Python SDK has been archived.** No more security
->    patches, no support for new Python releases. Continuing to depend
->    on it is a supply-chain risk.
->
-> **Recommendation:** for new deployments, use `FORENSIC_BACKEND=s3`.
-> The `boto3` client is Apache 2.0 and works against any S3-compatible
-> service. Two open-source FOSS-friendly options that don't trigger the
-> AGPL network clause for typical Admina deployments:
-> - **SeaweedFS** (Apache 2.0, S3 gateway, lightweight, single binary)
-> - **Garage** (AGPLv3, but as a backend — Garage's AGPL applies to
->   Garage itself, not to applications that connect to it via S3 API)
->
-> Existing MinIO deployments keep working through `FORENSIC_BACKEND=minio`,
-> but plan a migration. The `minio` backend will be removed in a future
-> release.
-
 ## Dashboard
 
 Real-time governance dashboard on port 3000:
@@ -273,19 +287,38 @@ cp admina.yaml.example admina.yaml   # Copy and customize
 
 See [`admina.yaml.example`](admina.yaml.example) for all options including domains, AI infra, plugins, dashboard, forensic storage, alert channels, and integrations.
 
-### Environment variables (Docker / .env)
+<a id="compliance-scope"></a>
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ADMINA_API_KEY` | *(empty)* | API key for all endpoints |
-| `UPSTREAM_MCP_URL` | `http://localhost:9000` | Default upstream MCP server |
-| `REDIS_URL` | `redis://localhost:6379/0` | Session state + rate limiting |
-| `MINIO_SECRET_KEY` | *(required)* | MinIO secret key for forensic storage |
-| `LOG_LEVEL` | `INFO` | Logging verbosity |
+<details open>
+<summary><strong>⚖️ Compliance scope &amp; legal disclaimer</strong> — what Admina does and does not do legally</summary>
+
+<br>
+
+> Admina is a self-assessment and defense-in-depth tool. The EU AI Act
+> gap-analysis and risk classification features are **decision-support
+> aids, not legal advice**. They do not replace the conformity assessment
+> required under EU AI Act Art. 43 for high-risk systems, nor the
+> involvement of a notified body where the regulation requires one.
+>
+> **EU AI Act timeline (after the Omnibus VII agreement of 7 May 2026):**
+> Art. 5 prohibitions in force since 2 February 2025; GPAI obligations
+> in force since 2 August 2025; Art. 50 transparency for synthetic
+> content and the new NCII / synthetic-CSAM prohibition apply from
+> 2 December 2026; **Annex III high-risk obligations from 2 December
+> 2027** (postponed from 2 Aug 2026); Annex I high-risk from 2 August
+> 2028 (postponed from 2 Aug 2027). The full machine-readable timeline
+> ships with Admina as `admina.domains.compliance.eu_ai_act.EU_AI_ACT_DEADLINES`.
+> See [`MODEL_CARD.md`](MODEL_CARD.md) for the full scope, limitations,
+> and known failure modes of every Admina component.
+
+</details>
 
 ## Integrations
 
-### GuardrailsAI
+<details>
+<summary><strong>GuardrailsAI</strong> — ML-based content validation as a governance plugin</summary>
+
+<br>
 
 ML-based content validation (toxic language, jailbreak, bias, PII via Presidio) as a governance domain plugin:
 
@@ -299,7 +332,12 @@ pip install <your-guardrails-ai-wheel>
 
 Enable in `admina.yaml` under `agent_security.domains.guardrailsai`. All inference runs locally by default — no data leaves the deployment perimeter.
 
-### OpenClaw
+</details>
+
+<details>
+<summary><strong>OpenClaw</strong> — govern OpenClaw agent actions via pre/post-action hooks</summary>
+
+<br>
 
 Govern OpenClaw agent actions through the Admina proxy. Every tool call, shell command, and API request is validated before execution:
 
@@ -310,9 +348,12 @@ chmod +x setup.sh && ./setup.sh
 
 The skill uses `POST /api/v1/validate` (pre-action) and `POST /api/v1/audit` (post-action) endpoints.
 
-### n8n
+</details>
 
-Community nodes for n8n workflow automation:
+<details>
+<summary><strong>n8n</strong> — community nodes for n8n workflow automation</summary>
+
+<br>
 
 | Node | Purpose |
 |------|---------|
@@ -322,9 +363,14 @@ Community nodes for n8n workflow automation:
 
 Install: `npm install n8n-nodes-admina` in your n8n instance.
 
-### Cheshire Cat AI
+</details>
 
-Govern all Cheshire Cat interactions via three Python hooks (`agent_fast_reply`, `before_cat_sends_message`, `before_cat_recalls_memories`):
+<details>
+<summary><strong>Cheshire Cat AI</strong> — govern all Cheshire Cat interactions via Python hooks</summary>
+
+<br>
+
+Three Python hooks (`agent_fast_reply`, `before_cat_sends_message`, `before_cat_recalls_memories`):
 
 ```bash
 cd integrations/cheshirecat/admina-plugin
@@ -332,9 +378,14 @@ cd integrations/cheshirecat/admina-plugin
 # Copy plugin into Cheshire Cat plugins/ directory
 ```
 
-### LangChain
+</details>
 
-Drop-in callback handler — governs every LLM call and tool invocation in-process:
+<details>
+<summary><strong>LangChain</strong> — drop-in callback handler</summary>
+
+<br>
+
+Governs every LLM call and tool invocation in-process:
 
 ```python
 from admina.integrations.langchain.callbacks import AdminaCallbackHandler
@@ -343,9 +394,12 @@ handler = AdminaCallbackHandler()
 llm = ChatOpenAI(callbacks=[handler])
 ```
 
-### CrewAI
+</details>
 
-Step and task callbacks for multi-agent governance:
+<details>
+<summary><strong>CrewAI</strong> — step and task callbacks for multi-agent governance</summary>
+
+<br>
 
 ```python
 from admina.integrations.crewai.callbacks import admina_step_callback, admina_task_callback
@@ -354,9 +408,11 @@ agent = Agent(role="Researcher", step_callback=admina_step_callback)
 crew = Crew(agents=[agent], tasks=[task], task_callback=admina_task_callback)
 ```
 
+</details>
+
 See [full integration docs](docs/guides/integrations.md) for details.
 
-## Hybrid Python + Rust Engine
+## Performance — Hybrid Python + Rust engine
 
 The Rust core engine is an optional accelerator. `pip install admina-framework`
 ships only the pure-Python implementation; to enable the Rust engine
@@ -411,7 +467,87 @@ python scripts/simulate.py --duration 300 --rate 10
 
 Generates a weighted mix of: clean MCP requests, injection attempts, PII content, loop triggers, REST validate/audit calls, EU AI Act classifications, and dashboard reads. Colored terminal output with per-event action and summary counters.
 
-## Project Structure
+## Infrastructure & Services
+
+The full stack (`docker compose up`) runs 9 containers:
+
+| Port | Service | Description |
+|------|---------|-------------|
+| `8080` | Proxy | MCP proxy + REST API + OpenAPI docs |
+| `3000` | Dashboard | Real-time governance web UI |
+| `3001` | Grafana | Metrics dashboards |
+| `9090` | MinIO Console | Forensic storage browser |
+| `4317` | OTEL Collector | OTLP gRPC ingestion |
+
+ClickHouse and Redis are internal only (not exposed to host).
+
+<details>
+<summary><strong>🗄️ Forensic backends (4 options) — choose deliberately</strong></summary>
+
+<br>
+
+The forensic blackbox (the SHA-256 hash chain that makes the audit trail
+tamper-evident) supports four backends. Read this before picking one for
+production.
+
+| Backend | License | When to use | Caveats |
+|---------|---------|-------------|---------|
+| **`memory`** *(default)* | n/a | Local development, tests, demos | Records are LOST on restart — no audit persistence. Loud warning at startup. |
+| **`filesystem`** | n/a | Single-host on-prem, air-gapped, smaller deployments | Persistence depends on the host filesystem; not ideal for HA. Requires `FORENSIC_BASE_DIR`. |
+| **`s3`** *(boto3)* | Apache 2.0 (boto3) | Production / HA / multi-region | Works with **any S3-compatible service** — AWS S3, Cloudflare R2, Backblaze B2, **SeaweedFS** (Apache 2.0), **Garage** (AGPLv3), **Ceph RGW** (LGPLv2). Recommended new default. |
+| **`minio`** *(legacy)* | see below ⚠️ | Backwards compatibility with existing MinIO clusters | Two distinct concerns; read the disclaimer. |
+
+> ⚠️ **MinIO disclaimer — what users of Admina need to know.**
+>
+> MinIO has two separate licensing/maintenance issues that can affect
+> downstream users of Admina, even though Admina itself is Apache 2.0:
+>
+> 1. **MinIO Server is AGPLv3.** If you deploy MinIO Server as part of a
+>    network-accessible service (e.g. a SaaS that exposes Admina's
+>    dashboard or API to the public Internet), AGPLv3's network clause
+>    can be read to require you to publish the source code of the
+>    *combined* application that interacts with MinIO over the network.
+>    The MinIO commercial license removes this obligation, but is paid.
+>    This is **not** an Admina obligation — Apache 2.0 is permissive —
+>    but it is an obligation MinIO Server itself imposes on whoever
+>    runs it.
+> 2. **The MinIO Python SDK has been archived.** No more security
+>    patches, no support for new Python releases. Continuing to depend
+>    on it is a supply-chain risk.
+>
+> **Recommendation:** for new deployments, use `FORENSIC_BACKEND=s3`.
+> The `boto3` client is Apache 2.0 and works against any S3-compatible
+> service. Two open-source FOSS-friendly options that don't trigger the
+> AGPL network clause for typical Admina deployments:
+> - **SeaweedFS** (Apache 2.0, S3 gateway, lightweight, single binary)
+> - **Garage** (AGPLv3, but as a backend — Garage's AGPL applies to
+>   Garage itself, not to applications that connect to it via S3 API)
+>
+> Existing MinIO deployments keep working through `FORENSIC_BACKEND=minio`,
+> but plan a migration. The `minio` backend will be removed in a future
+> release.
+
+</details>
+
+<details>
+<summary><strong>⚙️ Environment variables (Docker / .env)</strong></summary>
+
+<br>
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ADMINA_API_KEY` | *(empty)* | API key for all endpoints |
+| `UPSTREAM_MCP_URL` | `http://localhost:9000` | Default upstream MCP server |
+| `REDIS_URL` | `redis://localhost:6379/0` | Session state + rate limiting |
+| `MINIO_SECRET_KEY` | *(required)* | MinIO secret key for forensic storage |
+| `LOG_LEVEL` | `INFO` | Logging verbosity |
+
+</details>
+
+<details>
+<summary><strong>📁 Full project structure</strong></summary>
+
+<br>
 
 ```
 admina/
@@ -445,7 +581,12 @@ admina/
 +-- docker-compose.yml      Full stack deployment (9 containers)
 ```
 
-## API
+</details>
+
+<details>
+<summary><strong>🔌 API examples (curl)</strong></summary>
+
+<br>
 
 ```bash
 # Health check (always public)
@@ -478,19 +619,7 @@ curl -X POST http://localhost:8080/api/compliance/classify \
 curl http://localhost:8080/api/dashboard/score
 ```
 
-## Infrastructure & Services
-
-The full stack (`docker compose up`) runs 9 containers:
-
-| Port | Service | Description |
-|------|---------|-------------|
-| `8080` | Proxy | MCP proxy + REST API + OpenAPI docs |
-| `3000` | Dashboard | Real-time governance web UI |
-| `3001` | Grafana | Metrics dashboards |
-| `9090` | MinIO Console | Forensic storage browser |
-| `4317` | OTEL Collector | OTLP gRPC ingestion |
-
-ClickHouse and Redis are internal only (not exposed to host).
+</details>
 
 ## Project documents
 
@@ -500,6 +629,7 @@ ClickHouse and Redis are internal only (not exposed to host).
 - [CHANGELOG.md](CHANGELOG.md) — release notes
 - [SECURITY.md](SECURITY.md) — coordinated disclosure policy
 - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — Contributor Covenant 2.1
+- **Browse the AI-generated wiki** → [deepwiki.com/admina-org/admina](https://deepwiki.com/admina-org/admina)
 
 Admina is Apache 2.0. Contributions are welcome.
 

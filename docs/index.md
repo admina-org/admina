@@ -1,10 +1,25 @@
 # Admina Documentation
 
-**Admina** is the open framework for building AI applications that are governed by design.
+**The open framework for building AI applications that are governed by design.**
 
-Every AI interaction is governed: PII redacted, injections blocked, loops broken, actions audited, EU AI Act compliance tracked.
+Every AI interaction is governed: PII redacted, injections blocked, loops broken, actions
+audited, EU AI Act compliance tracked. Works in-process (SDK) and over the network (proxy).
 
-## Key Components
+> 💡 **Looking for the 30-second pitch?** Start with the [README](https://github.com/admina-org/admina#readme).
+> Want to chat with the codebase? Try [Ask DeepWiki](https://deepwiki.com/admina-org/admina).
+
+## Where to start
+
+| If you want to... | Go to |
+|---|---|
+| Run admina in 2 minutes | [Quickstart](guides/quickstart.md) |
+| Understand the architecture | [Architecture](guides/architecture.md) |
+| Deploy air-gapped / on-prem | [Air-gapped deployment](guides/airgapped-deployment.md) |
+| Wire admina into LangChain / CrewAI / n8n | [Integrations](guides/integrations.md) |
+| Browse the API reference | [SDK API](api/sdk.md) |
+| Explore the code via AI wiki | [DeepWiki](https://deepwiki.com/admina-org/admina) |
+
+## Key components
 
 | Component | Description |
 |-----------|-------------|
@@ -17,12 +32,15 @@ Every AI interaction is governed: PII redacted, injections blocked, loops broken
 ## Install
 
 ```bash
-pip install -e .                # SDK only (lightweight)
-pip install -e ".[proxy]"       # Proxy + infra deps
-pip install -e ".[full]"        # Everything
+pip install "admina-framework[proxy]"   # Recommended: SDK + proxy + dashboard
+pip install "admina-framework[full]"    # + NLP (spaCy) + telemetry (OTEL)
+pip install admina-framework            # SDK only — embed it in another service
 ```
 
-## Quick Example
+> Distribution name `admina-framework`, import name `admina`
+> (same pattern as `python-dateutil` → `import dateutil`).
+
+## 30-second example
 
 ```python
 from admina import GovernedModel

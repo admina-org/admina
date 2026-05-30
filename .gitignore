@@ -61,3 +61,6 @@ dashboard/git_commit.txt
 
 # Internal scratch dir — never publish
 internal/
+
+# Playwright MCP scratch output
+.playwright-mcp/
