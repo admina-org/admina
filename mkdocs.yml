@@ -21,6 +21,7 @@ plugins:
   - mkdocstrings:
       handlers:
         python:
+          paths: [admina]
           options:
             docstring_style: google
             show_source: true
