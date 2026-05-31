@@ -130,6 +130,14 @@ dev = [
     "mkdocstrings[python]>=0.25,<1",
 ]
 
+[tool.uv]
+# Provision the optional extras by default so `uv run` / `uv sync` (and the
+# Makefile's `make test`, which calls `uv run pytest`) set up the full
+# proxy/nlp/telemetry stack without needing `--all-extras` every time. This
+# matches what CI resolves and prevents the proxy/nlp/integration suites from
+# silently skipping when those deps are absent.
+default-extras = ["proxy", "nlp", "telemetry"]
+
 [tool.setuptools.packages.find]
 include = ["admina*"]
 
