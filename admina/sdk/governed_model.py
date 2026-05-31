@@ -178,7 +178,9 @@ class GovernedModel:
                 "entities": pii_result["entities"],
             }
 
-        # 3. Call adapter
+        # 3. Call adapter — forward this model's name unless the caller
+        #    overrode it per-call with an explicit `model=` kwarg.
+        kwargs.setdefault("model", self.model_name)
         adapter_result = await self._adapter.send(
             redacted_prompt,
             context=context,

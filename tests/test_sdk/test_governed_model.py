@@ -33,11 +33,13 @@ class MockAdapter(BaseModelAdapter):
     def __init__(self, response_text: str = "mock response") -> None:
         self._response_text = response_text
         self.last_prompt: str | None = None
+        self.last_kwargs: dict[str, Any] = {}
         self.call_count: int = 0
 
     async def send(self, prompt: str, context: Any = None, **kwargs: Any) -> dict:
         """Record the prompt and return canned response."""
         self.last_prompt = prompt
+        self.last_kwargs = kwargs
         self.call_count += 1
         return {
             "text": self._response_text,
@@ -137,6 +139,34 @@ class TestGovernedModelBasic:
             assert False, "Should have raised RuntimeError"
         except RuntimeError as e:
             assert "No model adapter configured" in str(e)
+
+
+class TestGovernedModelModelName:
+    """Tests that model_name reaches the adapter."""
+
+    def test_model_name_passed_to_adapter(self) -> None:
+        """ask() forwards model_name to the adapter as the ``model`` kwarg."""
+        adapter = MockAdapter()
+        model = GovernedModel("llama3.1:8b", adapter=adapter, pii_redaction=False)
+        asyncio.run(model.ask("hello"))
+
+        assert adapter.last_kwargs.get("model") == "llama3.1:8b"
+
+    def test_explicit_model_kwarg_overrides_model_name(self) -> None:
+        """A ``model`` kwarg on ask() overrides the instance model_name."""
+        adapter = MockAdapter()
+        model = GovernedModel("llama3.1:8b", adapter=adapter, pii_redaction=False)
+        asyncio.run(model.ask("hello", model="mistral"))
+
+        assert adapter.last_kwargs.get("model") == "mistral"
+
+    def test_model_name_passed_via_ask_sync(self) -> None:
+        """ask_sync() also forwards model_name to the adapter."""
+        adapter = MockAdapter()
+        model = GovernedModel("phi3", adapter=adapter, pii_redaction=False)
+        model.ask_sync("hello")
+
+        assert adapter.last_kwargs.get("model") == "phi3"
 
 
 class TestGovernedModelPII:
