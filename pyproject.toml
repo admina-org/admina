@@ -102,6 +102,27 @@ telemetry = [
     "opentelemetry-exporter-otlp-proto-grpc>=1.20,<2",
     "opentelemetry-instrumentation-fastapi>=0.40b0,<1",
 ]
+rust = [
+    # Optional Rust accelerator. Pure-Python engines remain the default;
+    # installing this extra makes `import admina_core` succeed, so the
+    # engine bridge (admina/proxy/engine_bridge.py) auto-detects and uses
+    # the Rust firewall / PII scanner / loop breaker / hash chain.
+    #
+    # NOTE: the Rust firewall currently has a narrower pattern set than the
+    # pure-Python InjectionFirewall (see docs/guides on the Rust engine). It
+    # is opt-in precisely so the default install keeps the broader Python
+    # detection coverage; enable [rust] when latency matters more than the
+    # extra evasion-normalisation patterns.
+    #
+    # admina-core and admina-framework are released in lockstep from the same
+    # tag (scripts/check-versions.py enforces manifest alignment), but the pin
+    # is a compatible range rather than `==`: a strict pin would create a
+    # release chicken-and-egg (a bumped framework would require an
+    # admina-core of the new version that is not on PyPI until the tag is
+    # pushed, breaking local `uv sync`). The engine-bridge ABI is stable
+    # across the 0.9.x line, so any 0.9.x core works with this framework.
+    "admina-core>=0.9.3,<0.10",
+]
 # NOTE: the [guardrailsai] extra was removed in v0.9.0 because the
 # upstream `guardrails-ai` package is currently in PyPI quarantine
 # (see https://pypi.org/simple/guardrails-ai/). The plugin in

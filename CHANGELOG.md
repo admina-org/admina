@@ -11,6 +11,44 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ---
 
+## [Unreleased]
+
+Hardening release (0.9.x stabilisation). Aligns the advertised Rust
+fast-path with what a default install actually runs, and closes the
+honesty gap on the performance claim.
+
+### Added
+
+- **Opt-in `[rust]` extra.** `pip install "admina-framework[rust]"` now
+  pulls the `admina-core` Rust accelerator wheel from PyPI, so
+  `import admina_core` succeeds and the engine bridge auto-detects it.
+  Previously the Rust engine was a separate, undiscovered package and the
+  default install always ran pure Python — making the headline ~6 µs
+  number unattainable out of the box. The Rust engine stays **opt-in**
+  (not a default dependency) because the pure-Python firewall currently
+  has broader detection coverage.
+
+### Changed
+
+- **Rust firewall risk model now matches Python (per-pattern severity).**
+  The Rust `RustFirewall` derived its risk level from the *count* of
+  matched patterns (a single match was always `medium`), which left every
+  single-pattern attack below the proxy's HIGH+ enforcement threshold —
+  the Rust engine detected attacks but did not block them. It now assigns
+  a per-pattern `RiskLevel` and reports the max, mirroring the Python
+  `InjectionFirewall`. On the internal evasion corpus this takes the Rust
+  firewall from 0/14 to 7/14 attacks blocked, with no new false positives.
+  Full Rust↔Python detection parity (evasion normalisation + multilingual
+  patterns) remains tracked for 0.10.
+
+### Documentation
+
+- README install and Performance sections now state the Rust engine is
+  opt-in via `[rust]`, and document the firewall detection trade-off
+  explicitly so the latency numbers no longer imply equal coverage.
+
+---
+
 ## [0.9.3] — 2026-05-23
 
 UX hotfix for first-time users. Removes every cryptic "module not
@@ -293,4 +331,8 @@ environment in `docker-compose.benchmark.yml`.
 
 ---
 
+[Unreleased]: https://github.com/admina-org/admina/compare/v0.9.3...HEAD
+[0.9.3]: https://github.com/admina-org/admina/compare/v0.9.2...v0.9.3
+[0.9.2]: https://github.com/admina-org/admina/compare/v0.9.1...v0.9.2
+[0.9.1]: https://github.com/admina-org/admina/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/admina-org/admina/releases/tag/v0.9.0

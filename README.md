@@ -136,7 +136,8 @@ pip install "admina-framework[full]"
 python -m spacy download en_core_web_sm   # for [full] only
 
 # Optional: Rust-accelerated engine (auto-detected at runtime).
-pip install admina-core
+# Opt-in extra — pulls in the admina-core wheel from PyPI.
+pip install "admina-framework[rust]"
 
 # Advanced: SDK only (no proxy, no dashboard, no `admina dev`).
 # Use this when embedding the SDK into another service and you don't
@@ -148,10 +149,17 @@ pip install admina-framework
 > name is `admina` (e.g. `from admina import GovernedModel`). This is
 > a normal Python pattern — same as `python-dateutil` → `import dateutil`.
 
-> The Rust engine is an optional accelerator. `pip install admina-framework`
-> ships only the pure-Python implementation; Admina auto-detects the
-> Rust engine at runtime and falls back to the Python implementation
-> if it's not installed.
+> The Rust engine is an **optional, opt-in** accelerator. The default
+> `pip install admina-framework` ships only the pure-Python implementation;
+> `admina-framework[rust]` adds the `admina-core` wheel, which Admina
+> auto-detects at runtime (falling back to pure Python if it's absent).
+>
+> The default is pure Python on purpose: the Python injection firewall
+> currently has **broader detection coverage** than the Rust one (it adds
+> obfuscation-normalisation — homoglyph, leetspeak, base64, ROT13 — and a
+> wider multilingual pattern set). Enable `[rust]` when per-request latency
+> matters more than that extra coverage. See
+> [Performance](#performance--hybrid-python--rust-engine) for the trade-off.
 
 ### Or install from source
 
@@ -414,12 +422,26 @@ See [full integration docs](docs/guides/integrations.md) for details.
 
 ## Performance — Hybrid Python + Rust engine
 
-The Rust core engine is an optional accelerator. `pip install admina-framework`
-ships only the pure-Python implementation; to enable the Rust engine
-build `admina_core` separately (`maturin develop --release
---manifest-path core-rust/Cargo.toml`, see [CONTRIBUTING.md](CONTRIBUTING.md)).
-At runtime Admina auto-detects whichever is available and falls back
-transparently to Python if the Rust extension is not installed.
+The Rust core engine is an optional accelerator. The default
+`pip install admina-framework` ships only the pure-Python implementation;
+enable the Rust engine with the opt-in extra `pip install
+"admina-framework[rust]"` (or build from source for local development —
+`maturin develop --release --manifest-path core-rust/Cargo.toml`, see
+[CONTRIBUTING.md](CONTRIBUTING.md)). At runtime Admina auto-detects
+whichever is available and falls back transparently to Python if the Rust
+extension is not installed.
+
+> **Detection trade-off (why Rust is opt-in, not the default).** The Rust
+> firewall is faster but currently detects a narrower set of attacks than
+> the pure-Python firewall. The Python engine normalises common evasions
+> before matching (homoglyph, leetspeak, char-by-char hyphenation, base64,
+> ROT13) and carries a wider multilingual pattern set; the Rust engine does
+> not yet. On an internal 14-attack evasion corpus the Python firewall
+> blocks all 14 while the Rust firewall blocks 7 (the plain-text and
+> multilingual-keyword attacks), with no false positives on either side.
+> Full Rust↔Python detection parity is tracked for 0.10. Until then, keep
+> the default (pure Python) when detection breadth matters; opt into
+> `[rust]` when latency dominates.
 
 Measured numbers below assume the Rust engine is loaded:
 
