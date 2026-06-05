@@ -13,39 +13,32 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
-Hardening release (0.9.x stabilisation). Aligns the advertised Rust
-fast-path with what a default install actually runs, and closes the
-honesty gap on the performance claim.
+Hardening release (0.9.x stabilisation).
 
 ### Added
 
-- **Opt-in `[rust]` extra.** `pip install "admina-framework[rust]"` now
+- **Opt-in `[rust]` extra.** `pip install "admina-framework[rust]"`
   pulls the `admina-core` Rust accelerator wheel from PyPI, so
   `import admina_core` succeeds and the engine bridge auto-detects it.
-  Previously the Rust engine was a separate, undiscovered package and the
-  default install always ran pure Python — making the headline ~6 µs
-  number unattainable out of the box. The Rust engine stays **opt-in**
-  (not a default dependency) because the pure-Python firewall currently
-  has broader detection coverage.
+  The Rust engine is opt-in (not a default dependency); the default
+  install runs the pure-Python engines, which currently have broader
+  firewall detection coverage.
 
 ### Changed
 
-- **Rust firewall risk model now matches Python (per-pattern severity).**
-  The Rust `RustFirewall` derived its risk level from the *count* of
-  matched patterns (a single match was always `medium`), which left every
-  single-pattern attack below the proxy's HIGH+ enforcement threshold —
-  the Rust engine detected attacks but did not block them. It now assigns
-  a per-pattern `RiskLevel` and reports the max, mirroring the Python
-  `InjectionFirewall`. On the internal evasion corpus this takes the Rust
-  firewall from 0/14 to 7/14 attacks blocked, with no new false positives.
-  Full Rust↔Python detection parity (evasion normalisation + multilingual
-  patterns) remains tracked for 0.10.
+- **Rust firewall risk model: per-pattern severity.** `RustFirewall`
+  now assigns a per-pattern `RiskLevel` and reports the max over matched
+  patterns, mirroring the Python `InjectionFirewall` (previously the tier
+  was derived from the match count, so a single match reported `medium`).
+  On the internal evasion corpus the Rust firewall blocks 7/14 attacks at
+  HIGH+, with no new false positives. Full Rust↔Python detection parity
+  (evasion normalisation + multilingual patterns) is tracked for 0.10.
 
 ### Documentation
 
-- README install and Performance sections now state the Rust engine is
-  opt-in via `[rust]`, and document the firewall detection trade-off
-  explicitly so the latency numbers no longer imply equal coverage.
+- README install and Performance sections state the Rust engine is
+  opt-in via `[rust]` and document the firewall detection trade-off
+  between the two engines.
 
 ---
 
