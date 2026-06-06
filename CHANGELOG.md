@@ -50,6 +50,11 @@ Hardening release (0.9.x stabilisation).
   opt-in via `[rust]` and document the firewall detection trade-off
   between the two engines.
 
+### Internal
+
+- Raise the test coverage gate from 70% to 78% (current coverage 80%)
+  to lock in the forensic and firewall test additions.
+
 ---
 
 ## [0.9.3] — 2026-05-23

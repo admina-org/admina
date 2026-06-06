@@ -175,7 +175,7 @@ admina = "admina.cli.main:app"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=admina --cov-report=term-missing --cov-report=xml --cov-fail-under=70"
+addopts = "--cov=admina --cov-report=term-missing --cov-report=xml --cov-fail-under=78"
 
 [tool.coverage.run]
 branch = true
