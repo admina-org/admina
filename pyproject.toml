@@ -19,7 +19,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "admina-framework"
-version = "0.9.3"
+version = "0.9.4"
 description = "Admina — governed AI development framework"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -176,6 +176,9 @@ admina = "admina.cli.main:app"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--cov=admina --cov-report=term-missing --cov-report=xml --cov-fail-under=78"
+markers = [
+    "benchmark: micro-benchmarks with absolute latency thresholds; flaky on shared CI runners. Run with `-m benchmark` on dedicated hardware; CI runs `-m 'not benchmark'`.",
+]
 
 [tool.coverage.run]
 branch = true

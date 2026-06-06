@@ -120,8 +120,10 @@ jobs:
       - name: Run pytest with coverage
         # The `--cov-fail-under=78` gate in pyproject.toml prevents
         # regressions locally and in CI; no external coverage service
-        # is required.
-        run: uv run --python ${{ matrix.python-version }} pytest tests/ -v --tb=short
+        # is required. `-m "not benchmark"` excludes the micro-benchmarks,
+        # whose absolute latency thresholds are non-deterministic on shared
+        # runners (Rust correctness is covered by `cargo test --lib`).
+        run: uv run --python ${{ matrix.python-version }} pytest tests/ -m "not benchmark" -v --tb=short
 
   # ── Rust: tests + clippy (Linux + macOS) ───────────────────
   rust-tests:

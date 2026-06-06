@@ -48,6 +48,15 @@ from dataclasses import dataclass, field
 
 import pytest
 
+# These are micro-benchmarks: they assert absolute latency thresholds
+# (median < baseline * tolerance, p95 < N µs) that are only meaningful on
+# dedicated hardware. On shared CI runners the timings are non-deterministic
+# and flap, so the whole module is marked `benchmark` and excluded from the
+# default CI run (pytest -m "not benchmark"). Rust correctness is covered by
+# `cargo test --lib` and the functional Python suites; run these locally or
+# on a dedicated runner with `pytest -m benchmark`.
+pytestmark = pytest.mark.benchmark
+
 # ── Configuration ─────────────────────────────────────────────
 WARMUP_ITERATIONS = 500  # discard initial runs (JIT, cache warmup)
 BENCH_ITERATIONS = 10_000  # measured runs per test
