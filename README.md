@@ -1,6 +1,6 @@
 <!--
 <p align="center">
-  <img src="resources/banner.png" alt="Admina — Governed AI by Default" width="100%">
+  <img src="https://raw.githubusercontent.com/admina-org/admina/main/resources/banner.png" alt="Admina — Governed AI by Default" width="100%">
 </p>
 -->
 
@@ -11,9 +11,9 @@
 
 <p align="center">
   <a href="https://pypi.org/project/admina-framework/"><img src="https://img.shields.io/pypi/v/admina-framework?style=flat-square&color=32CD32" alt="PyPI version"></a>
-  &nbsp;<a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-32CD32?style=flat-square" alt="License"></a>
+  &nbsp;<a href="https://github.com/admina-org/admina/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-32CD32?style=flat-square" alt="License"></a>
   &nbsp;<img src="https://img.shields.io/badge/python-3.11%2B-32CD32?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
-  &nbsp;<img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS-6C757D?style=flat-square" alt="Platform">
+  &nbsp;<img src="https://img.shields.io/github/last-commit/admina-org/admina?style=flat-square" alt="Last commit">
 </p>
 
 <p align="center">
@@ -25,7 +25,6 @@
 
 <p align="center">
   <a href="https://deepwiki.com/admina-org/admina"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
-  &nbsp;<a href="https://github.com/admina-org/admina/discussions"><img src="https://img.shields.io/github/discussions/admina-org/admina?style=flat-square&logo=github" alt="Discussions"></a>
   &nbsp;<a href="https://admina.org/docs"><img src="https://img.shields.io/badge/docs-admina.org-blue?style=flat-square" alt="Docs"></a>
 </p>
 
@@ -36,13 +35,6 @@
   &nbsp;<a href="https://deepwiki.com/admina-org/admina"><img src="https://img.shields.io/badge/🤖%20Ask%20DeepWiki-AI%20wiki-7C3AED?style=for-the-badge" alt="DeepWiki" height="40"></a>
 </p>
 
-<p align="center">
-  <a href="https://github.com/admina-org/admina/stargazers"><img src="https://img.shields.io/github/stars/admina-org/admina?style=social" alt="Stars"></a>
-  &nbsp;<a href="https://github.com/admina-org/admina/network/members"><img src="https://img.shields.io/github/forks/admina-org/admina?style=social" alt="Forks"></a>
-  &nbsp;<a href="https://github.com/admina-org/admina/graphs/contributors"><img src="https://img.shields.io/github/contributors/admina-org/admina?style=flat-square&label=contributors" alt="Contributors"></a>
-  &nbsp;<img src="https://img.shields.io/github/last-commit/admina-org/admina?style=flat-square" alt="Last commit">
-</p>
-
 ---
 
 ## See it in action
@@ -50,13 +42,13 @@
 **Scaffold a project and boot the governed proxy + dashboard — no Docker:**
 
 <p align="center">
-  <img src="resources/admina-init-dev.gif" alt="admina init → admina dev → Ready on localhost:3000" width="900">
+  <img src="https://raw.githubusercontent.com/admina-org/admina/main/resources/admina-init-dev.gif" alt="admina init → admina dev → Ready on localhost:3000" width="900">
 </p>
 
 **Wrap any model in a few lines — PII is stripped before the model ever sees it:**
 
 <p align="center">
-  <img src="resources/sdk-3lines.gif" alt="GovernedModel redacts PERSON, EMAIL and credit card before the LLM call" width="900">
+  <img src="https://raw.githubusercontent.com/admina-org/admina/main/resources/sdk-3lines.gif" alt="GovernedModel redacts PERSON, EMAIL and credit card before the LLM call" width="900">
 </p>
 
 **The governance dashboard, before and after simulated traffic — Admina Score 40 → 60:**
@@ -64,11 +56,11 @@
 <table>
   <tr>
     <td align="center" width="50%">
-      <img src="resources/dashboard-firstuser.png" alt="Dashboard at first boot — score 40/100" width="100%"><br>
+      <img src="https://raw.githubusercontent.com/admina-org/admina/main/resources/dashboard-firstuser.png" alt="Dashboard at first boot — score 40/100" width="100%"><br>
       <em>First boot — Admina Score <strong>40/100</strong></em>
     </td>
     <td align="center" width="50%">
-      <img src="resources/dashboard-traffic.png" alt="Dashboard after simulated traffic — score 60/100" width="100%"><br>
+      <img src="https://raw.githubusercontent.com/admina-org/admina/main/resources/dashboard-traffic.png" alt="Dashboard after simulated traffic — score 60/100" width="100%"><br>
       <em>After <code>python scripts/simulate.py</code> — <strong>60/100</strong></em>
     </td>
   </tr>
@@ -293,7 +285,7 @@ Admina uses `admina.yaml` as the primary config file (with `.env` fallback for b
 cp admina.yaml.example admina.yaml   # Copy and customize
 ```
 
-See [`admina.yaml.example`](admina.yaml.example) for all options including domains, AI infra, plugins, dashboard, forensic storage, alert channels, and integrations.
+See [`admina.yaml.example`](https://github.com/admina-org/admina/blob/main/admina.yaml.example) for all options including domains, AI infra, plugins, dashboard, forensic storage, alert channels, and integrations.
 
 <a id="compliance-scope"></a>
 
@@ -316,7 +308,7 @@ See [`admina.yaml.example`](admina.yaml.example) for all options including domai
 > 2027** (postponed from 2 Aug 2026); Annex I high-risk from 2 August
 > 2028 (postponed from 2 Aug 2027). The full machine-readable timeline
 > ships with Admina as `admina.domains.compliance.eu_ai_act.EU_AI_ACT_DEADLINES`.
-> See [`MODEL_CARD.md`](MODEL_CARD.md) for the full scope, limitations,
+> See [`MODEL_CARD.md`](https://github.com/admina-org/admina/blob/main/MODEL_CARD.md) for the full scope, limitations,
 > and known failure modes of every Admina component.
 
 </details>
@@ -418,7 +410,7 @@ crew = Crew(agents=[agent], tasks=[task], task_callback=admina_task_callback)
 
 </details>
 
-See [full integration docs](docs/guides/integrations.md) for details.
+See [full integration docs](https://github.com/admina-org/admina/blob/main/docs/guides/integrations.md) for details.
 
 ## Performance — Hybrid Python + Rust engine
 
@@ -427,7 +419,7 @@ The Rust core engine is an optional accelerator. The default
 enable the Rust engine with the opt-in extra `pip install
 "admina-framework[rust]"` (or build from source for local development —
 `maturin develop --release --manifest-path core-rust/Cargo.toml`, see
-[CONTRIBUTING.md](CONTRIBUTING.md)). At runtime Admina auto-detects
+[CONTRIBUTING.md](https://github.com/admina-org/admina/blob/main/CONTRIBUTING.md)). At runtime Admina auto-detects
 whichever is available and falls back transparently to Python if the Rust
 extension is not installed.
 
@@ -645,12 +637,12 @@ curl http://localhost:8080/api/dashboard/score
 
 ## Project documents
 
-- [CONTRIBUTING.md](CONTRIBUTING.md) — development setup, testing, and pull request workflow
-- [MODEL_CARD.md](MODEL_CARD.md) — transparency artifact for every Admina governance component (intended use, scope, limitations, known failure modes), aligned with EU AI Act Art. 13 and NIST AI RMF
-- [ROADMAP.md](ROADMAP.md) — planned milestones from 0.9.x to 1.0 and beyond
-- [CHANGELOG.md](CHANGELOG.md) — release notes
-- [SECURITY.md](SECURITY.md) — coordinated disclosure policy
-- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — Contributor Covenant 2.1
+- [CONTRIBUTING.md](https://github.com/admina-org/admina/blob/main/CONTRIBUTING.md) — development setup, testing, and pull request workflow
+- [MODEL_CARD.md](https://github.com/admina-org/admina/blob/main/MODEL_CARD.md) — transparency artifact for every Admina governance component (intended use, scope, limitations, known failure modes), aligned with EU AI Act Art. 13 and NIST AI RMF
+- [ROADMAP.md](https://github.com/admina-org/admina/blob/main/ROADMAP.md) — planned milestones from 0.9.x to 1.0 and beyond
+- [CHANGELOG.md](https://github.com/admina-org/admina/blob/main/CHANGELOG.md) — release notes
+- [SECURITY.md](https://github.com/admina-org/admina/blob/main/SECURITY.md) — coordinated disclosure policy
+- [CODE_OF_CONDUCT.md](https://github.com/admina-org/admina/blob/main/CODE_OF_CONDUCT.md) — Contributor Covenant 2.1
 - **Browse the AI-generated wiki** → [deepwiki.com/admina-org/admina](https://deepwiki.com/admina-org/admina)
 
 Admina is Apache 2.0. Contributions are welcome.
@@ -659,7 +651,7 @@ Admina is Apache 2.0. Contributions are welcome.
 
 Copyright © 2025–2026 [Stefano Noferi](https://github.com/stefanoferi) & Admina contributors
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for the full text.
+Licensed under the Apache License, Version 2.0. See [LICENSE](https://github.com/admina-org/admina/blob/main/LICENSE) for the full text.
 
 ---
 
