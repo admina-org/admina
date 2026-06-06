@@ -23,7 +23,6 @@ from typing import Any
 
 import httpx
 import redis.asyncio as aioredis
-from minio import Minio
 
 from admina.domains.compliance.eu_ai_act import EUAIActCompliance
 from admina.domains.compliance.forensic import ForensicBlackBox
@@ -43,7 +42,6 @@ class ProxyState:
 
     # Connections
     redis: aioredis.Redis | None = None
-    minio: Minio | None = None
     clickhouse: Any = None
     http_client: httpx.AsyncClient | None = None
 

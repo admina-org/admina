@@ -283,42 +283,7 @@ class TestHTTPRESTTransportAdapter:
 
 
 # ═══════════════════════════════════════════════════════════════
-# 6. MinIOForensicStore
-# ═══════════════════════════════════════════════════════════════
-
-
-class TestMinIOForensicStore:
-    def test_is_forensic_store(self):
-        from admina.plugins.builtin.forensic.minio import MinIOForensicStore
-
-        store = MinIOForensicStore()  # no client = in-memory mode
-        assert isinstance(store, BaseForensicStore)
-        assert store.store_name == "minio"
-
-    def test_append_returns_hash(self):
-        from admina.plugins.builtin.forensic.minio import MinIOForensicStore
-
-        store = MinIOForensicStore()
-        record_hash = _run(store.append({"event": "test"}))
-        assert isinstance(record_hash, str)
-        assert len(record_hash) == 64  # SHA-256 hex
-
-    def test_chain_integrity(self):
-        from admina.plugins.builtin.forensic.minio import MinIOForensicStore
-
-        store = MinIOForensicStore()
-        h1 = _run(store.append({"event": "first"}))
-        h2 = _run(store.append({"event": "second"}))
-        assert h1 != h2
-
-        result = _run(store.verify_chain())
-        assert result["valid"] is True
-        assert result["records"] == 2
-        assert result["last_hash"] == h2
-
-
-# ═══════════════════════════════════════════════════════════════
-# 7. FilesystemForensicStore
+# 6. FilesystemForensicStore
 # ═══════════════════════════════════════════════════════════════
 
 
@@ -694,7 +659,6 @@ class TestRegistryDiscovery:
         from admina.plugins.builtin.connectors.chromadb import ChromaDBConnector
         from admina.plugins.builtin.connectors.filesystem import FilesystemConnector
         from admina.plugins.builtin.forensic.filesystem import FilesystemForensicStore
-        from admina.plugins.builtin.forensic.minio import MinIOForensicStore
         from admina.plugins.builtin.pii.spacy_regex import SpaCyRegexPIIEngine
         from admina.plugins.builtin.transports.http_rest import HTTPRESTTransportAdapter
 
@@ -705,7 +669,6 @@ class TestRegistryDiscovery:
             ChromaDBConnector,
             FilesystemConnector,
             HTTPRESTTransportAdapter,
-            MinIOForensicStore,
             FilesystemForensicStore,
             APIKeyAuthProvider,
             SpaCyRegexPIIEngine,
@@ -718,12 +681,12 @@ class TestRegistryDiscovery:
 
         all_plugins = reg.list_all()
         total = sum(len(v) for v in all_plugins.values())
-        assert total == 12
+        assert total == 11
 
         # Verify specific lookups (class-attr identifiers → proper name; @property → class name fallback)
         assert reg.get("model_adapter", "ollamaadapter") is OllamaAdapter
         assert reg.get("model_adapter", "openaiadapter") is OpenAIAdapter
-        assert reg.get("forensic_store", "minioforensicstore") is MinIOForensicStore
+        assert reg.get("forensic_store", "filesystemforensicstore") is FilesystemForensicStore
         assert reg.get("auth_provider", "apikeyauthprovider") is APIKeyAuthProvider
         assert reg.get("alert_channel", "log") is LogAlertChannel
 
@@ -735,5 +698,5 @@ class TestRegistryDiscovery:
             builtin_path=builtin_path,
             user_path=Path("/nonexistent"),
         )
-        # Should find at least the 12 builtin plugin classes
-        assert count >= 12
+        # Should find at least the 11 builtin plugin classes
+        assert count >= 11

@@ -52,7 +52,7 @@ class TestAdminaConfigDefaults:
 
     def test_compliance_defaults(self):
         cfg = AdminaConfig()
-        assert cfg.compliance.forensic.storage == "minio"
+        assert cfg.compliance.forensic.storage == "filesystem"
         assert cfg.compliance.forensic.bucket == "forensic-blackbox"
         assert cfg.compliance.eu_ai_act_enabled is True
         assert cfg.compliance.otel.endpoint == "http://localhost:4317"

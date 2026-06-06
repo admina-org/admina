@@ -238,7 +238,7 @@ from admina import GovernedModel, GovernedData, GovernedAgent, ComplianceKit
 | Governance Domain | GuardrailsAI (toxic, jailbreak, bias, PII) |
 | Compliance Template | EU AI Act |
 | Transport Adapter | MCP, HTTP REST |
-| Forensic Store | Filesystem, S3-compatible (boto3), MinIO (legacy) |
+| Forensic Store | Filesystem, S3-compatible (boto3 — AWS S3, MinIO, R2, …) |
 | Auth Provider | API Key |
 | PII Engine | spaCy + Regex |
 | Alert Channel | Log, Webhook |
@@ -254,7 +254,7 @@ admina plugin create my-domain        # Scaffold a new plugin
 ```bash
 admina init my-project     # Scaffold project with admina.yaml + docker-compose.yml
 admina dev                 # Local mode: proxy + dashboard on :3000 (no Docker)
-admina dev --stack         # Docker stack: + redis + clickhouse + minio + grafana
+admina dev --stack         # Docker stack: + redis + clickhouse + grafana
 admina dev --with-llm      # --stack + ollama + chromadb + open-webui
 admina plugin list         # List all registered plugins
 admina plugin install X    # Install a plugin from path or registry
@@ -273,7 +273,7 @@ Real-time governance dashboard on port 3000:
 - **Governance Score** — 0-100 composite metric (data residency, audit coverage, attack rate, forensic integrity, EU AI Act compliance)
 - **Live Feed** — streaming governance events via WebSocket
 - **Compliance Gaps** — EU AI Act gap analysis with article-level detail
-- **Infrastructure Health** — proxy, Redis, MinIO, ClickHouse, OTEL status
+- **Infrastructure Health** — proxy, Redis, forensic store, ClickHouse, OTEL status
 
 API backend: `GET /api/dashboard/score`, `/feed`, `/compliance`, `/sovereignty`, `/infra`, `/models`
 
@@ -490,7 +490,6 @@ The full stack (`docker compose up`) runs 9 containers:
 | `8080` | Proxy | MCP proxy + REST API + OpenAPI docs |
 | `3000` | Dashboard | Real-time governance web UI |
 | `3001` | Grafana | Metrics dashboards |
-| `9090` | MinIO Console | Forensic storage browser |
 | `4317` | OTEL Collector | OTLP gRPC ingestion |
 
 ClickHouse and Redis are internal only (not exposed to host).
@@ -501,45 +500,20 @@ ClickHouse and Redis are internal only (not exposed to host).
 <br>
 
 The forensic blackbox (the SHA-256 hash chain that makes the audit trail
-tamper-evident) supports four backends. Read this before picking one for
+tamper-evident) supports three backends. Read this before picking one for
 production.
 
 | Backend | License | When to use | Caveats |
 |---------|---------|-------------|---------|
 | **`memory`** *(default)* | n/a | Local development, tests, demos | Records are LOST on restart — no audit persistence. Loud warning at startup. |
 | **`filesystem`** | n/a | Single-host on-prem, air-gapped, smaller deployments | Persistence depends on the host filesystem; not ideal for HA. Requires `FORENSIC_BASE_DIR`. |
-| **`s3`** *(boto3)* | Apache 2.0 (boto3) | Production / HA / multi-region | Works with **any S3-compatible service** — AWS S3, Cloudflare R2, Backblaze B2, **SeaweedFS** (Apache 2.0), **Garage** (AGPLv3), **Ceph RGW** (LGPLv2). Recommended new default. |
-| **`minio`** *(legacy)* | see below ⚠️ | Backwards compatibility with existing MinIO clusters | Two distinct concerns; read the disclaimer. |
+| **`s3`** *(boto3)* | Apache 2.0 (boto3) | Production / HA / multi-region | Works with **any S3-compatible service** — AWS S3, **MinIO** servers, Cloudflare R2, Backblaze B2, **SeaweedFS** (Apache 2.0), **Garage** (AGPLv3), **Ceph RGW** (LGPLv2). Supports WORM Object Lock. |
 
-> ⚠️ **MinIO disclaimer — what users of Admina need to know.**
->
-> MinIO has two separate licensing/maintenance issues that can affect
-> downstream users of Admina, even though Admina itself is Apache 2.0:
->
-> 1. **MinIO Server is AGPLv3.** If you deploy MinIO Server as part of a
->    network-accessible service (e.g. a SaaS that exposes Admina's
->    dashboard or API to the public Internet), AGPLv3's network clause
->    can be read to require you to publish the source code of the
->    *combined* application that interacts with MinIO over the network.
->    The MinIO commercial license removes this obligation, but is paid.
->    This is **not** an Admina obligation — Apache 2.0 is permissive —
->    but it is an obligation MinIO Server itself imposes on whoever
->    runs it.
-> 2. **The MinIO Python SDK has been archived.** No more security
->    patches, no support for new Python releases. Continuing to depend
->    on it is a supply-chain risk.
->
-> **Recommendation:** for new deployments, use `FORENSIC_BACKEND=s3`.
-> The `boto3` client is Apache 2.0 and works against any S3-compatible
-> service. Two open-source FOSS-friendly options that don't trigger the
-> AGPL network clause for typical Admina deployments:
-> - **SeaweedFS** (Apache 2.0, S3 gateway, lightweight, single binary)
-> - **Garage** (AGPLv3, but as a backend — Garage's AGPL applies to
->   Garage itself, not to applications that connect to it via S3 API)
->
-> Existing MinIO deployments keep working through `FORENSIC_BACKEND=minio`,
-> but plan a migration. The `minio` backend will be removed in a future
-> release.
+> **Using MinIO?** Point the `s3` backend at your MinIO server via
+> `FORENSIC_S3_ENDPOINT` — MinIO speaks the S3 API, so no MinIO-specific
+> client is needed. The legacy `minio`-SDK backend was removed in 0.9.5
+> (the MinIO Python SDK is archived); `FORENSIC_BACKEND=minio` now
+> transparently routes to the `s3` backend with a migration warning.
 
 </details>
 
@@ -553,7 +527,7 @@ production.
 | `ADMINA_API_KEY` | *(empty)* | API key for all endpoints |
 | `UPSTREAM_MCP_URL` | `http://localhost:9000` | Default upstream MCP server |
 | `REDIS_URL` | `redis://localhost:6379/0` | Session state + rate limiting |
-| `MINIO_SECRET_KEY` | *(required)* | MinIO secret key for forensic storage |
+| `FORENSIC_BACKEND` | `memory` | Forensic store: `memory` \| `filesystem` \| `s3` |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
 
 </details>
@@ -578,7 +552,7 @@ admina/
 |   +-- domains/            GuardrailsAI
 |   +-- compliance/         EU AI Act template
 |   +-- transports/         MCP, HTTP REST
-|   +-- forensic/           MinIO, Filesystem
+|   +-- forensic/           Filesystem
 |   +-- auth/               API Key
 |   +-- pii/                spaCy + Regex
 |   +-- alerts/             Log, Webhook

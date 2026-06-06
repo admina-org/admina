@@ -38,8 +38,6 @@ import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from minio import Minio
-from minio.error import S3Error as _S3Error
 
 import admina.plugins.builtin.transports.mcp as mcp_transport
 from admina import __version__
@@ -212,25 +210,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     else:
         logger.info("Redis disabled (REDIS_URL is empty or non-redis scheme)")
 
-    # Forensic backend: filesystem (default) | s3 (boto3 generic) | minio (legacy)
-    state.minio = None
+    # Forensic backend: filesystem (default) | s3 (boto3 generic) | memory.
+    # MinIO servers are supported through the s3 backend (they speak the S3
+    # API); the legacy minio-SDK backend was removed in 0.9.5.
     boto3_client = None
 
-    if settings.FORENSIC_BACKEND == "minio":
-        try:
-            state.minio = Minio(
-                settings.MINIO_ENDPOINT,
-                access_key=settings.MINIO_ACCESS_KEY,
-                secret_key=settings.MINIO_SECRET_KEY,
-                secure=settings.MINIO_SECURE,
-            )
-            state.minio.list_buckets()
-            logger.info("MinIO connected (legacy backend)")
-        except (OSError, _S3Error) as e:
-            logger.warning("MinIO not available: %s — falling back to filesystem", e)
-            state.minio = None
-
-    elif settings.FORENSIC_BACKEND == "s3":
+    if settings.FORENSIC_BACKEND == "s3":
         try:
             import boto3
 
@@ -259,11 +244,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             logger.warning("S3 not reachable: %s — falling back to filesystem", e)
             boto3_client = None
 
-    if state.minio is not None:
-        state.forensic_box = ForensicBlackBox(
-            minio_client=state.minio, bucket=settings.MINIO_BUCKET
-        )
-    elif boto3_client is not None:
+    if boto3_client is not None:
         state.forensic_box = ForensicBlackBox(
             boto3_client=boto3_client,
             bucket=settings.FORENSIC_S3_BUCKET,
@@ -438,7 +419,6 @@ _dashboard_router = create_dashboard_endpoints(
     get_clickhouse=lambda: app.state.proxy.clickhouse,
     get_settings=lambda: settings,
     get_redis=lambda: app.state.proxy.redis,
-    get_minio=lambda: app.state.proxy.minio,
     get_engine_status=lambda: engine_status(),
     get_http_client=lambda: app.state.proxy.http_client,
     get_firewall=lambda: app.state.proxy.firewall,

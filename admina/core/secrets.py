@@ -110,7 +110,6 @@ VAULT_KEYS = (
     "ADMINA_DASHBOARD_PASSWORD",
     "CLICKHOUSE_PASSWORD",
     "GRAFANA_ADMIN_PASSWORD",
-    "MINIO_SECRET_KEY",
     # Used by the optional Open WebUI service in docker-compose when
     # ai_infra.webui is enabled. Generated unconditionally so the
     # compose file works whether or not the operator picked the
@@ -152,7 +151,6 @@ class SecretVault:
             "ADMINA_DASHBOARD_PASSWORD": generate_password(),
             "CLICKHOUSE_PASSWORD": generate_password(),
             "GRAFANA_ADMIN_PASSWORD": generate_password(),
-            "MINIO_SECRET_KEY": generate_password(),
             # Independent random secret for the optional Open WebUI
             # session cookie — never share it with the user-facing
             # dashboard password.
@@ -164,7 +162,6 @@ class SecretVault:
         shared_password = generated["ADMINA_DASHBOARD_PASSWORD"]
         generated["CLICKHOUSE_PASSWORD"] = shared_password
         generated["GRAFANA_ADMIN_PASSWORD"] = shared_password
-        generated["MINIO_SECRET_KEY"] = shared_password
 
         self._ensure_dir()
         self._ensure_key()
@@ -192,7 +189,6 @@ class SecretVault:
         data["ADMINA_DASHBOARD_PASSWORD"] = new_password
         data["CLICKHOUSE_PASSWORD"] = new_password
         data["GRAFANA_ADMIN_PASSWORD"] = new_password
-        data["MINIO_SECRET_KEY"] = new_password
         self._save(data)
 
     def export_env(self) -> dict[str, str]:

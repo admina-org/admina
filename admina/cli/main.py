@@ -74,7 +74,7 @@ def _bootstrap_secrets(project_dir: Path, *, force: bool = False) -> dict[str, s
     click.echo()
     click.echo(f"    API Key:    {generated['ADMINA_API_KEY']}")
     click.echo(f"    Password:   {generated['ADMINA_DASHBOARD_PASSWORD']}")
-    click.echo("                (dashboard, Grafana, MinIO, ClickHouse)")
+    click.echo("                (dashboard, Grafana, ClickHouse)")
     click.echo()
     click.echo("    Save these now — they will NOT be shown again.")
     click.echo("    View:  admina password show")
@@ -298,7 +298,7 @@ def _format_next_steps(project_name: str) -> str:
     if docker_ok:
         lines.append(
             "    admina dev --stack            # full Docker stack "
-            "(proxy + redis + clickhouse + minio + grafana)"
+            "(proxy + redis + clickhouse + grafana)"
         )
     else:
         lines.extend(
@@ -592,7 +592,6 @@ def _run_local(
     env.setdefault("OTEL_ENDPOINT", "")
     env.setdefault("REDIS_URL", "")
     env.setdefault("CLICKHOUSE_HOST", "")
-    env.setdefault("MINIO_ENDPOINT", "")
     env.setdefault("UPSTREAM_MCP_URL", "")
     env.setdefault("LOG_LEVEL", "INFO")
 
@@ -751,7 +750,7 @@ def _run_compose(
     "--stack",
     is_flag=True,
     default=False,
-    help="Run the full Docker stack (proxy + dashboard + redis + clickhouse + minio + otel + grafana).",
+    help="Run the full Docker stack (proxy + dashboard + redis + clickhouse + otel + grafana).",
 )
 @click.option(
     "--with-llm",
@@ -801,7 +800,7 @@ def dev(
       admina dev              Local mode (default): one uvicorn process,
                               dashboard served on the same port. No Docker.
       admina dev --stack      Docker compose: proxy + dashboard + redis +
-                              clickhouse + minio + otel + grafana.
+                              clickhouse + otel + grafana.
       admina dev --with-llm   --stack plus local LLM services
                               (ollama + chromadb + open-webui).
 
@@ -1125,7 +1124,7 @@ def doctor() -> None:
             ("httpx", "httpx"),
             ("pydantic", "pydantic"),
             ("redis", "redis"),
-            ("minio", "minio"),
+            ("boto3", "boto3"),
             ("clickhouse_connect", "clickhouse-connect"),
             ("numpy", "numpy"),
             ("sklearn", "scikit-learn"),
@@ -1366,7 +1365,7 @@ def password_show() -> None:
     click.echo()
     click.echo(f"  API Key:    {data.get('ADMINA_API_KEY', '(not set)')}")
     click.echo(f"  Password:   {data.get('ADMINA_DASHBOARD_PASSWORD', '(not set)')}")
-    click.echo("              (shared across dashboard, Grafana, MinIO, ClickHouse)")
+    click.echo("              (shared across dashboard, Grafana, ClickHouse)")
     click.echo()
 
 

@@ -28,7 +28,7 @@ or build time**, and is therefore mirror-able.
 
 ### 1. Container images
 
-Admina's `docker-compose.yml` references seven base images. Pull
+Admina's `docker-compose.yml` references six base images. Pull
 them on a connected host, save with `docker save`, transfer, and
 load on the air-gapped host.
 
@@ -38,16 +38,17 @@ docker pull python:3.11-slim
 docker pull nginx:alpine
 docker pull clickhouse/clickhouse-server:24.3
 docker pull redis:7-alpine
-docker pull minio/minio:latest          # or a SeaweedFS / Garage image (see below)
 docker pull grafana/grafana:11.0.0
 docker pull otel/opentelemetry-collector-contrib:0.96.0
+# Optional: an S3-compatible object store for the forensic backend
+# (only if you use FORENSIC_BACKEND=s3 — see below). E.g. SeaweedFS:
+#   docker pull chrislusf/seaweedfs:latest
 
 docker save \
     python:3.11-slim \
     nginx:alpine \
     clickhouse/clickhouse-server:24.3 \
     redis:7-alpine \
-    minio/minio:latest \
     grafana/grafana:11.0.0 \
     otel/opentelemetry-collector-contrib:0.96.0 \
   | gzip > admina-images.tar.gz
@@ -113,9 +114,9 @@ maturin build --release --offline
 
 ## Forensic storage backend on air-gapped
 
-The default `docker-compose.yml` uses MinIO as the S3-compatible
-forensic backend. **The MinIO Python client is being deprecated**
-(MinIO Inc. archived the SDK), so for new deployments choose one of:
+The default `docker-compose.yml` uses the filesystem backend (zero
+external dependencies). For persistent object storage, the `s3` backend
+(boto3) works with any S3-compatible service. Choose one of:
 
 ### Option A — Filesystem backend (recommended for single-host)
 
@@ -136,8 +137,8 @@ chain integrity check works exactly the same as the S3 backend.
 ### Option B — Any S3-compatible object store
 
 Admina's S3 backend uses the `boto3` client, which works with any
-S3-compatible service. Tested: AWS S3, Cloudflare R2, Backblaze B2,
-SeaweedFS, Garage, Ceph RGW. Mirror your choice via Docker:
+S3-compatible service. Tested: AWS S3, MinIO servers, Cloudflare R2,
+Backblaze B2, SeaweedFS, Garage, Ceph RGW. Mirror your choice via Docker:
 
 ```yaml
 # docker-compose.yml override — drop in your S3 service
@@ -158,10 +159,9 @@ domains:
       bucket: forensic-blackbox
 ```
 
-> **Note**: as of v0.9, the OSS distribution still ships the legacy
-> MinIO backend for backward compatibility. Migration to a generic
-> boto3-based S3 backend is on the roadmap (see
-> `docs/api/domain-compliance.md` for the canonical interface).
+> **Note**: the legacy MinIO-SDK backend was removed in 0.9.5. MinIO
+> servers remain fully supported through the `s3` backend — point
+> `FORENSIC_S3_ENDPOINT` at your MinIO server (it speaks the S3 API).
 
 ---
 

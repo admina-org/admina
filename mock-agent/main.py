@@ -316,7 +316,6 @@ def main():
     print("  ✅ All scenarios completed!")
     print("  📊 Dashboard: http://localhost:3000")
     print("  📈 Grafana:   http://localhost:3001 (admin / see GRAFANA_ADMIN_PASSWORD in .env)")
-    print("  🗄️  MinIO:     http://localhost:9090 (credentials in .env)")
     print("═" * 60 + "\n")
 
 

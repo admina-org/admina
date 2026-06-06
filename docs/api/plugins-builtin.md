@@ -41,11 +41,6 @@
 ::: plugins.builtin.auth.apikey
 
 
-## MinIO Forensic Store
-
-::: plugins.builtin.forensic.minio
-
-
 ## Filesystem Forensic Store
 
 ::: plugins.builtin.forensic.filesystem

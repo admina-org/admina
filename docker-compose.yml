@@ -45,8 +45,6 @@ services:
       - CLICKHOUSE_HOST=clickhouse
       - CLICKHOUSE_PORT=8123
       - CLICKHOUSE_DB=admina
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_BUCKET=forensic-blackbox
       # Persistent forensic backend for the docker-compose dev stack.
       # Without these two lines the proxy would default to in-memory
       # only, which is the safer default for a fresh `pip install`
@@ -61,8 +59,6 @@ services:
       redis:
         condition: service_healthy
       clickhouse:
-        condition: service_healthy
-      minio:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
@@ -115,30 +111,6 @@ services:
       - clickhouse-data:/var/lib/clickhouse
     healthcheck:
       test: ["CMD", "clickhouse-client", "--user", "default", "--password", "${CLICKHOUSE_PASSWORD}", "--query", "SELECT 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    networks:
-      - admina
-
-  # ═══════════════════════════════════════════════════════
-  # STORAGE: MinIO (S3-compatible) for Forensic Black Box
-  # ═══════════════════════════════════════════════════════
-  minio:
-    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
-    container_name: admina-minio
-    command: server /data --console-address ":9090"
-    ports:
-      - "127.0.0.1:9090:9090"   # MinIO console (localhost only)
-    env_file:
-      - .env
-    environment:
-      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-admina}
-      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-}
-    volumes:
-      - minio-data:/data
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -242,7 +214,6 @@ services:
 
 volumes:
   clickhouse-data:
-  minio-data:
   grafana-data:
 
 networks:

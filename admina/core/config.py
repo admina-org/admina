@@ -164,7 +164,7 @@ class AgentSecurityConfig:
 class ForensicConfig:
     """Forensic black-box settings."""
 
-    storage: str = "minio"
+    storage: str = "filesystem"
     bucket: str = "forensic-blackbox"
 
 
@@ -216,7 +216,7 @@ class AdminaConfig:
     agent_security: AgentSecurityConfig = field(default_factory=AgentSecurityConfig)
     compliance: ComplianceConfig = field(default_factory=ComplianceConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
-    forensic_store: str = "minio"
+    forensic_store: str = "filesystem"
     auth_provider: str = "apikey"
     pii_engine: str = "spacy-regex"
     alert_channels: list[AlertChannelConfig] = field(default_factory=list)
@@ -228,11 +228,6 @@ class AdminaConfig:
     clickhouse_port: int = 8123
     clickhouse_db: str = "admina"
     clickhouse_password: str = ""
-    minio_endpoint: str = "localhost:9000"
-    minio_access_key: str = "admina"
-    minio_secret_key: str = ""
-    minio_bucket: str = "forensic-blackbox"
-    minio_secure: bool = False
 
     # Auth / rate-limit — populated from .env fallback
     admina_api_key: str = ""
@@ -339,7 +334,7 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
     comp = ComplianceConfig(
         enabled=co_raw.get("enabled", True),
         forensic=ForensicConfig(
-            storage=fo_raw.get("storage", "minio"),
+            storage=fo_raw.get("storage", "filesystem"),
             bucket=fo_raw.get("bucket", "forensic-blackbox"),
         ),
         eu_ai_act_enabled=co_raw.get("eu_ai_act", {}).get("enabled", True),
@@ -370,7 +365,7 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
         agent_security=agent_sec,
         compliance=comp,
         dashboard=dash,
-        forensic_store=data.get("forensic_store", "minio"),
+        forensic_store=data.get("forensic_store", "filesystem"),
         auth_provider=data.get("auth_provider", "apikey"),
         pii_engine=data.get("pii_engine", "spacy-regex"),
         alert_channels=alerts,
@@ -429,7 +424,7 @@ def _build_from_env() -> AdminaConfig:
         compliance=ComplianceConfig(
             otel=OTELConfig(endpoint=_env("OTEL_ENDPOINT", "http://localhost:4317")),
             forensic=ForensicConfig(
-                bucket=_env("MINIO_BUCKET", "forensic-blackbox"),
+                bucket=_env("FORENSIC_S3_BUCKET", "forensic-blackbox"),
             ),
         ),
         redis_url=_env("REDIS_URL", "redis://localhost:6379/0"),
@@ -437,11 +432,6 @@ def _build_from_env() -> AdminaConfig:
         clickhouse_port=_env_int("CLICKHOUSE_PORT", 8123),
         clickhouse_db=_env("CLICKHOUSE_DB", "admina"),
         clickhouse_password=_env("CLICKHOUSE_PASSWORD", ""),
-        minio_endpoint=_env("MINIO_ENDPOINT", "localhost:9000"),
-        minio_access_key=_env("MINIO_ACCESS_KEY", "admina"),
-        minio_secret_key=_env("MINIO_SECRET_KEY", ""),
-        minio_bucket=_env("MINIO_BUCKET", "forensic-blackbox"),
-        minio_secure=_env_bool("MINIO_SECURE", False),
         admina_api_key=_env("ADMINA_API_KEY", ""),
         rate_limit_max_requests=_env_int("RATE_LIMIT_MAX_REQUESTS", 100),
         rate_limit_window_seconds=_env_int("RATE_LIMIT_WINDOW_SECONDS", 60),

@@ -121,7 +121,7 @@ uv run safety check --full-report
 ```bash
 # Copy example env and set your secrets
 cp .env.example .env
-# Edit .env: set CLICKHOUSE_PASSWORD, MINIO_SECRET_KEY, GRAFANA_ADMIN_PASSWORD
+# Edit .env: set CLICKHOUSE_PASSWORD, GRAFANA_ADMIN_PASSWORD
 
 docker compose up --build
 
@@ -137,7 +137,6 @@ Services started:
 | 3001 | Grafana |
 | 4317 | OpenTelemetry Collector (gRPC) |
 | 8123 | ClickHouse HTTP |
-| 9090 | MinIO Console |
 
 ---
 

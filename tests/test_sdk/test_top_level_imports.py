@@ -69,7 +69,7 @@ class TestSDKOnlyImport:
     A user following the README's "SDK only (lightweight)" path runs
     `pip install admina-framework` (no extras) and then
     `from admina import GovernedModel`. That import chain must not
-    transitively pull in minio, spacy, sklearn, numpy, or any other
+    transitively pull in boto3, spacy, sklearn, numpy, or any other
     optional dependency, otherwise the lightweight install is broken.
     """
 
@@ -80,7 +80,7 @@ class TestSDKOnlyImport:
         import sys
 
         blocked = {
-            "minio",  # [proxy]
+            "boto3",  # [proxy]
             "spacy",  # [nlp]
             "sklearn",  # [nlp]
             "numpy",  # [nlp]
@@ -92,13 +92,13 @@ class TestSDKOnlyImport:
         }
 
         class _Blocker:
-            def find_module(self, name, path=None):
+            # Modern meta_path finder API (find_spec). Raising here makes the
+            # blocked import fail with ModuleNotFoundError, which is what the
+            # test asserts the SDK must tolerate.
+            def find_spec(self, name, path=None, target=None):
                 if name in blocked or any(name.startswith(b + ".") for b in blocked):
-                    return self
+                    raise ModuleNotFoundError(f"blocked-by-test: {name}")
                 return None
-
-            def load_module(self, name):
-                raise ModuleNotFoundError(f"blocked-by-test: {name}")
 
         # Drop any cached admina/sdk/domains modules so the import
         # actually re-runs through the blocker.

@@ -390,8 +390,10 @@ class BaseForensicStore(ABC):
     store only handles I/O (write, read-back, verify).
 
     Default implementations:
-        * ``MinIOForensicStore`` — S3-compatible object storage (built-in).
         * ``FilesystemForensicStore`` — local JSON files (built-in).
+        * ``ForensicBlackBox`` — S3-compatible object storage via boto3
+          (works with AWS S3, MinIO servers, R2, SeaweedFS, …), with
+          optional WORM Object Lock.
 
     Community plugin example:
         ``admina-forensic-azure-blob`` — Azure Blob Storage backend.
@@ -441,7 +443,7 @@ class BaseForensicStore(ABC):
     @property
     @abstractmethod
     def store_name(self) -> str:
-        """Unique short name for this store (e.g. ``"minio"``)."""
+        """Unique short name for this store (e.g. ``"filesystem"``)."""
 
 
 # ---------------------------------------------------------------------------

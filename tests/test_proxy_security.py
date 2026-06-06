@@ -96,7 +96,6 @@ class TestAllowUnauthenticated:
 
         s = Settings(
             ADMINA_API_KEY="",
-            MINIO_SECRET_KEY="test",
             _env_file=None,
         )
         assert s.ALLOW_UNAUTHENTICATED is False
@@ -107,7 +106,6 @@ class TestAllowUnauthenticated:
 
         s = Settings(
             ADMINA_API_KEY="",
-            MINIO_SECRET_KEY="test",
             _env_file=None,
         )
         assert s.ALLOW_UNAUTHENTICATED is True
@@ -123,7 +121,6 @@ class TestIPRateLimitConfig:
         from admina.proxy.config import Settings
 
         s = Settings(
-            MINIO_SECRET_KEY="test",
             _env_file=None,
         )
         assert s.RATE_LIMIT_IP_MULTIPLIER == 5
@@ -134,7 +131,6 @@ class TestIPRateLimitConfig:
         s = Settings(
             RATE_LIMIT_MAX_REQUESTS=100,
             RATE_LIMIT_IP_MULTIPLIER=5,
-            MINIO_SECRET_KEY="test",
             _env_file=None,
         )
         assert s.RATE_LIMIT_MAX_REQUESTS * s.RATE_LIMIT_IP_MULTIPLIER == 500
@@ -144,7 +140,6 @@ class TestIPRateLimitConfig:
         from admina.proxy.config import Settings
 
         s = Settings(
-            MINIO_SECRET_KEY="test",
             _env_file=None,
         )
         assert s.RATE_LIMIT_IP_MULTIPLIER == 10
@@ -160,7 +155,6 @@ class TestMaxRequestTokens:
         from admina.proxy.config import Settings
 
         s = Settings(
-            MINIO_SECRET_KEY="test",
             _env_file=None,
         )
         assert s.MAX_REQUEST_TOKENS == 100000
@@ -181,7 +175,6 @@ class TestCORSWildcardValidation:
             warnings.simplefilter("always")
             Settings(
                 CORS_ORIGINS="*",
-                MINIO_SECRET_KEY="test",
                 _env_file=None,
             )
             cors_warnings = [x for x in w if "CORS_ORIGINS" in str(x.message)]
@@ -197,7 +190,6 @@ class TestCORSWildcardValidation:
             warnings.simplefilter("always")
             Settings(
                 CORS_ORIGINS="http://localhost:3000,http://localhost:8080",
-                MINIO_SECRET_KEY="test",
                 _env_file=None,
             )
             cors_warnings = [x for x in w if "CORS_ORIGINS" in str(x.message)]
@@ -212,7 +204,6 @@ class TestCORSWildcardValidation:
             warnings.simplefilter("always")
             Settings(
                 CORS_ORIGINS="http://localhost:3000,*",
-                MINIO_SECRET_KEY="test",
                 _env_file=None,
             )
             cors_warnings = [x for x in w if "CORS_ORIGINS" in str(x.message)]

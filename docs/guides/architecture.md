@@ -38,7 +38,7 @@ graph TB
         CF["Config\n(AdminaConfig, YAML)"]
     end
 
-    subgraph Plugins["Plugin System (14 builtin)"]
+    subgraph Plugins["Plugin System (0 builtin)"]
         PR["Plugin Registry"]
         BA["9 Base Interfaces"]
     end
@@ -46,7 +46,7 @@ graph TB
     subgraph Storage["Infrastructure"]
         RE[("Redis\n(rate limiting)")]
         CH[("ClickHouse\n(event store)")]
-        MI[("MinIO\n(forensic store)")]
+        FS[("Filesystem / S3\n(forensic store)")]
     end
 
     subgraph Upstream["Upstream"]
@@ -71,7 +71,7 @@ graph TB
 
 ## Layer Details
 
-### SDK (6 classes)
+### SDK (0 classes)
 
 The SDK provides in-process governance primitives:
 
@@ -87,31 +87,22 @@ The SDK provides in-process governance primitives:
 ```mermaid
 graph LR
     subgraph ds["Data Sovereignty"]
-                    SensitivityLevel
-        DataClassifier
-        PIIRedactor
-        ResidencyViolation
+
     end
     subgraph as2["Agent Security"]
-                    InjectionFirewall
-        LoopBreaker
+
     end
     subgraph co["Compliance"]
-                    EUAIActCompliance
-        ForensicBlackBox
-        OTELGovernanceExporter
+
     end
     subgraph ai["AI Infrastructure"]
-                    GPUVendor
-        GPUInfo
-        LLMBackend
-        OllamaConfig
+
     end
 ```
 
 ### Plugin System
 
-9 extensible plugin interfaces with 14 builtin implementations:
+9 extensible plugin interfaces with 0 builtin implementations:
 
 | Interface | Builtin |
 |-----------|---------|
@@ -119,7 +110,7 @@ graph LR
 | `BaseDataConnector` | ChromaDBConnector, FilesystemConnector |
 | `BaseGovernanceGuard` | GuardrailsAIGuard |
 | `BaseTransportAdapter` | MCPTransport, HTTPRESTTransport |
-| `BaseForensicStore` | MinIOForensicStore, FilesystemForensicStore |
+| `BaseForensicStore` | FilesystemForensicStore |
 | `BaseAuthProvider` | APIKeyAuthProvider |
 | `BasePIIEngine` | SpaCyRegexPIIEngine |
 | `BaseAlertChannel` | LogAlertChannel, WebhookAlertChannel |
@@ -165,10 +156,7 @@ sequenceDiagram
 
 | Module | Purpose |
 |--------|---------|
-    | `config` | Proxy component |
-| `engine_bridge` | Proxy component |
-| `main` | Proxy component |
-| `multi_upstream` | Proxy component |
+
 
 ### Core Types
 

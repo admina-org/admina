@@ -110,7 +110,7 @@ jobs:
 
       - name: Install dependencies
         # --all-extras pulls in [proxy] (fastapi/uvicorn/redis/clickhouse/
-        # boto3/minio), [nlp] (spacy/sklearn/numpy) and [telemetry] (otel)
+        # boto3), [nlp] (spacy/sklearn/numpy) and [telemetry] (otel)
         # so the dashboard / integration tests can import them.
         run: uv sync --group dev --all-extras --python ${{ matrix.python-version }}
 

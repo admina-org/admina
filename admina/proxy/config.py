@@ -39,11 +39,6 @@ class Settings(BaseSettings):
     CLICKHOUSE_PORT: int = 8123
     CLICKHOUSE_DB: str = "admina"
     CLICKHOUSE_PASSWORD: str = ""
-    MINIO_ENDPOINT: str = "localhost:9000"
-    MINIO_ACCESS_KEY: str = "admina"
-    MINIO_SECRET_KEY: str = ""
-    MINIO_BUCKET: str = "forensic-blackbox"
-    MINIO_SECURE: bool = False
 
     # Forensic blackbox backend selection.
     #   "memory" (default): in-memory ledger, hashed and chained but
@@ -55,11 +50,8 @@ class Settings(BaseSettings):
     #               (must be set explicitly to opt in).
     #   "s3":       generic S3-compatible via boto3 — works with AWS S3,
     #               Cloudflare R2, Backblaze B2, SeaweedFS, Garage,
-    #               Ceph RGW, etc. Recommended replacement for "minio"
-    #               since the MinIO Python SDK has been archived.
+    #               Ceph RGW, and MinIO servers (via their S3 API).
     #               Configure via FORENSIC_S3_* env vars.
-    #   "minio":    legacy MinIO SDK. Kept for backward compatibility,
-    #               will be removed in a future release.
     FORENSIC_BACKEND: str = "memory"
     # Empty by default — when FORENSIC_BACKEND="filesystem" the operator
     # MUST set this. Bare-metal / k8s typical: /var/lib/admina/forensic
@@ -140,10 +132,20 @@ class Settings(BaseSettings):
     @classmethod
     def validate_forensic_backend(cls, v: str) -> str:
         v = v.lower().strip()
-        if v not in {"memory", "filesystem", "s3", "minio"}:
-            raise ValueError(
-                f"FORENSIC_BACKEND must be 'memory' | 'filesystem' | 's3' | 'minio' (got {v!r})"
+        if v == "minio":
+            # The legacy minio-SDK backend was removed in 0.9.5. MinIO servers
+            # speak the S3 API, so transparently route to the s3 backend and
+            # tell the operator to migrate the MINIO_* env vars to FORENSIC_S3_*.
+            warnings.warn(
+                "FORENSIC_BACKEND='minio' is removed in 0.9.5 — using the 's3' "
+                "backend instead. Point your MinIO server at FORENSIC_S3_ENDPOINT "
+                "and set FORENSIC_S3_ACCESS_KEY / FORENSIC_S3_SECRET_KEY / "
+                "FORENSIC_S3_BUCKET.",
+                stacklevel=2,
             )
+            return "s3"
+        if v not in {"memory", "filesystem", "s3"}:
+            raise ValueError(f"FORENSIC_BACKEND must be 'memory' | 'filesystem' | 's3' (got {v!r})")
         return v
 
     @field_validator("CORS_ORIGINS")
@@ -164,16 +166,6 @@ class Settings(BaseSettings):
         if v and len(v) < 16:
             warnings.warn(
                 "ADMINA_API_KEY is shorter than 16 characters — use a stronger key in production",
-                stacklevel=2,
-            )
-        return v
-
-    @field_validator("MINIO_SECRET_KEY")
-    @classmethod
-    def warn_empty_minio_secret(cls, v: str) -> str:
-        if not v:
-            warnings.warn(
-                "MINIO_SECRET_KEY is not set — forensic storage will fail. Set it in .env.",
                 stacklevel=2,
             )
         return v

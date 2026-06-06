@@ -13,6 +13,39 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.9.5] — 2026-06-07
+
+Stabilisation release (0.9.x).
+
+### Removed
+
+- **Legacy MinIO-SDK forensic backend.** The `minio` Python SDK (archived
+  upstream) is no longer a dependency, and `FORENSIC_BACKEND=minio` is gone.
+  MinIO servers remain fully supported through the `s3` backend (boto3) —
+  point `FORENSIC_S3_ENDPOINT` at the server. `FORENSIC_BACKEND=minio` now
+  routes to the `s3` backend with a migration warning. The unused
+  `MinIOForensicStore` plugin and the `MINIO_*` settings/secrets were
+  removed; the dev `docker-compose.yml` and `admina init` templates use the
+  filesystem backend.
+
+### Changed
+
+- **Default forensic store is now `filesystem`** in `admina.yaml` and the
+  generated project templates (was `minio`).
+
+### Documentation
+
+- README image and file links are now absolute (GitHub raw / blob URLs) so
+  they render on PyPI. README, guides, and templates describe the
+  `filesystem` / `s3` backends; MinIO is documented as one of the
+  S3-compatible servers reachable via the `s3` backend.
+
+### Internal
+
+- Silence third-party deprecation warnings (OpenTelemetry SelectableGroups,
+  Starlette TestClient httpx) via pytest `filterwarnings`; the SDK
+  import-isolation test uses the modern `find_spec` finder API.
+
 ## [0.9.4] — 2026-06-06
 
 Hardening release (0.9.x stabilisation).
@@ -341,7 +374,8 @@ environment in `docker-compose.benchmark.yml`.
 
 ---
 
-[Unreleased]: https://github.com/admina-org/admina/compare/v0.9.4...HEAD
+[Unreleased]: https://github.com/admina-org/admina/compare/v0.9.5...HEAD
+[0.9.5]: https://github.com/admina-org/admina/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/admina-org/admina/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/admina-org/admina/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/admina-org/admina/compare/v0.9.1...v0.9.2

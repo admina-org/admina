@@ -59,4 +59,5 @@ Out of scope:
 - **Secrets**: Never commit `.env` to version control. Use `.env.example` as a template.
 - **Network isolation**: The Docker Compose setup isolates ClickHouse and Redis on an
   internal network — do not expose their ports to the internet.
-- **MinIO**: Enable `MINIO_SECURE=true` and configure TLS in production deployments.
+- **Forensic S3 store**: use HTTPS endpoints (`FORENSIC_S3_ENDPOINT=https://…`) and
+  enable Object Lock (`FORENSIC_S3_LOCK=true`) for tamper-evident WORM retention in production.

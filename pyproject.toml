@@ -19,7 +19,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "admina-framework"
-version = "0.9.4"
+version = "0.9.5"
 description = "Admina — governed AI development framework"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -72,12 +72,9 @@ proxy = [
     "pydantic-settings>=2.3,<3",
     "python-dotenv>=1.0,<2",
     "redis>=5.0,<6",
-    # Forensic blackbox: ship boto3 by default (works with any
-    # S3-compatible incl. SeaweedFS/Garage/R2/B2). The minio SDK is
-    # kept for backward compatibility but pinned and will be dropped
-    # in a future release once boto3 is the only path.
+    # Forensic blackbox S3 backend via boto3 — works with any
+    # S3-compatible store (AWS S3, MinIO, R2, B2, SeaweedFS, Garage).
     "boto3>=1.34,<2",
-    "minio>=7.2,<8",
     "clickhouse-connect>=0.7,<1",
     "typer>=0.9,<1",
     # Required by the LoopBreaker (core proxy guardrail — not an NLP add-on).
@@ -178,6 +175,16 @@ testpaths = ["tests"]
 addopts = "--cov=admina --cov-report=term-missing --cov-report=xml --cov-fail-under=78"
 markers = [
     "benchmark: micro-benchmarks with absolute latency thresholds; flaky on shared CI runners. Run with `-m benchmark` on dedicated hardware; CI runs `-m 'not benchmark'`.",
+]
+filterwarnings = [
+    # Third-party deprecations we cannot fix from here; silence to keep the
+    # test output actionable. Revisit when the upstreams ship a fix.
+    #  - OpenTelemetry uses the deprecated importlib.metadata SelectableGroups.
+    "ignore:SelectableGroups dict interface is deprecated:DeprecationWarning",
+    #  - Starlette TestClient warns that httpx<0.28 is deprecated (httpx2 not
+    #    yet released); FastAPI re-exports the same TestClient. The category is
+    #    Starlette's own DeprecationWarning subclass, matched by message only.
+    "ignore:Using `httpx`.*is deprecated",
 ]
 
 [tool.coverage.run]

@@ -296,5 +296,5 @@ compliance:
 
 forensic:
   enabled: true
-  store: filesystem            # filesystem | minio
+  store: filesystem            # filesystem | s3
 ```

@@ -146,7 +146,6 @@ class TestScaffoldProject:
         _scaffold_project(tmp_project, ["agent_security"], "test-project")
         data = yaml.safe_load((tmp_project / "docker-compose.yml").read_text())
         assert "clickhouse" not in data["services"]
-        assert "minio" not in data["services"]
         assert "proxy" in data["services"]
 
     def test_env_file_not_overwritten(self, tmp_project: Path) -> None:
@@ -309,7 +308,7 @@ class TestDoctorFlagsMissingProxy:
         from admina.cli import main as cli_main
 
         real_import = builtins.__import__
-        blocked = {"fastapi", "uvicorn", "httpx", "redis", "minio", "clickhouse_connect"}
+        blocked = {"fastapi", "uvicorn", "httpx", "redis", "boto3", "clickhouse_connect"}
 
         def fake_import(name: str, *args: object, **kwargs: object) -> object:
             top = name.split(".", 1)[0]

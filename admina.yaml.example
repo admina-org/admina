@@ -90,7 +90,7 @@ domains:
   compliance:
     enabled: true
     forensic:
-      # backend: memory | filesystem | s3 | minio
+      # backend: memory | filesystem | s3
       # Default is "memory" — events hashed and chained but LOST on
       # restart. Set explicitly to opt in to persistence.
       backend: memory
@@ -124,7 +124,7 @@ dashboard:
   enabled: true
   port: 3000
 
-forensic_store: minio
+forensic_store: filesystem
 auth_provider: apikey
 pii_engine: spacy-regex
 alert_channels:

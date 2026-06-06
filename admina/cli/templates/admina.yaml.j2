@@ -56,7 +56,7 @@ domains:
     enabled: {{ domains.compliance | lower }}
 {% if domains.compliance %}
     forensic:
-      storage: minio
+      storage: filesystem
       bucket: forensic-blackbox
     eu_ai_act:
       enabled: true
@@ -68,7 +68,7 @@ dashboard:
   enabled: true
   port: 3000
 
-forensic_store: minio
+forensic_store: filesystem
 auth_provider: apikey
 pii_engine: spacy-regex
 alert_channels:

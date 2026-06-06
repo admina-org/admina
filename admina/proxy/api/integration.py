@@ -135,7 +135,7 @@ def create_integration_endpoints(
         if fbox is None:
             return {
                 "recorded": False,
-                "error": "Forensic black box not available (MinIO not connected)",
+                "error": "Forensic black box not available (no storage backend configured)",
             }
 
         event_data.setdefault("event_id", str(uuid.uuid4()))

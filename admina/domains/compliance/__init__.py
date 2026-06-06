@@ -17,9 +17,9 @@
 Forensic black box, EU AI Act compliance, OISG adequacy score,
 and OpenTelemetry.
 
-Heavy or extras-gated symbols (ForensicBlackBox needs ``minio`` from
-the ``[proxy]`` extra) are resolved lazily via PEP 562 ``__getattr__``
-so importing this package never fails on a pure-SDK install.
+Heavy or extras-gated symbols (ForensicBlackBox uses ``boto3`` from
+the ``[proxy]`` extra for its S3 backend) are resolved lazily via PEP 562
+``__getattr__`` so importing this package never fails on a pure-SDK install.
 """
 
 from __future__ import annotations

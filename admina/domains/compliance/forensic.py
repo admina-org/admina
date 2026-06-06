@@ -22,24 +22,13 @@ import json
 import logging
 import time
 from datetime import UTC, datetime
-from io import BytesIO
 from pathlib import Path
-
-# minio is in the [proxy] extra. Make it optional so the forensic module
-# is importable on a pure-SDK install (filesystem backend works without it).
-try:
-    from minio.error import S3Error as _S3Error  # type: ignore[import-untyped]
-except ImportError:  # pragma: no cover
-
-    class _S3Error(Exception):  # type: ignore[no-redef]
-        pass
-
 
 from admina.plugins.base import BaseForensicStore
 
 logger = logging.getLogger("admina.forensic_blackbox")
 
-# Key used to persist the chain state in MinIO.
+# Key used to persist the chain state in the object store.
 _CHAIN_STATE_KEY = "_chain_state.json"
 
 
@@ -47,26 +36,22 @@ class ForensicBlackBox(BaseForensicStore):
     """
     Immutable audit log with hash-chain integrity.
 
-    Three storage backends are supported, in this priority order:
+    Two storage backends are supported, in this priority order:
 
     1. ``boto3_client`` — generic S3-compatible (AWS S3, Cloudflare R2,
-       SeaweedFS, Garage, Ceph RGW, Backblaze B2, …). The recommended
-       backend for new air-gapped or on-premise deployments since the
-       MinIO Python SDK has been archived.
-    2. ``minio_client`` — legacy MinIO SDK. Kept for backward
-       compatibility; deprecated, will be removed in a future release.
-    3. ``filesystem_dir`` — local JSON files with the same hash-chain
+       SeaweedFS, Garage, Ceph RGW, Backblaze B2, and MinIO servers via
+       their S3 API). Supports WORM Object Lock. The recommended backend
+       for on-premise / air-gapped deployments.
+    2. ``filesystem_dir`` — local JSON files with the same hash-chain
        semantics. Zero external dependencies. Default for OSS / single
        host / development deployments.
 
-    If none of the three is configured the class still works as an
-    in-memory ledger (events are hashed and chained, but lost on
-    restart).
+    If neither is configured the class still works as an in-memory ledger
+    (events are hashed and chained, but lost on restart).
     """
 
     def __init__(
         self,
-        minio_client=None,
         bucket: str = "forensic-blackbox",
         boto3_client=None,
         filesystem_dir: str | None = None,
@@ -78,7 +63,6 @@ class ForensicBlackBox(BaseForensicStore):
         s3_max_retries: int = 5,
         s3_base_delay_s: float = 0.2,
     ):
-        self.minio_client = minio_client
         self.boto3_client = boto3_client
         self.bucket = bucket
         self.filesystem_dir = Path(filesystem_dir).resolve() if filesystem_dir else None
@@ -98,8 +82,8 @@ class ForensicBlackBox(BaseForensicStore):
     def _s3_call(self, fn, *args, **kwargs):
         """Run *fn(*args, **kwargs)* with exponential backoff retries.
 
-        Used only by the boto3 backend; the legacy MinIO and filesystem
-        paths keep their original behaviour.
+        Used only by the boto3 backend; the filesystem path keeps its
+        original behaviour.
         """
         import time as _time
 
@@ -148,14 +132,6 @@ class ForensicBlackBox(BaseForensicStore):
                 except Exception:  # noqa: BLE001
                     logger.exception("Failed to create S3 forensic bucket %s", self.bucket)
             return
-        if self.minio_client is not None:
-            try:
-                if not self.minio_client.bucket_exists(self.bucket):
-                    self.minio_client.make_bucket(self.bucket)
-                    logger.info("Created forensic bucket (MinIO): %s", self.bucket)
-            except _S3Error:
-                logger.exception("Failed to create forensic bucket %s", self.bucket)
-            return
         if self.filesystem_dir is not None:
             return  # mkdir already done in __init__
         logger.warning("No forensic backend configured — events kept in memory only")
@@ -175,20 +151,6 @@ class ForensicBlackBox(BaseForensicStore):
                 )
             except Exception:  # noqa: BLE001 — NoSuchKey or similar
                 logger.info("No existing forensic chain state in S3, starting fresh")
-            return
-        if self.minio_client is not None:
-            try:
-                response = self.minio_client.get_object(self.bucket, _CHAIN_STATE_KEY)
-                state = json.loads(response.read().decode("utf-8"))
-                self.chain_head = state.get("chain_head", "GENESIS")
-                self.record_count = state.get("record_count", 0)
-                logger.info(
-                    "Restored forensic chain state (MinIO): seq=%d, head=%s...",
-                    self.record_count,
-                    self.chain_head[:16],
-                )
-            except (_S3Error, json.JSONDecodeError):
-                logger.info("No existing forensic chain state found, starting fresh")
             return
         if self.filesystem_dir is not None:
             state_path = self.filesystem_dir / _CHAIN_STATE_KEY
@@ -230,18 +192,6 @@ class ForensicBlackBox(BaseForensicStore):
             except Exception as e:  # noqa: BLE001
                 logger.warning("Failed to persist chain state (S3): %s", e)
             return
-        if self.minio_client is not None:
-            try:
-                self.minio_client.put_object(
-                    self.bucket,
-                    _CHAIN_STATE_KEY,
-                    BytesIO(payload),
-                    length=len(payload),
-                    content_type="application/json",
-                )
-            except _S3Error as e:
-                logger.warning("Failed to persist chain state (MinIO): %s", e)
-            return
         if self.filesystem_dir is not None:
             try:
                 (self.filesystem_dir / _CHAIN_STATE_KEY).write_bytes(payload)
@@ -282,11 +232,7 @@ class ForensicBlackBox(BaseForensicStore):
             "sequence_number": self.record_count,
             "record_hash": record_hash,
             "previous_hash": forensic_record["previous_hash"],
-            "stored": (
-                self.minio_client is not None
-                or self.boto3_client is not None
-                or self.filesystem_dir is not None
-            ),
+            "stored": (self.boto3_client is not None or self.filesystem_dir is not None),
         }
 
     def _store_to_s3(self, record: dict):
@@ -318,19 +264,6 @@ class ForensicBlackBox(BaseForensicStore):
                     key,
                 )
             except Exception:  # noqa: BLE001
-                logger.exception("Failed to store forensic record %s", key)
-            return
-        if self.minio_client is not None:
-            try:
-                self.minio_client.put_object(
-                    self.bucket,
-                    key,
-                    BytesIO(data),
-                    length=len(data),
-                    content_type="application/json",
-                )
-                logger.debug("Stored forensic record (MinIO): %s", key)
-            except _S3Error:
                 logger.exception("Failed to store forensic record %s", key)
             return
         if self.filesystem_dir is not None:
@@ -443,16 +376,6 @@ class ForensicBlackBox(BaseForensicStore):
         elif self.boto3_client is not None:
             paginator_records = self._s3_list_records()
             records.extend(paginator_records)
-        elif self.minio_client is not None:
-            for obj in self.minio_client.list_objects(self.bucket, recursive=True):
-                if obj.object_name.endswith(_CHAIN_STATE_KEY):
-                    continue
-                resp = self.minio_client.get_object(self.bucket, obj.object_name)
-                try:
-                    records.append(json.loads(resp.read().decode("utf-8")))
-                finally:
-                    resp.close()
-                    resp.release_conn()
         records.sort(key=lambda r: r.get("sequence_number", 0))
         return records
 
@@ -480,5 +403,5 @@ class ForensicBlackBox(BaseForensicStore):
         return {
             "record_count": self.record_count,
             "chain_head": self.chain_head[:16] + "...",
-            "storage_available": self.minio_client is not None,
+            "storage_available": (self.boto3_client is not None or self.filesystem_dir is not None),
         }

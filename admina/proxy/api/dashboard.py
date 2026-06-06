@@ -167,7 +167,6 @@ def create_dashboard_endpoints(
     get_clickhouse: Any,
     get_settings: Any,
     get_redis: Any = None,
-    get_minio: Any = None,
     get_engine_status: Any = None,
     get_http_client: Any = None,
     get_firewall: Any = None,
@@ -189,7 +188,6 @@ def create_dashboard_endpoints(
         get_clickhouse: Callable returning ClickHouse client | None.
         get_settings: Callable returning the Settings object.
         get_redis: Callable returning the async Redis client | None.
-        get_minio: Callable returning the MinIO client | None.
         get_engine_status: Callable returning engine status dict.
         get_http_client: Callable returning httpx.AsyncClient | None.
         get_firewall: Callable returning the firewall engine | None.
@@ -427,26 +425,16 @@ def create_dashboard_endpoints(
         else:
             services["clickhouse"] = {"status": "not_configured"}
 
-        # MinIO
-        minio = get_minio() if get_minio else None
-        if minio is not None:
-            try:
-                loop = asyncio.get_running_loop()
-                t0 = time.perf_counter()
-                buckets = await loop.run_in_executor(None, minio.list_buckets)
-                latency = round((time.perf_counter() - t0) * 1000, 2)
-                services["minio"] = {
-                    "status": "healthy",
-                    "latency_ms": latency,
-                    "bucket_count": len(buckets),
-                }
-            except (OSError, RuntimeError) as exc:
-                services["minio"] = {
-                    "status": "unhealthy",
-                    "error": str(exc),
-                }
+        # Forensic store
+        fbox = get_forensic_box() if get_forensic_box else None
+        if fbox is not None:
+            stats = fbox.get_stats()
+            services["forensic"] = {
+                "status": "healthy" if stats.get("storage_available") else "in_memory",
+                "record_count": stats.get("record_count", 0),
+            }
         else:
-            services["minio"] = {"status": "not_configured"}
+            services["forensic"] = {"status": "not_configured"}
 
         # Upstream MCP
         http = get_http_client() if get_http_client else None

@@ -125,13 +125,6 @@ class _FakeRedis:
         return {"used_memory_human": "1.5M", "used_memory": 1572864}
 
 
-class _FakeMinio:
-    """Minimal MinIO stand-in."""
-
-    def list_buckets(self) -> list:
-        return [{"name": "forensic-blackbox"}]
-
-
 @dataclass
 class _FakeSettings:
     CLICKHOUSE_DB: str = "admina"
@@ -154,7 +147,6 @@ def _build_test_app(
     clickhouse: Any = None,
     metrics: dict | None = None,
     redis: Any = _UNSET,
-    minio: Any = _UNSET,
     settings: Any = None,
 ) -> FastAPI:
     """Create a minimal FastAPI app with dashboard + integration routers."""
@@ -167,8 +159,6 @@ def _build_test_app(
         compliance = _FakeCompliance()
     if redis is _UNSET:
         redis = _FakeRedis()
-    if minio is _UNSET:
-        minio = _FakeMinio()
     if settings is None:
         settings = _FakeSettings()
     if metrics is None:
@@ -192,7 +182,6 @@ def _build_test_app(
         get_clickhouse=lambda: clickhouse,
         get_settings=lambda: settings,
         get_redis=lambda: redis,
-        get_minio=lambda: minio,
         get_engine_status=lambda: engine_status,
         get_http_client=lambda: None,
     )
@@ -616,8 +605,6 @@ class TestAuditEndpoint:
         assert r.status_code == 400
 
     def test_audit_no_forensic_box(self) -> None:
-        fbox = _FakeForensicBox()
-        fbox.minio_client = None  # simulate no storage
         app = _build_test_app(forensic_box=None)
 
         async def go():
@@ -689,7 +676,7 @@ class TestDashboardInfra:
         assert "latency_ms" in redis_svc
         assert "used_memory_human" in redis_svc
 
-    def test_infra_minio_healthy(self) -> None:
+    def test_infra_forensic_healthy(self) -> None:
         app = _build_test_app()
 
         async def go():
@@ -697,9 +684,9 @@ class TestDashboardInfra:
                 return (await c.get("/api/dashboard/infra")).json()
 
         data = _run(go())
-        minio_svc = data["services"]["minio"]
-        assert minio_svc["status"] == "healthy"
-        assert "bucket_count" in minio_svc
+        forensic_svc = data["services"]["forensic"]
+        assert forensic_svc["status"] == "healthy"
+        assert "record_count" in forensic_svc
 
     def test_infra_no_redis(self) -> None:
         app = _build_test_app(redis=None)
@@ -711,15 +698,15 @@ class TestDashboardInfra:
         data = _run(go())
         assert data["services"]["redis"]["status"] == "not_configured"
 
-    def test_infra_no_minio(self) -> None:
-        app = _build_test_app(minio=None)
+    def test_infra_no_forensic(self) -> None:
+        app = _build_test_app(forensic_box=None)
 
         async def go():
             async with _client(app) as c:
                 return (await c.get("/api/dashboard/infra")).json()
 
         data = _run(go())
-        assert data["services"]["minio"]["status"] == "not_configured"
+        assert data["services"]["forensic"]["status"] == "not_configured"
 
     def test_infra_has_checked_at(self) -> None:
         app = _build_test_app()
@@ -756,7 +743,6 @@ class TestDashboardInfra:
                 get_clickhouse=lambda: None,
                 get_settings=lambda: settings,
                 get_redis=lambda: None,
-                get_minio=lambda: None,
                 get_engine_status=lambda: {},
                 get_http_client=lambda: http,
             )
@@ -793,7 +779,6 @@ class TestDashboardInfra:
                 get_clickhouse=lambda: None,
                 get_settings=lambda: settings,
                 get_redis=lambda: None,
-                get_minio=lambda: None,
                 get_engine_status=lambda: {},
                 get_http_client=lambda: http,
             )

@@ -186,7 +186,6 @@ API_PAGES: list[tuple[str, str, list[tuple[str, str]]]] = [
             ("plugins.builtin.transports.http_rest", "HTTP REST Transport"),
             ("plugins.builtin.pii.spacy_regex", "spaCy + Regex PII"),
             ("plugins.builtin.auth.apikey", "API Key Auth"),
-            ("plugins.builtin.forensic.minio", "MinIO Forensic Store"),
             ("plugins.builtin.forensic.filesystem", "Filesystem Forensic Store"),
             ("plugins.builtin.compliance.eu_ai_act", "EU AI Act Template"),
             ("plugins.builtin.guards.guardrailsai_guard", "GuardrailsAI Guard"),
@@ -317,7 +316,7 @@ def generate_architecture_diagram() -> None:
         subgraph Storage["Infrastructure"]
             RE[("Redis\\n(rate limiting)")]
             CH[("ClickHouse\\n(event store)")]
-            MI[("MinIO\\n(forensic store)")]
+            FS[("Filesystem / S3\\n(forensic store)")]
         end
 
         subgraph Upstream["Upstream"]
@@ -381,7 +380,7 @@ def generate_architecture_diagram() -> None:
     | `BaseDataConnector` | ChromaDBConnector, FilesystemConnector |
     | `BaseGovernanceGuard` | GuardrailsAIGuard |
     | `BaseTransportAdapter` | MCPTransport, HTTPRESTTransport |
-    | `BaseForensicStore` | MinIOForensicStore, FilesystemForensicStore |
+    | `BaseForensicStore` | FilesystemForensicStore |
     | `BaseAuthProvider` | APIKeyAuthProvider |
     | `BasePIIEngine` | SpaCyRegexPIIEngine |
     | `BaseAlertChannel` | LogAlertChannel, WebhookAlertChannel |
