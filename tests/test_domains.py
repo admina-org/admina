@@ -200,32 +200,9 @@ class TestLoopBreaker:
 # ═══════════════════════════════════════════════════════
 # Domain: Forensic Black Box
 # ═══════════════════════════════════════════════════════
-class TestForensicBlackBox:
-    """Test hash chain integrity."""
-
-    def _get_chain(self):
-        from admina.proxy.engine_bridge import get_hash_chain
-
-        return get_hash_chain()
-
-    def test_chain_creates_records(self):
-        hc = self._get_chain()
-        r = hc.record("evt-1", '{"tool": "test"}')
-        assert "hash" in r or "record_hash" in r or "sequence_number" in r
-
-    def test_chain_increments_sequence(self):
-        hc = self._get_chain()
-        r1 = hc.record("evt-1", "data1")
-        r2 = hc.record("evt-2", "data2")
-        seq_key = "sequence" if "sequence" in r1 else "sequence_number"
-        assert r2[seq_key] > r1[seq_key]
-
-    def test_chain_links_hashes(self):
-        hc = self._get_chain()
-        r1 = hc.record("evt-1", "data1")
-        r2 = hc.record("evt-2", "data2")
-        hash_key = "hash" if "hash" in r1 else "record_hash"
-        assert r2["previous_hash"] == r1[hash_key]
+# The production forensic store (ForensicBlackBox) is covered in
+# tests/test_forensic_blackbox.py — record(), verify_records(), tamper
+# detection, S3 Object Lock, and the BaseForensicStore plugin contract.
 
 
 # ═══════════════════════════════════════════════════════

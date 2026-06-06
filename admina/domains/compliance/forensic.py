@@ -35,13 +35,15 @@ except ImportError:  # pragma: no cover
         pass
 
 
+from admina.plugins.base import BaseForensicStore
+
 logger = logging.getLogger("admina.forensic_blackbox")
 
 # Key used to persist the chain state in MinIO.
 _CHAIN_STATE_KEY = "_chain_state.json"
 
 
-class ForensicBlackBox:
+class ForensicBlackBox(BaseForensicStore):
     """
     Immutable audit log with hash-chain integrity.
 
@@ -342,10 +344,20 @@ class ForensicBlackBox:
             return
         # No backend → in-memory only, nothing to do
 
-    def verify_chain(self, records: list[dict]) -> dict:
+    def verify_records(self, records: list[dict]) -> dict:
         """
-        Verify the integrity of a chain of forensic records.
-        Returns verification result.
+        Verify the integrity of an explicit list of forensic records.
+
+        Recomputes each record's SHA-256 over its full content (minus the
+        stored ``record_hash``) and checks that each record's
+        ``previous_hash`` links to the prior record's hash.
+
+        Args:
+            records: Forensic records ordered by sequence_number, as written
+                by ``record()`` / read back from the backend.
+
+        Returns:
+            ``{"valid": bool, "checked": int, "error": str (if invalid)}``.
         """
         if not records:
             return {"valid": True, "checked": 0}
@@ -371,6 +383,98 @@ class ForensicBlackBox:
                     }
 
         return {"valid": True, "checked": len(records)}
+
+    # ── BaseForensicStore interface ─────────────────────────────
+    # ForensicBlackBox is the proxy's production forensic store. It satisfies
+    # the BaseForensicStore plugin contract so it can be selected through the
+    # plugin registry like any other backend, while keeping its richer
+    # synchronous record()/verify_records() API for direct SDK use.
+
+    @property
+    def store_name(self) -> str:
+        return "blackbox"
+
+    async def append(self, record: dict) -> str:
+        """Write a governance record (BaseForensicStore contract).
+
+        Delegates to the synchronous :meth:`record` and returns the
+        record's SHA-256 hash, as the plugin contract requires.
+        """
+        result = self.record(record)
+        return result["record_hash"]
+
+    async def verify_chain(self, last_n: int = 0) -> dict:
+        """Verify the persisted hash chain (BaseForensicStore contract).
+
+        Reads records back from the configured backend and verifies their
+        integrity. Returns ``{"valid": bool, "records": int,
+        "last_hash": str}`` per the plugin contract.
+
+        Args:
+            last_n: If > 0, verify only the last *n* records; else the whole
+                chain.
+        """
+        records = self._read_back_records()
+        if last_n > 0:
+            records = records[-last_n:]
+        result = self.verify_records(records)
+        return {
+            "valid": result["valid"],
+            "records": len(records),
+            "last_hash": self.chain_head,
+        }
+
+    def _read_back_records(self) -> list[dict]:
+        """Read all persisted forensic records, ordered by sequence_number.
+
+        Returns an empty list for the in-memory backend (records are not
+        retained) — verify_chain() then trivially passes, which matches the
+        in-memory "no durable chain to verify" semantics.
+        """
+        records: list[dict] = []
+        if self.filesystem_dir is not None:
+            for p in self.filesystem_dir.rglob("*.json"):
+                if p.name == _CHAIN_STATE_KEY:
+                    continue
+                try:
+                    records.append(json.loads(p.read_text(encoding="utf-8")))
+                except (OSError, json.JSONDecodeError):
+                    continue
+        elif self.boto3_client is not None:
+            paginator_records = self._s3_list_records()
+            records.extend(paginator_records)
+        elif self.minio_client is not None:
+            for obj in self.minio_client.list_objects(self.bucket, recursive=True):
+                if obj.object_name.endswith(_CHAIN_STATE_KEY):
+                    continue
+                resp = self.minio_client.get_object(self.bucket, obj.object_name)
+                try:
+                    records.append(json.loads(resp.read().decode("utf-8")))
+                finally:
+                    resp.close()
+                    resp.release_conn()
+        records.sort(key=lambda r: r.get("sequence_number", 0))
+        return records
+
+    def _s3_list_records(self) -> list[dict]:
+        """Read all forensic record objects from the boto3 S3 backend."""
+        out: list[dict] = []
+        token: str | None = None
+        while True:
+            kwargs: dict = {"Bucket": self.bucket}
+            if token:
+                kwargs["ContinuationToken"] = token
+            resp = self._s3_call(self.boto3_client.list_objects_v2, **kwargs)
+            for item in resp.get("Contents", []) or []:
+                key = item["Key"]
+                if key.endswith(_CHAIN_STATE_KEY):
+                    continue
+                obj = self._s3_call(self.boto3_client.get_object, Bucket=self.bucket, Key=key)
+                out.append(json.loads(obj["Body"].read().decode("utf-8")))
+            if not resp.get("IsTruncated"):
+                break
+            token = resp.get("NextContinuationToken")
+        return out
 
     def get_stats(self) -> dict:
         return {

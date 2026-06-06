@@ -20,7 +20,6 @@ Auto-detects Rust engine, falls back to pure Python.
 from __future__ import annotations
 
 import logging
-from datetime import UTC
 from typing import Any, Protocol
 
 logger = logging.getLogger("admina.engine")
@@ -190,51 +189,11 @@ class _RustLoopBridge:
         return self._impl.get_stats()
 
 
-# ── Hash Chain Bridge ────────────────────────────────────────
-class _PythonHashChainBridge:
-    def __init__(self):
-        # Minimal Python fallback
-        self._prev = "genesis"
-        self._seq = 0
-        self._total = 0
-
-    def record(self, event_id: str, data: str) -> dict:
-        import hashlib
-        from datetime import datetime
-
-        self._seq += 1
-        self._total += 1
-        now = datetime.now(UTC)
-        hash_input = f"{self._seq}:{self._prev}:{event_id}:{data}:{int(now.timestamp() * 1000)}"
-        h = hashlib.sha256(hash_input.encode()).hexdigest()
-        prev = self._prev
-        self._prev = h
-        return {
-            "hash": h,
-            "previous_hash": prev,
-            "sequence": self._seq,
-            "event_id": event_id,
-            "timestamp_iso": now.isoformat(),
-            "timestamp_ms": int(now.timestamp() * 1000),
-            "engine": "python",
-        }
-
-    def get_stats(self) -> dict:
-        return {"total_records": self._total, "current_sequence": self._seq, "engine": "python"}
-
-
-class _RustHashChainBridge:
-    def __init__(self):
-        self._impl = admina_core.RustHashChain()
-
-    def record(self, event_id: str, data: str) -> dict:
-        return self._impl.record(event_id, data)
-
-    def verify_chain(self, chain: list) -> dict[str, Any]:
-        return self._impl.verify_chain(chain)
-
-    def get_stats(self) -> dict:
-        return self._impl.get_stats()
+# NOTE: the hash-chain bridge (get_hash_chain / _PythonHashChainBridge /
+# _RustHashChainBridge) was removed in 0.9.4. The proxy's forensic audit
+# trail is handled by admina.domains.compliance.forensic.ForensicBlackBox
+# (a BaseForensicStore), which carries the full hash-chain + storage logic;
+# the bridge layer here only covers firewall / PII / loop-breaker.
 
 
 # ── Bridge Protocols ────────────────────────────────────────
@@ -261,13 +220,6 @@ class LoopBreakerBridge(Protocol):
     def get_stats(self) -> dict[str, Any]: ...
 
 
-class HashChainBridge(Protocol):
-    """Protocol for hash chain bridge implementations."""
-
-    def record(self, event_id: str, data: str) -> dict[str, Any]: ...
-    def get_stats(self) -> dict[str, Any]: ...
-
-
 # ── Factory Functions ────────────────────────────────────────
 def get_firewall() -> FirewallBridge:
     """Get the best available firewall engine."""
@@ -288,13 +240,6 @@ def get_loop_breaker(**kwargs: Any) -> LoopBreakerBridge:
     if _rust_available:
         return _RustLoopBridge(**kwargs)
     return _PythonLoopBridge(**kwargs)
-
-
-def get_hash_chain() -> HashChainBridge:
-    """Get the best available hash chain."""
-    if _rust_available:
-        return _RustHashChainBridge()
-    return _PythonHashChainBridge()
 
 
 def engine_status() -> dict[str, Any]:

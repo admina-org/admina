@@ -34,6 +34,16 @@ Hardening release (0.9.x stabilisation).
   HIGH+, with no new false positives. Full Rust↔Python detection parity
   (evasion normalisation + multilingual patterns) is tracked for 0.10.
 
+- **Forensic store consolidated on one hash-chain model.**
+  `ForensicBlackBox` (the proxy's audit trail) now implements the
+  `BaseForensicStore` plugin interface (`append` / `verify_chain(last_n)` /
+  `store_name`); its previous list-based `verify_chain(records)` is renamed
+  `verify_records(records)`. The unused colon-string hash-chain bridge
+  (`get_hash_chain`, `_PythonHashChainBridge`, `_RustHashChainBridge`) is
+  removed from `proxy/engine_bridge.py` — the proxy never used it. **Breaking:**
+  callers of `ForensicBlackBox.verify_chain(records)` should use
+  `verify_records(records)`; `engine_bridge.get_hash_chain()` is gone.
+
 ### Documentation
 
 - README install and Performance sections state the Rust engine is
