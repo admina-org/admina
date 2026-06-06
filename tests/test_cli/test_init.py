@@ -219,9 +219,12 @@ class TestInitCommand:
             assert result.exit_code == 0, result.output
 
     def test_version_flag(self, runner: CliRunner) -> None:
+        from admina import __version__
+
         result = runner.invoke(app, ["--version"])
         assert result.exit_code == 0
-        assert "0.9.3" in result.output
+        # Derive from __version__ so the assertion survives version bumps.
+        assert __version__ in result.output
 
 
 class TestFormatNextSteps:

@@ -13,6 +13,8 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.9.4] — 2026-06-06
+
 Hardening release (0.9.x stabilisation).
 
 ### Added
@@ -339,7 +341,8 @@ environment in `docker-compose.benchmark.yml`.
 
 ---
 
-[Unreleased]: https://github.com/admina-org/admina/compare/v0.9.3...HEAD
+[Unreleased]: https://github.com/admina-org/admina/compare/v0.9.4...HEAD
+[0.9.4]: https://github.com/admina-org/admina/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/admina-org/admina/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/admina-org/admina/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/admina-org/admina/compare/v0.9.0...v0.9.1
