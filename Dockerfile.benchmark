@@ -6,7 +6,7 @@
 #   docker run --rm admina-bench
 
 # Stage 1: Build Rust core
-FROM python:3.11-slim AS rust-builder
+FROM python:3.14-slim AS rust-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl build-essential rustc cargo && \
@@ -20,7 +20,7 @@ COPY core-rust/ ./core-rust/
 RUN cd core-rust && maturin build --release
 
 # Stage 2: Benchmark runner
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 WORKDIR /app
 
