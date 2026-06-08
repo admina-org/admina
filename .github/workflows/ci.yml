@@ -20,6 +20,12 @@ on:
   pull_request:
     branches: [main]
 
+# Least-privilege default for all jobs: they only check out code and run
+# read-only checks (version guard, ruff, bandit, pytest, cargo/maturin).
+# None push commits, open PRs, publish packages, or use OIDC.
+permissions:
+  contents: read
+
 jobs:
   # ── Version alignment ───────────────────────────────────────
   # Cross-manifest guard: pyproject (framework), __init__, core-rust
