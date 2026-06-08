@@ -71,7 +71,7 @@ proxy = [
     "pydantic>=2.5,<3",
     "pydantic-settings>=2.3,<3",
     "python-dotenv>=1.0,<2",
-    "redis>=5.0,<6",
+    "redis>=5.0,<9",
     # Forensic blackbox S3 backend via boto3 — works with any
     # S3-compatible store (AWS S3, MinIO, R2, B2, SeaweedFS, Garage).
     "boto3>=1.34,<2",
