@@ -19,7 +19,9 @@ https://admina.org
 """
 
 import asyncio
+import base64
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -466,6 +468,48 @@ def _dashboard_index_html() -> str:
 
 
 _DASHBOARD_COOKIE = "admina_session"
+# Dashboard session cookie lifetime (seconds). The signed token expires
+# after this window, after which the browser must re-load GET / to get a
+# fresh one (still gated by the API key check).
+_DASHBOARD_SESSION_TTL = 86400
+
+
+def _issue_dashboard_token(now: int | None = None) -> str:
+    """Mint a signed, expiring session token for the dashboard cookie.
+
+    The token is ``<expiry>.<sig>`` where ``sig`` is an HMAC-SHA256 of the
+    expiry keyed by ``ADMINA_API_KEY``. The API key itself never leaves the
+    server — only a derived signature does — so the cookie carries no
+    clear-text secret (addresses CodeQL py/clear-text-storage).
+    """
+    exp = (now if now is not None else int(time.time())) + _DASHBOARD_SESSION_TTL
+    payload = str(exp)
+    sig = hmac.new(
+        settings.ADMINA_API_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    raw = f"{payload}.{sig}".encode()
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def _verify_dashboard_token(token: str, now: int | None = None) -> bool:
+    """Validate a dashboard session token: signature intact and not expired."""
+    if not settings.ADMINA_API_KEY or not token:
+        return False
+    try:
+        raw = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
+        payload, sig = raw.rsplit(".", 1)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    expected = hmac.new(
+        settings.ADMINA_API_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    if not _secrets.compare_digest(sig, expected):
+        return False
+    try:
+        exp = int(payload)
+    except ValueError:
+        return False
+    return (now if now is not None else int(time.time())) < exp
 
 
 if _DASHBOARD_DIR.is_dir():
@@ -494,14 +538,16 @@ if _DASHBOARD_DIR.is_dir():
         if settings.ADMINA_API_KEY:
             resp.set_cookie(
                 _DASHBOARD_COOKIE,
-                settings.ADMINA_API_KEY,
+                # A signed, expiring token — NOT the API key itself, so the
+                # secret never leaves the server in clear text.
+                _issue_dashboard_token(),
                 httponly=True,
                 samesite="lax",
                 # Off by default for local HTTP dev; set
                 # DASHBOARD_COOKIE_SECURE=true behind HTTPS in production so
                 # the session cookie is never sent over plain HTTP.
                 secure=settings.DASHBOARD_COOKIE_SECURE,
-                max_age=86400,
+                max_age=_DASHBOARD_SESSION_TTL,
             )
         return resp
 
@@ -549,15 +595,19 @@ async def auth_middleware(request: Request, call_next) -> JSONResponse:
         )
 
     # 2. Fallback: static ADMINA_API_KEY check.
-    # Accept it from X-API-Key header, Authorization: Bearer, OR the
-    # `admina_session` cookie issued by the bundled dashboard at GET /.
+    # API clients present the raw key via X-API-Key / Authorization: Bearer
+    # (compared in constant time). Browsers present the `admina_session`
+    # cookie issued by the bundled dashboard at GET /, which holds a signed
+    # expiring token — verified by signature, never the raw key.
     if settings.ADMINA_API_KEY:
-        provided = (
+        header_key = (
             request.headers.get("X-API-Key")
             or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-            or request.cookies.get(_DASHBOARD_COOKIE, "")
         )
-        if not provided or not _secrets.compare_digest(provided, settings.ADMINA_API_KEY):
+        authorized = (
+            header_key and _secrets.compare_digest(header_key, settings.ADMINA_API_KEY)
+        ) or _verify_dashboard_token(request.cookies.get(_DASHBOARD_COOKIE, ""))
+        if not authorized:
             return JSONResponse(
                 status_code=401,
                 content={
