@@ -279,7 +279,7 @@ def create_dashboard_endpoints(
             return {"events": events, "count": len(events)}
         except (OSError, RuntimeError, Exception) as exc:
             logger.warning("ClickHouse feed query failed: %s", exc)
-            return {"events": [], "count": 0, "error": str(exc)}
+            return {"events": [], "count": 0, "error": "Feed query failed"}
 
     @router.get("/compliance")
     async def dashboard_compliance() -> dict[str, Any]:
@@ -817,7 +817,7 @@ def create_dashboard_endpoints(
                 "window_hours": window_hours,
                 "events_analyzed": 0,
                 "suggestions": [],
-                "error": str(exc),
+                "error": "Suggestions query failed",
             }
 
     @router.get("/trend")
@@ -892,7 +892,7 @@ def create_dashboard_endpoints(
                 "window_hours": window_hours,
                 "bucket_minutes": bucket_minutes,
                 "buckets": [],
-                "error": str(exc),
+                "error": "Trend query failed",
             }
 
     @router.get("/oisg")

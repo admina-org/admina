@@ -732,7 +732,8 @@ async def get_events(request: Request, limit: int = 50) -> dict[str, Any]:
         events = [dict(zip(result.column_names, row)) for row in result.result_rows]
         return {"events": events, "count": len(events)}
     except (OSError, clickhouse_connect.driver.exceptions.DatabaseError) as e:
-        return {"events": [], "error": str(e)}
+        logger.warning("events query failed: %s", e)
+        return {"events": [], "error": "Events query failed"}
 
 
 # ── EU AI Act API ────────────────────────────────────────────
