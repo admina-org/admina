@@ -208,3 +208,53 @@ class TestCORSWildcardValidation:
             )
             cors_warnings = [x for x in w if "CORS_ORIGINS" in str(x.message)]
             assert len(cors_warnings) >= 1
+
+
+class TestDashboardSessionToken:
+    """The dashboard session cookie carries a signed, expiring token — never
+    the raw API key (CodeQL py/clear-text-storage). Verify the token logic."""
+
+    def _patch_key(self, monkeypatch, key="test-key-abcdef123456"):
+        from admina.proxy import main
+
+        monkeypatch.setattr(main.settings, "ADMINA_API_KEY", key)
+        return main
+
+    def test_valid_token_verifies(self, monkeypatch):
+        main = self._patch_key(monkeypatch)
+        assert main._verify_dashboard_token(main._issue_dashboard_token()) is True
+
+    def test_token_does_not_contain_api_key(self, monkeypatch):
+        import base64
+
+        main = self._patch_key(monkeypatch)
+        raw = base64.urlsafe_b64decode(main._issue_dashboard_token()).decode("utf-8")
+        assert "test-key-abcdef123456" not in raw
+
+    def test_tampered_token_rejected(self, monkeypatch):
+        main = self._patch_key(monkeypatch)
+        tok = main._issue_dashboard_token()
+        assert (
+            main._verify_dashboard_token(tok[:-2] + ("aa" if not tok.endswith("aa") else "bb"))
+            is False
+        )
+
+    def test_expired_token_rejected(self, monkeypatch):
+        import time
+
+        main = self._patch_key(monkeypatch)
+        old = main._issue_dashboard_token(now=int(time.time()) - 10 * 86400)
+        assert main._verify_dashboard_token(old) is False
+
+    def test_empty_and_garbage_rejected(self, monkeypatch):
+        main = self._patch_key(monkeypatch)
+        assert main._verify_dashboard_token("") is False
+        assert main._verify_dashboard_token("garbage") is False
+        assert main._verify_dashboard_token("notbase64.sig") is False
+
+    def test_token_from_other_key_rejected(self, monkeypatch):
+        # A token signed with a different key must not validate.
+        main = self._patch_key(monkeypatch, key="key-one-abcdef123456")
+        tok = main._issue_dashboard_token()
+        monkeypatch.setattr(main.settings, "ADMINA_API_KEY", "key-two-abcdef123456")
+        assert main._verify_dashboard_token(tok) is False
