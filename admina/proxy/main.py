@@ -497,8 +497,10 @@ if _DASHBOARD_DIR.is_dir():
                 settings.ADMINA_API_KEY,
                 httponly=True,
                 samesite="lax",
-                # No `secure=True` here — local dev is HTTP. Production
-                # behind HTTPS should set secure=True via a reverse proxy.
+                # Off by default for local HTTP dev; set
+                # DASHBOARD_COOKIE_SECURE=true behind HTTPS in production so
+                # the session cookie is never sent over plain HTTP.
+                secure=settings.DASHBOARD_COOKIE_SECURE,
                 max_age=86400,
             )
         return resp
