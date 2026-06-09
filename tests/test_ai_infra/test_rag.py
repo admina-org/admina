@@ -128,6 +128,16 @@ class TestParsing:
         assert "color" not in result
         assert "Content" in result
 
+    def test_parse_html_strips_malformed_script(self) -> None:
+        # Nested/malformed tag that bypassed the old regex tag-stripper
+        # (CodeQL py/bad-tag-filter). The HTMLParser-based extractor must
+        # not leak the script body into the extracted text.
+        html = "<p>Text</p><scr<script>ipt>alert(1)</script><p>More</p>"
+        result = parse_html(html)
+        assert "alert" not in result
+        assert "Text" in result
+        assert "More" in result
+
     def test_parse_csv(self) -> None:
         csv_content = "name,age\nAlice,30\nBob,25"
         result = parse_csv(csv_content)

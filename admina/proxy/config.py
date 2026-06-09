@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     # If empty, auth is disabled (local development only).
     ADMINA_API_KEY: str = ""
     ALLOW_UNAUTHENTICATED: bool = False
+    # Set the `Secure` flag on the dashboard session cookie so the browser
+    # only sends it over HTTPS. Default False because local dev is HTTP;
+    # set DASHBOARD_COOKIE_SECURE=true in any production / TLS deployment.
+    DASHBOARD_COOKIE_SECURE: bool = False
 
     # Rate limiting (per session, requires Redis)
     RATE_LIMIT_MAX_REQUESTS: int = 100  # requests per window

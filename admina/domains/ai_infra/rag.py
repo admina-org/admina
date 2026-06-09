@@ -32,10 +32,50 @@ import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 logger = logging.getLogger("admina.ai_infra.rag")
+
+
+class _HTMLTextExtractor(HTMLParser):
+    """Extract visible text from HTML, dropping ``<script>``/``<style>`` bodies.
+
+    Uses the stdlib HTML parser instead of regex tag-stripping: a real parser
+    handles malformed/nested tags a regex cannot (e.g. ``<scr<script>ipt>``),
+    so script/style content can't leak into the extracted text. This is a
+    best-effort ingestion extractor for RAG, not a security sanitizer — the
+    output is embedded as LLM context, never rendered as HTML.
+    """
+
+    # Substring match (not equality): a malformed payload like
+    # "<scr<script>ipt>" is tokenised by HTMLParser as a single start tag
+    # named "scr<script", so an exact "== 'script'" check would miss it.
+    _SKIP_TAGS = ("script", "style")
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+        self._skip_depth = 0
+
+    def _is_skip(self, tag: str) -> bool:
+        return any(s in tag for s in self._SKIP_TAGS)
+
+    def handle_starttag(self, tag: str, attrs: object) -> None:
+        if self._is_skip(tag):
+            self._skip_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._is_skip(tag) and self._skip_depth > 0:
+            self._skip_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth == 0:
+            self._parts.append(data)
+
+    def get_text(self) -> str:
+        return " ".join(self._parts)
 
 
 # ── Document types ───────────────────────────────────────────
@@ -131,12 +171,15 @@ def parse_plain_text(content: str) -> str:
 
 
 def parse_html(content: str) -> str:
-    """Strip HTML tags and return plain text."""
-    text = re.sub(r"<script[^>]*>.*?</script>", "", content, flags=re.DOTALL)
-    text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
+    """Extract plain text from HTML, dropping script/style content.
+
+    Uses the stdlib HTML parser (see :class:`_HTMLTextExtractor`) rather than
+    regex tag-stripping, which a malformed-tag payload can bypass.
+    """
+    extractor = _HTMLTextExtractor()
+    extractor.feed(content)
+    text = extractor.get_text()
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def parse_csv(content: str) -> str:
