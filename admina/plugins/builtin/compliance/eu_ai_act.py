@@ -76,6 +76,8 @@ class EUAIActComplianceTemplate(BaseComplianceTemplate):
     provides risk classification and gap analysis.
     """
 
+    name = "eu-ai-act"
+
     def __init__(self) -> None:
         self._data = self._load_yaml()
 

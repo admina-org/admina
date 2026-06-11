@@ -683,11 +683,11 @@ class TestRegistryDiscovery:
         total = sum(len(v) for v in all_plugins.values())
         assert total == 11
 
-        # Verify specific lookups (class-attr identifiers → proper name; @property → class name fallback)
-        assert reg.get("model_adapter", "ollamaadapter") is OllamaAdapter
-        assert reg.get("model_adapter", "openaiadapter") is OpenAIAdapter
-        assert reg.get("forensic_store", "filesystemforensicstore") is FilesystemForensicStore
-        assert reg.get("auth_provider", "apikeyauthprovider") is APIKeyAuthProvider
+        # Builtin plugins register under their declared class-level `name`
+        assert reg.get("model_adapter", "ollama") is OllamaAdapter
+        assert reg.get("model_adapter", "openai") is OpenAIAdapter
+        assert reg.get("forensic_store", "filesystem") is FilesystemForensicStore
+        assert reg.get("auth_provider", "apikey") is APIKeyAuthProvider
         assert reg.get("alert_channel", "log") is LogAlertChannel
 
     def test_discover_builtin_directory(self):

@@ -332,11 +332,18 @@ class PluginRegistry:
     def _extract_name(cls: type, type_key: str) -> str:
         """Extract the canonical name from a plugin class.
 
-        Tries the property/attribute that matches the base class contract
-        (``name``, ``protocol_name``, ``store_name``, etc.).  Falls back
-        to the lower-cased class name.
+        Resolution order:
+
+        1. A class-level plain-string ``name`` attribute — the unified
+           identity convention every builtin follows.
+        2. The type-specific identity attribute (``framework_name``,
+           ``store_name``, …) when defined as a plain string.
+        3. Fallback: the lower-cased class name.
+
+        ``@property`` identities cannot be read without instantiating,
+        so property-only plugins fall back to the class name.
         """
-        # Map type_key → property name on the ABC
+        # Map type_key → secondary identity attribute on the ABC
         name_attrs = {
             "model_adapter": "name",
             "data_connector": "name",
@@ -345,26 +352,22 @@ class PluginRegistry:
             "transport_adapter": "protocol_name",
             "forensic_store": "store_name",
             "auth_provider": "provider_name",
-            "pii_engine": "supported_languages",
             "alert_channel": "channel_name",
         }
 
+        # 1. Unified identity: class-level plain-string `name`
+        for klass in cls.__mro__:
+            if "name" in klass.__dict__ and isinstance(klass.__dict__["name"], str):
+                return klass.__dict__["name"]
+
+        # 2. Type-specific attribute as a plain value
         attr = name_attrs.get(type_key, "name")
-
-        # For pii_engine, the identifier is not a name property — use class name
-        if type_key == "pii_engine":
-            return cls.__name__.lower()
-
-        # Try to get from a class-level attribute (not an instance property)
-        # Instantiation-free: check if the class defines the attr as a plain value
         for klass in cls.__mro__:
             if attr in klass.__dict__:
                 val = klass.__dict__[attr]
-                # If it's a plain value (str), use it
                 if isinstance(val, str):
                     return val
-                # If it's a property, we can't call it without an instance
-                break
+                break  # it's a property — cannot read without an instance
 
-        # Fallback: lower-cased class name
+        # 3. Fallback: lower-cased class name
         return cls.__name__.lower()

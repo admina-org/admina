@@ -40,6 +40,8 @@ class FilesystemForensicStore(BaseForensicStore):
         base_dir: Directory to store forensic records.
     """
 
+    name = "filesystem"
+
     def __init__(self, base_dir: str = ".admina/forensic") -> None:
         self._base_dir = Path(base_dir).resolve()
         self._base_dir.mkdir(parents=True, exist_ok=True)

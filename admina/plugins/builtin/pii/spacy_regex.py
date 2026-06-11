@@ -53,6 +53,8 @@ class SpaCyRegexPIIEngine(BasePIIEngine):
     not installed, the engine falls back to regex-only mode.
     """
 
+    name = "spacy-regex"
+
     def __init__(self, ner_model: str = "en_core_web_sm") -> None:
         self._ner_model = ner_model
         self._nlp: Any = None

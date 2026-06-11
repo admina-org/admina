@@ -41,6 +41,8 @@ class OpenAIAdapter(BaseModelAdapter):
         default_model: Default model name.
     """
 
+    name = "openai"
+
     def __init__(
         self,
         api_key: str | None = None,
@@ -131,8 +133,3 @@ class OpenAIAdapter(BaseModelAdapter):
         """Return ``True`` for models matching known OpenAI prefixes."""
         prefixes = ("gpt-", "o1", "o3", "chatgpt-", "text-", "davinci")
         return any(model_name.startswith(p) for p in prefixes)
-
-    @property
-    def name(self) -> str:
-        """Adapter name."""
-        return "openai"

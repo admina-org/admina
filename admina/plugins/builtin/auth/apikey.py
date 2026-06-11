@@ -39,6 +39,8 @@ class APIKeyAuthProvider(BaseAuthProvider):
         exempt_paths: URL paths that bypass authentication.
     """
 
+    name = "apikey"
+
     def __init__(
         self,
         api_key: str | None = None,

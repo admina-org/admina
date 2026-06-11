@@ -36,6 +36,8 @@ class FilesystemConnector(BaseDataConnector):
         base_dir: Root directory for file operations.
     """
 
+    name = "filesystem"
+
     def __init__(self, base_dir: str = ".") -> None:
         self._base_dir = Path(base_dir).resolve()
 
@@ -104,8 +106,3 @@ class FilesystemConnector(BaseDataConnector):
                 )
 
         return results
-
-    @property
-    def name(self) -> str:
-        """Connector name."""
-        return "filesystem"

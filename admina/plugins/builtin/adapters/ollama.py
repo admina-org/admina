@@ -40,6 +40,8 @@ class OllamaAdapter(BaseModelAdapter):
         default_model: Model name used when none is specified in ``send()``.
     """
 
+    name = "ollama"
+
     def __init__(
         self,
         host: str | None = None,
@@ -113,8 +115,3 @@ class OllamaAdapter(BaseModelAdapter):
     def supports_model(self, model_name: str) -> bool:
         """Return ``True`` for any model name (Ollama pulls on demand)."""
         return True
-
-    @property
-    def name(self) -> str:
-        """Adapter name."""
-        return "ollama"

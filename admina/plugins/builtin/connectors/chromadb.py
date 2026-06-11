@@ -39,6 +39,8 @@ class ChromaDBConnector(BaseDataConnector):
         collection_name: Default collection to operate on.
     """
 
+    name = "chromadb"
+
     def __init__(
         self,
         host: str | None = None,
@@ -130,8 +132,3 @@ class ChromaDBConnector(BaseDataConnector):
             )
 
         return output
-
-    @property
-    def name(self) -> str:
-        """Connector name."""
-        return "chromadb"
