@@ -1,9 +1,9 @@
 """{{ plugin_name }} — Admina {{ plugin_type }} plugin."""
 from __future__ import annotations
 
-from typing import Any
+{% if needs_any %}from typing import Any
 
-from admina.plugins.base import {{ base_class }}
+{% endif %}from admina.plugins.base import {{ base_class }}
 
 
 class {{ class_name }}({{ base_class }}):
@@ -11,135 +11,104 @@ class {{ class_name }}({{ base_class }}):
 
     TODO: Implement the required methods below.
     """
-{% if name_property == "name" %}
 
-    @property
-    def name(self) -> str:
-        """Return the plugin name."""
-        return "{{ plugin_name }}"
-{% elif name_property == "framework_name" %}
-
-    @property
-    def framework_name(self) -> str:
-        """Return the compliance framework name."""
-        return "{{ plugin_name }}"
-{% elif name_property == "protocol_name" %}
-
-    @property
-    def protocol_name(self) -> str:
-        """Return the transport protocol name."""
-        return "{{ plugin_name }}"
-{% elif name_property == "store_name" %}
-
-    @property
-    def store_name(self) -> str:
-        """Return the forensic store name."""
-        return "{{ plugin_name }}"
-{% elif name_property == "provider_name" %}
-
-    @property
-    def provider_name(self) -> str:
-        """Return the auth provider name."""
-        return "{{ plugin_name }}"
-{% elif name_property == "channel_name" %}
-
-    @property
-    def channel_name(self) -> str:
-        """Return the alert channel name."""
-        return "{{ plugin_name }}"
-{% elif name_property == "supported_languages" %}
-
-    @property
-    def supported_languages(self) -> list[str]:
-        """Return supported language codes."""
-        return ["en"]
-{% endif %}
+    name = "{{ plugin_name }}"
+{%- if name_property == "framework_name" %}
+    framework_name = "{{ plugin_name }}"
+{%- elif name_property == "protocol_name" %}
+    protocol_name = "{{ plugin_name }}"
+{%- elif name_property == "store_name" %}
+    store_name = "{{ plugin_name }}"
+{%- elif name_property == "provider_name" %}
+    provider_name = "{{ plugin_name }}"
+{%- elif name_property == "channel_name" %}
+    channel_name = "{{ plugin_name }}"
+{%- elif name_property == "supported_languages" %}
+    supported_languages = ["en"]
+{%- endif %}
 {% if plugin_type == "model_adapter" %}
-
-    def send(
+    async def send(
         self,
         prompt: str,
-        *,
-        model: str | None = None,
-        context: list[dict[str, str]] | None = None,
+        context: Any = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Send a prompt to the model and return the response.
 
         Returns:
-            Dict with keys: text, metadata.
+            Dict with at least ``text`` and ``metadata`` keys.
         """
         raise NotImplementedError("TODO: implement send()")
 
     def supports_model(self, model_name: str) -> bool:
         """Return True if this adapter supports the given model."""
         return True
-{% elif plugin_type == "data_connector" %}
-
-    def ingest(self, documents: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
-        """Ingest documents into the data store."""
+{%- elif plugin_type == "data_connector" %}
+    async def ingest(self, source: Any, **kwargs: Any) -> dict[str, Any]:
+        """Ingest documents from *source* into the data store."""
         raise NotImplementedError("TODO: implement ingest()")
 
-    def query(self, query: str, *, top_k: int = 5, **kwargs: Any) -> list[dict[str, Any]]:
-        """Query the data store."""
+    async def query(self, query: str, **kwargs: Any) -> list[dict[str, Any]]:
+        """Query the data store and return ranked results."""
         raise NotImplementedError("TODO: implement query()")
-{% elif plugin_type == "governance_guard" %}
-
-    def inspect_request(self, content: str, **kwargs: Any) -> dict[str, Any]:
+{%- elif plugin_type == "governance_guard" %}
+    async def inspect_request(self, request: dict) -> dict:
         """Inspect an inbound request."""
         return {"action": "ALLOW", "risk_level": "LOW", "details": ""}
 
-    def inspect_response(self, content: str, **kwargs: Any) -> dict[str, Any]:
+    async def inspect_response(self, response: dict) -> dict:
         """Inspect an outbound response."""
         return {"action": "ALLOW", "risk_level": "LOW", "details": ""}
-{% elif plugin_type == "compliance_template" %}
-
-    def get_requirements(self) -> list[dict[str, Any]]:
-        """Return compliance requirements."""
+{%- elif plugin_type == "compliance_template" %}
+    def get_requirements(self) -> list[dict]:
+        """Return the list of requirements for this framework."""
         raise NotImplementedError("TODO: implement get_requirements()")
 
-    def evaluate(self, config: dict[str, Any]) -> dict[str, Any]:
-        """Evaluate compliance against the config."""
+    def evaluate(self, governance_state: dict) -> dict:
+        """Evaluate governance state against the requirements."""
         raise NotImplementedError("TODO: implement evaluate()")
-{% elif plugin_type == "transport_adapter" %}
-
-    def parse_request(self, raw: Any) -> Any:
-        """Parse a protocol-specific request into GovernanceRequest."""
+{%- elif plugin_type == "transport_adapter" %}
+    async def parse_request(self, raw_request: Any) -> Any:
+        """Parse a protocol-specific request into a GovernanceRequest."""
         raise NotImplementedError("TODO: implement parse_request()")
 
-    def format_response(self, response: Any) -> Any:
-        """Format a GovernanceResponse into protocol-specific format."""
+    async def format_response(self, gov_response: Any, original: Any) -> Any:
+        """Format a GovernanceResponse into the protocol wire format."""
         raise NotImplementedError("TODO: implement format_response()")
-{% elif plugin_type == "forensic_store" %}
 
-    def append(self, record: dict[str, Any]) -> dict[str, Any]:
-        """Append a record to the forensic store."""
+    def register_routes(self, app: Any) -> None:
+        """Register protocol-specific HTTP routes on the FastAPI app."""
+        raise NotImplementedError("TODO: implement register_routes()")
+{%- elif plugin_type == "forensic_store" %}
+    async def append(self, record: dict) -> str:
+        """Persist a governance record; return a storage identifier."""
         raise NotImplementedError("TODO: implement append()")
 
-    def verify_chain(self) -> dict[str, Any]:
-        """Verify the integrity of the forensic chain."""
+    async def verify_chain(self, last_n: int = 0) -> dict:
+        """Verify the integrity of the hash chain."""
         raise NotImplementedError("TODO: implement verify_chain()")
-{% elif plugin_type == "auth_provider" %}
-
-    def authenticate(self, credentials: dict[str, Any]) -> dict[str, Any]:
-        """Authenticate a request."""
+{%- elif plugin_type == "auth_provider" %}
+    async def authenticate(self, request: Any) -> dict:
+        """Authenticate a request; return ``{user_id, roles, metadata}``."""
         raise NotImplementedError("TODO: implement authenticate()")
 
-    def authorize(self, user: dict[str, Any], action: str) -> bool:
-        """Check authorization for an action."""
+    async def authorize(self, user: dict, action: str, resource: str = "") -> bool:
+        """Check whether *user* may perform *action*."""
         raise NotImplementedError("TODO: implement authorize()")
-{% elif plugin_type == "pii_engine" %}
-
-    def detect(self, text: str, **kwargs: Any) -> list[dict[str, Any]]:
-        """Detect PII in text."""
+{%- elif plugin_type == "pii_engine" %}
+    async def detect(
+        self,
+        text: str,
+        categories: list[str] | None = None,
+    ) -> list[dict]:
+        """Detect PII entities in *text*."""
         raise NotImplementedError("TODO: implement detect()")
 
-    def redact(self, text: str, **kwargs: Any) -> str:
-        """Redact PII from text."""
+    async def redact(self, text: str, matches: list[dict]) -> str:
+        """Replace detected PII spans with placeholders."""
         raise NotImplementedError("TODO: implement redact()")
-{% elif plugin_type == "alert_channel" %}
-
-    def send_alert(self, alert: dict[str, Any]) -> bool:
-        """Send an alert through this channel."""
+{%- elif plugin_type == "alert_channel" %}
+    async def send_alert(self, alert: dict) -> bool:
+        """Send a governance alert through this channel."""
         raise NotImplementedError("TODO: implement send_alert()")
-{% endif %}
+{%- endif %}
