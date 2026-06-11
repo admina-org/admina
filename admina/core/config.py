@@ -210,7 +210,7 @@ class AdminaConfig:
     otherwise falls back to ``.env`` variables.
     """
 
-    version: str = "2.0"
+    schema_version: int = 1
     data_sovereignty: DataSovereigntyConfig = field(default_factory=DataSovereigntyConfig)
     ai_infra: AIInfraConfig = field(default_factory=AIInfraConfig)
     agent_security: AgentSecurityConfig = field(default_factory=AgentSecurityConfig)
@@ -239,6 +239,15 @@ class AdminaConfig:
 
 
 # ── YAML parsing helpers ─────────────────────────────────────
+
+
+def _parse_schema_version(data: dict) -> int:
+    """Read ``schema_version`` (int); tolerate the legacy ``version`` key."""
+    raw = data.get("schema_version", data.get("version", 1))
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 1
 
 
 def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
@@ -360,7 +369,7 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
     ]
 
     return AdminaConfig(
-        version=data.get("version", "2.0"),
+        schema_version=_parse_schema_version(data),
         data_sovereignty=ds,
         ai_infra=ai,
         agent_security=agent_sec,

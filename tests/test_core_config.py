@@ -34,7 +34,7 @@ class TestAdminaConfigDefaults:
 
     def test_default_config(self):
         cfg = AdminaConfig()
-        assert cfg.version == "2.0"
+        assert cfg.schema_version == 1
         assert cfg.data_sovereignty.enabled is True
         assert cfg.ai_infra.enabled is False
         assert cfg.agent_security.enabled is True
@@ -68,14 +68,14 @@ class TestBuildFromYAML:
     """YAML config parsing."""
 
     def test_minimal_yaml(self):
-        data = {"version": "2.0"}
+        data = {"schema_version": 1}
         cfg = _build_from_yaml(data)
-        assert cfg.version == "2.0"
+        assert cfg.schema_version == 1
         assert cfg.agent_security.enabled is True
 
     def test_full_yaml(self):
         data = {
-            "version": "2.0",
+            "schema_version": 1,
             "domains": {
                 "data_sovereignty": {
                     "enabled": True,
@@ -123,7 +123,7 @@ class TestBuildFromYAML:
 
     def test_empty_yaml(self):
         cfg = _build_from_yaml({})
-        assert cfg.version == "2.0"
+        assert cfg.schema_version == 1
         assert cfg.agent_security.enabled is True
 
     def test_plugins_and_plugin_config_parsed(self):
@@ -134,6 +134,13 @@ class TestBuildFromYAML:
         cfg = _build_from_yaml(data)
         assert cfg.plugins == ["mypkg.plugins"]
         assert cfg.plugin_config == {"my-guard": {"threshold": 0.8}}
+
+    def test_schema_version_parsed(self):
+        assert _build_from_yaml({"schema_version": 1}).schema_version == 1
+        assert _build_from_yaml({"schema_version": 3}).schema_version == 3
+        # legacy/absent keys fall back to 1
+        assert _build_from_yaml({}).schema_version == 1
+        assert _build_from_yaml({"version": "2.0"}).schema_version == 1
 
 
 class TestBuildFromEnv:
@@ -171,7 +178,7 @@ class TestLoadConfig:
         yaml_file = tmp_path / "admina.yaml"
         yaml_file.write_text(
             textwrap.dedent("""\
-            version: "2.0"
+            schema_version: 1
             domains:
               agent_security:
                 proxy:
@@ -185,10 +192,10 @@ class TestLoadConfig:
         # No yaml file exists in search path
         cfg = load_config(search_paths=[str(tmp_path)])
         assert isinstance(cfg, AdminaConfig)
-        assert cfg.version == "2.0"
+        assert cfg.schema_version == 1
 
     def test_search_paths(self, tmp_path):
         yaml_file = tmp_path / "admina.yaml"
-        yaml_file.write_text('version: "3.0"\n')
+        yaml_file.write_text("schema_version: 3\n")
         cfg = load_config(search_paths=[str(tmp_path)])
-        assert cfg.version == "3.0"
+        assert cfg.schema_version == 3
