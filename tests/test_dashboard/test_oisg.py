@@ -119,6 +119,7 @@ class _FakeSettings:
     CLICKHOUSE_DB: str = "admina"
     UPSTREAM_MCP_URL: str = "http://mock:9000"
     AI_INFRA_LLM_ENABLED: bool = False
+    ADMINA_API_KEY: str = ""
 
 
 # ══════════════════════════════════════════════════════════════
@@ -282,6 +283,16 @@ class TestComputeOISGScore:
         result_yes = compute_oisg_score(config=_FakeConfig(admina_api_key="key123"))
         assert result_yes.pillars["secure"].criteria[1].satisfied is True
 
+    def test_s2_satisfied_when_api_key_configured(self) -> None:
+        """S2 reads api_key_configured param directly, overriding config fallback."""
+        result = compute_oisg_score(api_key_configured=True)
+        s2 = next(c for c in result.pillars["secure"].criteria if c.id == "s2")
+        assert s2.satisfied is True
+
+        result = compute_oisg_score(api_key_configured=False)
+        s2 = next(c for c in result.pillars["secure"].criteria if c.id == "s2")
+        assert s2.satisfied is False
+
 
 # ══════════════════════════════════════════════════════════════
 #  Unit tests — criteria definitions
@@ -324,6 +335,7 @@ def _build_test_app(
     config: Any = None,
     engine_status: dict | None = None,
     metrics: dict | None = None,
+    settings: Any = None,
 ) -> FastAPI:
     from admina.proxy.api.dashboard import create_dashboard_endpoints
 
@@ -349,7 +361,7 @@ def _build_test_app(
         get_forensic_box=lambda: forensic_box,
         get_compliance=lambda: compliance,
         get_clickhouse=lambda: None,
-        get_settings=lambda: _FakeSettings(),
+        get_settings=lambda: (settings if settings is not None else _FakeSettings()),
         get_firewall=lambda: firewall,
         get_pii_redactor=lambda: pii_redactor,
         get_loop_breaker=lambda: loop_breaker,
@@ -461,8 +473,8 @@ class TestDashboardOISGEndpoint:
             governance_guards=[_FakeGuard()],
             config=_FakeConfig(
                 ai_infra=_FakeAIInfra(enabled=True, rag=_FakeAIInfra._RAG(enabled=True)),
-                admina_api_key="secret-key",
             ),
+            settings=_FakeSettings(ADMINA_API_KEY="secret-key"),
         )
 
         async def go():
@@ -470,6 +482,9 @@ class TestDashboardOISGEndpoint:
                 return (await c.get("/api/dashboard/oisg")).json()
 
         data = _run(go())
+        # S2 (API key auth) must be genuinely satisfied — not just obscured by loose threshold
+        s2 = next(c for c in data["pillars"]["secure"]["criteria"] if c["id"] == "s2")
+        assert s2["satisfied"] is True, "S2 must be satisfied when ADMINA_API_KEY is set"
         assert data["total"] >= 80
         assert data["level"] == "OISG adequate"
 

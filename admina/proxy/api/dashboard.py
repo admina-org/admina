@@ -907,6 +907,7 @@ def create_dashboard_endpoints(
             otel_exporter=get_otel_exporter() if get_otel_exporter else None,
             governance_guards=get_governance_guards() if get_governance_guards else [],
             config=get_config() if get_config else None,
+            api_key_configured=bool(get_settings().ADMINA_API_KEY),
             engine_status=get_engine_status() if get_engine_status else {},
             metrics=get_metrics(),
         )

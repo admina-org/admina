@@ -233,6 +233,7 @@ def compute_oisg_score(
     otel_exporter: Any | None = None,
     governance_guards: list | None = None,
     config: Any | None = None,
+    api_key_configured: bool | None = None,
     engine_status: dict[str, Any] | None = None,
     metrics: dict[str, Any] | None = None,
 ) -> OISGResult:
@@ -240,6 +241,12 @@ def compute_oisg_score(
 
     Each criterion is evaluated by inspecting whether the corresponding
     Admina subsystem is active and properly configured.
+
+    ``api_key_configured`` overrides the S2 (Cryptographic agent identity)
+    check: when provided, it takes precedence over reading ``admina_api_key``
+    from ``config``.  Pass ``True`` when the proxy ``Settings.ADMINA_API_KEY``
+    is non-empty.  When omitted the function falls back to
+    ``getattr(config, "admina_api_key", "")`` for backwards compatibility.
     """
     if governance_guards is None:
         governance_guards = []
@@ -274,6 +281,7 @@ def compute_oisg_score(
         pii_redactor=pii_redactor,
         forensic_box=forensic_box,
         config=config,
+        api_key_configured=api_key_configured,
         engine_status=engine_status,
     )
     pillars["secure"] = _build_pillar("Secure", s_criteria)
@@ -478,6 +486,7 @@ def _evaluate_secure(
     pii_redactor: Any | None,
     forensic_box: Any | None,
     config: Any | None,
+    api_key_configured: bool | None,
     engine_status: dict[str, Any],
 ) -> list[CriterionResult]:
     defs = CRITERIA["secure"]
@@ -498,11 +507,14 @@ def _evaluate_secure(
     )
 
     # S2: Cryptographic agent identity — satisfied if API key auth
-    #     is configured (first step toward cryptographic identity)
-    has_auth = False
-    if config is not None:
-        api_key = getattr(config, "admina_api_key", "")
-        has_auth = bool(api_key)
+    #     is configured (first step toward cryptographic identity).
+    #     ``api_key_configured`` takes precedence; the ``config`` fallback
+    #     preserves backwards compatibility for callers that pass an object
+    #     with an ``admina_api_key`` attribute.
+    if api_key_configured is not None:
+        has_auth = api_key_configured
+    else:
+        has_auth = bool(getattr(config, "admina_api_key", "") if config else "")
     results.append(
         CriterionResult(
             id=defs[1]["id"],
