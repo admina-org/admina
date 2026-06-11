@@ -133,7 +133,13 @@ alert_channels:
     url: "https://hooks.example.com/admina"
     events: [HIGH, CRITICAL]
 
+# Third-party plugin modules to load (dotted import paths), and
+# optional per-plugin configuration passed to plugins whose
+# __init__ accepts a `config` parameter (keyed by plugin name).
 plugins: []
+plugin_config: {}
+#   my-guard:
+#     threshold: 0.8
 
 # ── Integrations ────────────────────────────────────────────
 # External framework integrations. Each integration connects

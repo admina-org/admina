@@ -181,7 +181,9 @@ class BaseGovernanceGuard(ABC):
 
     Guards are auto-discovered from ``plugins/builtin/guards/`` or any
     path listed under ``plugins:`` in ``admina.yaml``.  They run in the
-    pipeline after the built-in steps.
+    pipeline after the built-in steps.  If the plugin's ``__init__``
+    accepts a ``config`` parameter, it receives the plugin's
+    ``plugin_config:`` block from ``admina.yaml`` at instantiation.
 
     Community plugin examples:
         * ``admina-guard-toxicity`` — ML-based toxic language detection.
@@ -455,7 +457,10 @@ class BaseAuthProvider(ABC):
     """Interface for authentication and authorization providers.
 
     An auth provider handles identity verification (authenticate) and
-    permission checks (authorize) for incoming requests.
+    permission checks (authorize) for incoming requests.  If the
+    plugin's ``__init__`` accepts a ``config`` parameter, it receives
+    the plugin's ``plugin_config:`` block from ``admina.yaml`` at
+    instantiation.
 
     Default implementations:
         * ``APIKeyAuthProvider`` — simple API-key auth (built-in).
@@ -595,7 +600,9 @@ class BaseAlertChannel(ABC):
 
     An alert channel delivers governance notifications (blocked requests,
     compliance gaps, chain verification failures, …) to operators via
-    their preferred medium.
+    their preferred medium.  If the plugin's ``__init__`` accepts a
+    ``config`` parameter, it receives the plugin's ``plugin_config:``
+    block from ``admina.yaml`` at instantiation.
 
     Default implementations:
         * ``LogAlertChannel`` — Python logger (built-in).

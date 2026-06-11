@@ -221,6 +221,7 @@ class AdminaConfig:
     pii_engine: str = "spacy-regex"
     alert_channels: list[AlertChannelConfig] = field(default_factory=list)
     plugins: list[str] = field(default_factory=list)
+    plugin_config: dict[str, Any] = field(default_factory=dict)
 
     # Storage — populated from .env fallback when YAML absent
     redis_url: str = "redis://localhost:6379/0"
@@ -370,6 +371,7 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
         pii_engine=data.get("pii_engine", "spacy-regex"),
         alert_channels=alerts,
         plugins=data.get("plugins", []),
+        plugin_config=data.get("plugin_config", {}),
     )
 
 

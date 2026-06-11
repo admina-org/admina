@@ -22,6 +22,7 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import inspect
 import json
 import logging
 import os
@@ -103,6 +104,44 @@ def _spawn(coro: Any) -> asyncio.Task:
     return task
 
 
+def instantiate_plugins(
+    registry: Any,
+    category: str,
+    plugin_config: dict[str, Any] | None = None,
+) -> list:
+    """Instantiate every registered plugin of *category*.
+
+    Plugins whose ``__init__`` accepts a ``config`` parameter receive
+    their block from admina.yaml ``plugin_config:`` (keyed by plugin
+    name); the others are constructed with no arguments.
+    """
+    plugin_config = plugin_config or {}
+    instances = []
+    for name, cls in registry.list(category).items():
+        try:
+            params = inspect.signature(cls.__init__).parameters
+            if "config" in params:
+                instances.append(cls(config=plugin_config.get(name)))
+            else:
+                instances.append(cls())
+        except ImportError as exc:
+            logger.warning(
+                "Skipping %s plugin %r: optional dependency missing (%s)",
+                category,
+                name,
+                exc,
+            )
+        except Exception as exc:  # noqa: BLE001 — third-party/user-config code, isolate
+            logger.error(
+                "Skipping %s plugin %r: constructor failed (%s) — check its plugin_config block",
+                category,
+                name,
+                exc,
+                exc_info=True,
+            )
+    return instances
+
+
 # ── Startup / Shutdown ───────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
@@ -121,25 +160,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     )
 
     # ── Plugin discovery ──────────────────────────────────────
-    state.registry.discover()
+    _plugin_modules = list(_admina_config.plugins) if _admina_config else []
+    state.registry.discover(extra_modules=_plugin_modules or None)
 
-    def _instantiate(category: str) -> list:
-        instances = []
-        for name, cls in state.registry.list(category).items():
-            try:
-                instances.append(cls())
-            except ImportError as exc:
-                logger.warning(
-                    "Skipping %s plugin %r: optional dependency missing (%s)",
-                    category,
-                    name,
-                    exc,
-                )
-        return instances
-
-    state.governance_guards = _instantiate("governance_guard")
-    state.alert_channels = _instantiate("alert_channel")
-    state.auth_providers = _instantiate("auth_provider")
+    _plugin_cfg = dict(getattr(_admina_config, "plugin_config", {}) or {}) if _admina_config else {}
+    state.governance_guards = instantiate_plugins(state.registry, "governance_guard", _plugin_cfg)
+    state.alert_channels = instantiate_plugins(state.registry, "alert_channel", _plugin_cfg)
+    state.auth_providers = instantiate_plugins(state.registry, "auth_provider", _plugin_cfg)
     if state.governance_guards:
         logger.info(
             "Governance guards loaded: %s",

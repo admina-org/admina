@@ -126,6 +126,15 @@ class TestBuildFromYAML:
         assert cfg.version == "2.0"
         assert cfg.agent_security.enabled is True
 
+    def test_plugins_and_plugin_config_parsed(self):
+        data = {
+            "plugins": ["mypkg.plugins"],
+            "plugin_config": {"my-guard": {"threshold": 0.8}},
+        }
+        cfg = _build_from_yaml(data)
+        assert cfg.plugins == ["mypkg.plugins"]
+        assert cfg.plugin_config == {"my-guard": {"threshold": 0.8}}
+
 
 class TestBuildFromEnv:
     """Environment variable fallback."""

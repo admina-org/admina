@@ -38,6 +38,8 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from admina import __version__
 from admina.core.secrets import SecretVault, validate_password
 
+logger = logging.getLogger(__name__)
+
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 # Domains the user can toggle on/off during ``admina init``.
@@ -885,12 +887,23 @@ def _pip_install(package: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _config_extra_modules() -> list[str]:
+    """Module paths from admina.yaml ``plugins:`` — empty if no config."""
+    try:
+        from admina.core.config import load_config
+
+        return list(load_config().plugins)
+    except (ImportError, ValueError, OSError) as exc:
+        logger.debug("Could not read plugins from admina.yaml: %s", exc)
+        return []
+
+
 def _discover_and_list_plugins() -> dict[str, dict[str, type]]:
     """Run plugin discovery and return all registered plugins by type."""
     from admina.plugins.registry import PluginRegistry
 
     registry = PluginRegistry()
-    registry.discover()
+    registry.discover(extra_modules=_config_extra_modules() or None)
     return registry.list_all()
 
 
@@ -1217,7 +1230,7 @@ def doctor() -> None:
         from admina.plugins.registry import PluginRegistry
 
         reg = PluginRegistry()
-        count = reg.discover()
+        count = reg.discover(extra_modules=_config_extra_modules() or None)
         click.echo(f"    Discovered           {ok_mark}  {count} plugins")
     except Exception as exc:
         import traceback

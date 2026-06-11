@@ -26,6 +26,9 @@ class {{ class_name }}({{ base_class }}):
 {%- elif name_property == "supported_languages" %}
     supported_languages = ["en"]
 {%- endif %}
+    # Optional: accept per-plugin config from admina.yaml `plugin_config:`
+    # def __init__(self, config: dict | None = None) -> None:
+    #     self._config = config or {}
 {% if plugin_type == "model_adapter" %}
     async def send(
         self,
