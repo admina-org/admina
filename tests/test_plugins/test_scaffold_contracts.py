@@ -74,3 +74,16 @@ def test_scaffolded_plugin_is_instantiable_and_async(plugin_type, tmp_path):
         assert "from typing import Any" not in source, (
             f"unused 'from typing import Any' in {plugin_type} scaffold (ruff F401)"
         )
+
+
+def test_scaffolded_pyproject_metadata(tmp_path):
+    from admina import __version__
+
+    _scaffold_plugin("my-guard", "governance_guard", tmp_path / "my-guard")
+    text = (tmp_path / "my-guard" / "pyproject.toml").read_text()
+
+    assert f"admina-framework>={__version__}" in text
+    assert "admina>=0.9.0" not in text
+    assert 'requires-python = ">=3.11"' in text
+    assert '[project.entry-points."admina.plugins"]' in text
+    assert 'my-guard = "my_guard"' in text
