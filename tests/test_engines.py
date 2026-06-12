@@ -230,3 +230,18 @@ def test_rust_pii_stats_count_entities_not_calls(monkeypatch):
         f"total_redacted={stats['total_redacted']} — expected >=2 entities from one "
         f"call with two emails; got call-count semantics instead of entity-count"
     )
+
+
+# ── Integrations singletons delegate to admina.engines ───────────────────────
+
+def test_integrations_singletons_use_engines_module(monkeypatch):
+    monkeypatch.setenv("ADMINA_ENGINE", "python")
+    _reload_engines()
+    import admina.integrations._engines as ie
+
+    ie._firewall = ie._pii_redactor = ie._loop_breaker = None  # reset singletons
+    fw = ie.get_firewall()
+    assert fw.get_stats()["engine"] == "python"  # bridge, not bare InjectionFirewall
+    assert ie.get_firewall() is fw  # singleton preserved
+    # teardown: reset singletons so other tests get a fresh engine
+    ie._firewall = ie._pii_redactor = ie._loop_breaker = None

@@ -15,6 +15,9 @@
 """Shared lazy-loaded governance engines for integration callbacks.
 
 Thread-safe via module-level lock. Engines are created once on first use.
+Engines are acquired from :mod:`admina.engines`, which handles Rust
+auto-detection, ``ADMINA_ENGINE`` override, admina.yaml firewall overrides,
+and ``pii_engine`` selection.
 """
 
 from __future__ import annotations
@@ -28,36 +31,36 @@ _loop_breaker = None
 
 
 def get_firewall():
-    """Return the shared InjectionFirewall instance."""
+    """Return the shared firewall engine (via admina.engines)."""
     global _firewall
     if _firewall is None:
         with _lock:
             if _firewall is None:
-                from admina.domains.agent_security.firewall import InjectionFirewall
+                from admina.engines import get_firewall as _get_fw
 
-                _firewall = InjectionFirewall()
+                _firewall = _get_fw()
     return _firewall
 
 
 def get_pii_redactor():
-    """Return the shared PIIRedactor instance."""
+    """Return the shared PII engine (via admina.engines)."""
     global _pii_redactor
     if _pii_redactor is None:
         with _lock:
             if _pii_redactor is None:
-                from admina.domains.data_sovereignty.pii import PIIRedactor
+                from admina.engines import get_pii_engine as _get_pii
 
-                _pii_redactor = PIIRedactor()
+                _pii_redactor = _get_pii()
     return _pii_redactor
 
 
 def get_loop_breaker():
-    """Return the shared LoopBreaker instance."""
+    """Return the shared loop breaker engine (via admina.engines)."""
     global _loop_breaker
     if _loop_breaker is None:
         with _lock:
             if _loop_breaker is None:
-                from admina.domains.agent_security.loop_breaker import LoopBreaker
+                from admina.engines import get_loop_breaker as _get_lb
 
-                _loop_breaker = LoopBreaker()
+                _loop_breaker = _get_lb()
     return _loop_breaker
