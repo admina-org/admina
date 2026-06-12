@@ -319,3 +319,12 @@ class TestGovernedModelEvents:
 
         assert "latency_us" in result.governance
         assert result.governance["latency_us"] > 0
+
+
+def test_sdk_reexports_canonical_adapter_abc():
+    import admina.plugins.base as plugins_base
+    import admina.sdk.governed_data as gd
+    import admina.sdk.governed_model as gm
+
+    assert gm.BaseModelAdapter is plugins_base.BaseModelAdapter
+    assert gd.BaseDataConnector is plugins_base.BaseDataConnector

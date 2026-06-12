@@ -22,40 +22,14 @@ from __future__ import annotations
 
 import time
 import uuid
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
 from admina.core.event_bus import EventType, GovernanceEvent, bus
+from admina.plugins.base import BaseModelAdapter
 from admina.sdk._compat import run_sync
 
 __all__ = ["GovernedModel", "GovernedResponse", "BaseModelAdapter"]
-
-
-class BaseModelAdapter(ABC):
-    """Abstract base for model adapters.
-
-    Concrete adapters (Ollama, OpenAI, etc.) implement this interface.
-    See :mod:`admina.plugins.base.BaseModelAdapter` for the canonical
-    plugin definition used by the registry.
-    """
-
-    @abstractmethod
-    async def send(self, prompt: str, context: Any = None, **kwargs: Any) -> dict:
-        """Send a prompt and return a response dict.
-
-        Returns:
-            Dict with at least ``text`` key and optional ``metadata``.
-        """
-
-    @abstractmethod
-    def supports_model(self, model_name: str) -> bool:
-        """Return True if this adapter can serve the given model."""
-
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        """Human-readable adapter name."""
 
 
 @dataclass

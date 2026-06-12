@@ -22,44 +22,14 @@ from __future__ import annotations
 
 import time
 import uuid
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
 from admina.core.event_bus import EventType, GovernanceEvent, bus
+from admina.plugins.base import BaseDataConnector
 from admina.sdk._compat import run_sync
 
 __all__ = ["GovernedData", "GovernedDocument", "IngestResult", "BaseDataConnector"]
-
-
-class BaseDataConnector(ABC):
-    """Abstract base for data connectors.
-
-    Concrete connectors (filesystem, ChromaDB, etc.) implement this
-    interface. See :mod:`admina.plugins.base.BaseDataConnector` for the
-    canonical plugin definition used by the registry.
-    """
-
-    @abstractmethod
-    async def ingest(self, source: Any, **kwargs: Any) -> dict:
-        """Ingest data from source.
-
-        Returns:
-            Dict with at least ``doc_count`` and ``chunk_count`` keys.
-        """
-
-    @abstractmethod
-    async def query(self, query: str, **kwargs: Any) -> list[dict]:
-        """Query the data store.
-
-        Returns:
-            List of dicts with ``text``, ``metadata``, and ``score`` keys.
-        """
-
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        """Human-readable connector name."""
 
 
 @dataclass
