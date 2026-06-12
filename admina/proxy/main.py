@@ -52,11 +52,11 @@ from admina.domains.compliance.otel import OTELGovernanceExporter
 from admina.proxy.api.dashboard import create_dashboard_endpoints
 from admina.proxy.api.integration import create_integration_endpoints
 from admina.proxy.config import GovernanceEvent, settings
-from admina.proxy.engine_bridge import (
+from admina.engines import (
     engine_status,
     get_firewall,
     get_loop_breaker,
-    get_pii_scanner,
+    get_pii_engine,
 )
 from admina.proxy.governance import run_pipeline, safe_serialize
 from admina.proxy.multi_upstream import MultiUpstreamRouter
@@ -150,7 +150,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # Build ProxyState
     state = ProxyState(
         firewall=get_firewall(),
-        pii_redactor=get_pii_scanner(),
+        pii_redactor=get_pii_engine(),
         loop_breaker=get_loop_breaker(
             window_size=settings.LOOP_WINDOW_SIZE,
             similarity_threshold=settings.LOOP_SIMILARITY_THRESHOLD,
