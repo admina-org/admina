@@ -1,0 +1,42 @@
+{"id":"pii-en-001","text":"email me at alice.rossi@example.com when you are ready","expected_types":["EMAIL"],"lang":"en","tag":"email"}
+{"id":"pii-en-002","text":"you can reach bob.smith@company.co.uk for the invoice","expected_types":["EMAIL"],"lang":"en","tag":"email"}
+{"id":"pii-it-001","text":"scrivimi a giulia.bianchi@azienda.it grazie","expected_types":["EMAIL"],"lang":"it","tag":"email"}
+{"id":"pii-en-003","text":"my card number is 4111 1111 1111 1111 expiring soon","expected_types":["CREDIT_CARD"],"lang":"en","tag":"card"}
+{"id":"pii-en-004","text":"charge it to 5500 0000 0000 0004 for the order","expected_types":["CREDIT_CARD"],"lang":"en","tag":"card"}
+{"id":"pii-it-002","text":"la mia carta è 4012 8888 8888 1881 per il pagamento","expected_types":["CREDIT_CARD"],"lang":"it","tag":"card"}
+{"id":"pii-en-005","text":"his social security number is 123-45-6789 on file","expected_types":["SSN"],"lang":"en","tag":"ssn"}
+{"id":"pii-en-006","text":"the record shows SSN 078-05-1120 for the account","expected_types":["SSN"],"lang":"en","tag":"ssn"}
+{"id":"pii-it-003","text":"il mio codice fiscale è RSSMRA85T10A562S","expected_types":["IT_CODICE_FISCALE"],"lang":"it","tag":"codice_fiscale"}
+{"id":"pii-it-004","text":"codice fiscale del cliente VRDLGI80A01F205X","expected_types":["IT_CODICE_FISCALE"],"lang":"it","tag":"codice_fiscale"}
+{"id":"pii-it-005","text":"CF BNCMRA90E45L219K registrato a sistema","expected_types":["IT_CODICE_FISCALE"],"lang":"it","tag":"codice_fiscale"}
+{"id":"pii-es-001","text":"mi DNI es 12345678Z para el registro","expected_types":["ES_DNI_NIE"],"lang":"es","tag":"dni"}
+{"id":"pii-es-002","text":"el documento DNI 87654321X figura en el sistema","expected_types":["ES_DNI_NIE"],"lang":"es","tag":"dni"}
+{"id":"pii-es-003","text":"NIE X1234567L del solicitante","expected_types":["ES_DNI_NIE"],"lang":"es","tag":"dni"}
+{"id":"pii-en-007","text":"the server responded from 192.168.1.100 last night","expected_types":["IP_ADDRESS"],"lang":"en","tag":"ip"}
+{"id":"pii-en-008","text":"block traffic from 10.0.0.254 immediately","expected_types":["IP_ADDRESS"],"lang":"en","tag":"ip"}
+{"id":"pii-de-001","text":"die IP 172.16.0.5 taucht im Log auf","expected_types":["IP_ADDRESS"],"lang":"de","tag":"ip"}
+{"id":"pii-en-009","text":"transfer to IBAN GB82 WEST 1234 5698 7654 32 today","expected_types":["IBAN"],"lang":"en","tag":"iban"}
+{"id":"pii-it-006","text":"bonifico su IBAN NL91 ABNA 0417 1643 00 oggi","expected_types":["IBAN"],"lang":"it","tag":"iban"}
+{"id":"pii-fr-001","text":"virez sur IBAN BE71 0961 2345 6769 maintenant","expected_types":["IBAN"],"lang":"fr","tag":"iban"}
+{"id":"pii-en-010","text":"call me at 415-555-0132 after lunch","expected_types":["PHONE"],"lang":"en","tag":"phone"}
+{"id":"pii-en-011","text":"the office line is 212-555-0188 during the week","expected_types":["PHONE"],"lang":"en","tag":"phone"}
+{"id":"pii-en-012","text":"reach support at 800-555-0199 anytime","expected_types":["PHONE"],"lang":"en","tag":"phone"}
+{"id":"pii-en-013","text":"email john.doe@example.org and card 4111 1111 1111 1111","expected_types":["EMAIL","CREDIT_CARD"],"lang":"en","tag":"multi"}
+{"id":"pii-it-007","text":"contatto mario.verdi@example.it e CF VRDMRA75A01H501Z","expected_types":["EMAIL","IT_CODICE_FISCALE"],"lang":"it","tag":"multi"}
+{"id":"pii-en-014","text":"ping 192.168.0.10 and email ops@example.com","expected_types":["IP_ADDRESS","EMAIL"],"lang":"en","tag":"multi"}
+{"id":"pii-neg-001","text":"the meeting is at 3 pm in the small room upstairs","expected_types":[],"lang":"en","tag":"negative"}
+{"id":"pii-neg-002","text":"please review the attached document before the call","expected_types":[],"lang":"en","tag":"negative"}
+{"id":"pii-neg-003","text":"the project deadline moved to the end of next week","expected_types":[],"lang":"en","tag":"negative"}
+{"id":"pii-neg-004","text":"remember to water the plants twice a week","expected_types":[],"lang":"en","tag":"negative"}
+{"id":"pii-neg-005","text":"the recipe needs two cups of flour and a pinch of salt","expected_types":[],"lang":"en","tag":"negative"}
+{"id":"pii-neg-006","text":"we shipped the new feature earlier this morning","expected_types":[],"lang":"en","tag":"negative"}
+{"id":"pii-neg-007","text":"let us grab a coffee sometime this week","expected_types":[],"lang":"en","tag":"negative"}
+{"id":"pii-neg-008","text":"the weather looks clear for the whole weekend","expected_types":[],"lang":"en","tag":"negative"}
+{"id":"pii-neg-009","text":"ci vediamo domani per discutere il progetto","expected_types":[],"lang":"it","tag":"negative"}
+{"id":"pii-neg-010","text":"oggi il cielo è sereno e fa caldo","expected_types":[],"lang":"it","tag":"negative"}
+{"id":"pii-neg-011","text":"bonne journée et à très bientôt","expected_types":[],"lang":"fr","tag":"negative"}
+{"id":"pii-neg-012","text":"on se voit demain pour le déjeuner","expected_types":[],"lang":"fr","tag":"negative"}
+{"id":"pii-neg-013","text":"hace muy buen tiempo esta mañana","expected_types":[],"lang":"es","tag":"negative"}
+{"id":"pii-neg-014","text":"nos vemos luego para tomar algo","expected_types":[],"lang":"es","tag":"negative"}
+{"id":"pii-neg-015","text":"das Wetter ist heute wirklich schön","expected_types":[],"lang":"de","tag":"negative"}
+{"id":"pii-neg-016","text":"wir sehen uns morgen im Büro","expected_types":[],"lang":"de","tag":"negative"}

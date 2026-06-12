@@ -1,0 +1,22 @@
+{"id":"loop-en-001","messages":["retry the call","retry the call","retry the call","retry the call","retry the call","retry the call"],"label":"loop","lang":"en","tag":"verbatim"}
+{"id":"loop-en-002","messages":["search the web for the answer","search the web for the answer","search the web for the answer","search the web for the answer","search the web for the answer","search the web for the answer"],"label":"loop","lang":"en","tag":"verbatim"}
+{"id":"loop-en-003","messages":["call the weather API now","call the weather API now","call the weather API now","call the weather API now","call the weather API now","call the weather API now"],"label":"loop","lang":"en","tag":"verbatim"}
+{"id":"loop-en-004","messages":["generate the monthly report","generate the monthly report","generate the monthly report","generate the monthly report","generate the monthly report","generate the monthly report"],"label":"loop","lang":"en","tag":"verbatim"}
+{"id":"loop-en-005","messages":["fetch the user data","fetch the user data","fetch the user data","fetch the user data","fetch the user data","fetch the user data"],"label":"loop","lang":"en","tag":"verbatim"}
+{"id":"loop-en-006","messages":["please continue the task","please continue the task","please continue the task","please continue the task","please continue the task","please continue the task"],"label":"loop","lang":"en","tag":"verbatim"}
+{"id":"loop-it-001","messages":["riprova la richiesta ora","riprova la richiesta ora","riprova la richiesta ora","riprova la richiesta ora","riprova la richiesta ora","riprova la richiesta ora"],"label":"loop","lang":"it","tag":"verbatim"}
+{"id":"loop-en-007","messages":["process item number five","process item number five","process item number five","process item number five","process item number five","process item number five"],"label":"loop","lang":"en","tag":"verbatim"}
+{"id":"loop-en-008","messages":["look up the weather forecast","check the weather forecast","find the weather forecast","get the weather forecast","show the weather forecast","display the weather forecast"],"label":"loop","lang":"en","tag":"paraphrase"}
+{"id":"loop-en-009","messages":["retry the call","retry the call","retry the call","do a quick unrelated check","retry the call","retry the call","retry the call"],"label":"loop","lang":"en","tag":"counter_reset"}
+{"id":"loop-en-010","messages":["keep trying the same request","keep trying the same request","keep trying the same request","keep trying the same request","keep trying the same request","keep trying the same request"],"label":"loop","lang":"en","tag":"verbatim"}
+{"id":"loop-neg-001","messages":["book a flight to Madrid","find a nearby hotel","rent a small car"],"label":"not_loop","lang":"en","tag":"distinct"}
+{"id":"loop-neg-002","messages":["scrivi il titolo del capitolo","aggiungi un paragrafo introduttivo","controlla la grammatica finale"],"label":"not_loop","lang":"it","tag":"distinct"}
+{"id":"loop-neg-003","messages":["analyze the sales data","summarize the key findings","draft the conclusions"],"label":"not_loop","lang":"en","tag":"distinct"}
+{"id":"loop-neg-004","messages":["open the configuration file","change the timeout value","save and restart the service"],"label":"not_loop","lang":"en","tag":"distinct"}
+{"id":"loop-neg-005","messages":["greet the new user","ask what they need help with","offer three useful options"],"label":"not_loop","lang":"en","tag":"distinct"}
+{"id":"loop-neg-006","messages":["plan the weekend trip","pack the hiking bags","leave early on Saturday"],"label":"not_loop","lang":"en","tag":"distinct"}
+{"id":"loop-neg-007","messages":["draft the introduction","write the main body","add a short conclusion"],"label":"not_loop","lang":"en","tag":"distinct"}
+{"id":"loop-neg-008","messages":["buy fresh vegetables","cook a light dinner","clean the kitchen after"],"label":"not_loop","lang":"en","tag":"distinct"}
+{"id":"loop-neg-009","messages":["réserver un vol","trouver un hôtel","louer une voiture"],"label":"not_loop","lang":"fr","tag":"distinct"}
+{"id":"loop-neg-010","messages":["comprar verduras frescas","preparar una cena ligera","limpiar la cocina"],"label":"not_loop","lang":"es","tag":"distinct"}
+{"id":"loop-neg-011","messages":["lies den Bericht","markiere die wichtigen Stellen","schreibe eine Zusammenfassung"],"label":"not_loop","lang":"de","tag":"distinct"}
