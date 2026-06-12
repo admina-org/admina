@@ -9,7 +9,7 @@ Source:   https://github.com/admina-org/admina
 
 ─── Bundled assets ─────────────────────────────────────────────────
 
-* dashboard/heimdall.png
+* admina/dashboard/static/heimdall.png
   "Heimdall — the Governance Owl"
   Copyright © 2025–2026 Stefano Noferi & Admina contributors
   Licensed under the Apache License, Version 2.0

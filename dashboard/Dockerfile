@@ -1,10 +1,11 @@
 FROM nginx:alpine
 RUN apk add --no-cache openssl
 # Dashboard static files
-COPY dashboard/index.html /usr/share/nginx/html/index.html
-COPY dashboard/heimdall.png /usr/share/nginx/html/heimdall.png
+# Single source: the SPA ships inside the package (admina/dashboard/static)
+COPY admina/dashboard/static/index.html /usr/share/nginx/html/index.html
+COPY admina/dashboard/static/heimdall.png /usr/share/nginx/html/heimdall.png
 # Vendored JS dependencies — no CDN at runtime, works in air-gapped deployments
-COPY dashboard/vendor/alpinejs-3.14.8.min.js /usr/share/nginx/html/vendor/alpinejs.min.js
+COPY admina/dashboard/static/vendor/alpinejs.min.js /usr/share/nginx/html/vendor/alpinejs.min.js
 # Inject git commit hash (auto-updated by post-commit hook)
 COPY dashboard/git_commit.txt /tmp/git_commit.txt
 RUN sed -i "s/%%GIT_COMMIT%%/$(cat /tmp/git_commit.txt)/g" /usr/share/nginx/html/index.html \
