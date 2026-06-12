@@ -171,6 +171,33 @@ class TestBuildFromEnv:
         assert cfg.agent_security.loop_breaker.window_size == 10
 
 
+class TestFirewallOverrides:
+    """Typed firewall custom_patterns and disabled_categories fields."""
+
+    def test_firewall_overrides_parsed(self):
+        data = {
+            "domains": {
+                "agent_security": {
+                    "firewall": {
+                        "custom_patterns": [
+                            {"regex": "secret-project-x", "category": "internal", "risk_level": "high"}
+                        ],
+                        "disabled_categories": ["role_hijack"],
+                    }
+                }
+            }
+        }
+        cfg = _build_from_yaml(data)
+        assert cfg.agent_security.firewall.custom_patterns == [
+            {"regex": "secret-project-x", "category": "internal", "risk_level": "high"}
+        ]
+        assert cfg.agent_security.firewall.disabled_categories == ["role_hijack"]
+        # defaults
+        empty = _build_from_yaml({})
+        assert empty.agent_security.firewall.custom_patterns == []
+        assert empty.agent_security.firewall.disabled_categories == []
+
+
 class TestLoadConfig:
     """load_config() integration."""
 

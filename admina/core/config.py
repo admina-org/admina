@@ -138,6 +138,8 @@ class FirewallConfig:
 
     enabled: bool = True
     heuristic_threshold: float = 0.7
+    custom_patterns: list[dict] = field(default_factory=list)
+    disabled_categories: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -328,6 +330,8 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
         firewall=FirewallConfig(
             enabled=fw_raw.get("enabled", True),
             heuristic_threshold=fw_raw.get("heuristic_threshold", 0.7),
+            custom_patterns=list(fw_raw.get("custom_patterns") or []),
+            disabled_categories=list(fw_raw.get("disabled_categories") or []),
         ),
         loop_breaker=LoopBreakerConfig(
             enabled=lb_raw.get("enabled", True),
