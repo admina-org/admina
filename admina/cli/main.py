@@ -928,7 +928,8 @@ def _scaffold_plugin(
         "base_class": base_class,
         "class_name": class_name,
         "name_property": name_prop,
-        "needs_any": plugin_type in {"model_adapter", "data_connector", "transport_adapter", "auth_provider"},
+        "needs_any": plugin_type
+        in {"model_adapter", "data_connector", "transport_adapter", "auth_provider"},
         "admina_version": __version__,
     }
 

@@ -361,7 +361,7 @@ def _build_test_app(
         get_forensic_box=lambda: forensic_box,
         get_compliance=lambda: compliance,
         get_clickhouse=lambda: None,
-        get_settings=lambda: (settings if settings is not None else _FakeSettings()),
+        get_settings=lambda: settings if settings is not None else _FakeSettings(),
         get_firewall=lambda: firewall,
         get_pii_redactor=lambda: pii_redactor,
         get_loop_breaker=lambda: loop_breaker,

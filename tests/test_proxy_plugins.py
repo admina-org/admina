@@ -53,9 +53,7 @@ def test_instantiate_plugins_passes_config_block():
     reg.register(CfgGuard)
     reg.register(PlainGuard)
 
-    instances = instantiate_plugins(
-        reg, "governance_guard", {"cfg-guard": {"threshold": 0.8}}
-    )
+    instances = instantiate_plugins(reg, "governance_guard", {"cfg-guard": {"threshold": 0.8}})
     assert len(instances) == 2
     assert captured["config"] == {"threshold": 0.8}
 
