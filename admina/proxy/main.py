@@ -1428,7 +1428,16 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                             ),
                         )
                 except (ValueError, RuntimeError, OSError, TypeError) as exc:
-                    logger.warning("Guard %r response inspection failed: %s", guard.name, exc)
+                    logger.error(
+                        "Guard %r failed its contract on response inspection and was skipped: %s",
+                        guard.name,
+                        exc,
+                        exc_info=True,
+                    )
+                    # follow-up: optional fail-closed mode
+                    # Response guard errors are not collected into pipeline_result.checks
+                    # (that result is already built before this path runs); the ERROR log
+                    # with exc_info is the audit trail for response-side contract failures.
 
         total_latency = (time.perf_counter() - start_time) * 1000
         state.update_avg_latency(total_latency)

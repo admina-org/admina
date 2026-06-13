@@ -122,7 +122,17 @@ async def run_pipeline(
                     result.risk_level = guard_result.get("risk_level", RiskLevel.HIGH)
                     break
             except (ValueError, RuntimeError, OSError, TypeError) as exc:
-                logger.warning("Guard %r raised an exception: %s", guard.name, exc)
+                logger.error(
+                    "Guard %r failed its contract and was skipped: %s",
+                    guard.name,
+                    exc,
+                    exc_info=True,
+                )
+                # follow-up: optional fail-closed mode
+                result.checks[f"guard_{guard.name}"] = {
+                    "action": "ERROR",
+                    "error": str(exc),
+                }
 
     # 5. Apply governance MODE — observe / dry-run downgrade BLOCK to ALLOW
     # but record what would have happened in `would_action` so dashboards

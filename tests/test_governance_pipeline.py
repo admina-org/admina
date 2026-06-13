@@ -238,6 +238,8 @@ async def test_guard_allows():
 async def test_failing_guard_does_not_crash():
     result = await run_pipeline(**_base_kwargs(governance_guards=[FailingGuard()]))
     assert result.action.value == "allow"
+    assert result.checks["guard_failing"]["action"] == "ERROR"
+    assert result.checks["guard_failing"].get("error") is not None
 
 
 @pytest.mark.anyio

@@ -230,3 +230,31 @@ def test_build_details_is_flat_checks_dict():
     # No extra metadata keys beyond checks content and optional would_action.
     assert "action" not in details
     assert "risk_level" not in details
+
+
+def test_guard_contract_error_is_recorded_not_silent():
+    import asyncio
+    from admina.domains.governance import run_pipeline
+
+    class _FW:
+        def check(self, t): return {"is_injection": False, "risk_level": "low"}
+    class _PII:
+        def redact(self, t): return {"redacted_text": t, "entities": [], "count": 0}
+    class _Loop:
+        def check(self, s, c): return {"is_loop": False, "similarity": 0.0}
+
+    class BadGuard:
+        name = "bad"
+        def inspect_request(self, payload):  # SYNC on an async contract → TypeError when awaited
+            return {"action": "ALLOW"}
+
+    res = asyncio.run(run_pipeline(
+        body={"params": {"content": "hi"}}, content_str="hi", session_id="s",
+        agent_id="a", request_id="r", params={"content": "hi"},
+        firewall=_FW(), pii_redactor=_PII(), loop_breaker=_Loop(),
+        governance_guards=[BadGuard()],
+    ))
+    assert "guard_bad" in res.checks
+    assert res.checks["guard_bad"].get("error") is not None
+    assert res.checks["guard_bad"]["action"] == "ERROR"
+    assert res.action.value == "allow"  # broken guard fails open (does not block)
