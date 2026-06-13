@@ -75,6 +75,39 @@ def _resolve_engine() -> str:
     return mode
 
 
+def _resolve_pii_engine() -> str:
+    """Resolve the engine backing the spacy-regex PII path.
+
+    Recall-safe policy: the Rust PII scanner does NOT cover EU national
+    IDs (codice fiscale / DNI / Personalausweis) or NER person/org names
+    that the Python engine redacts. To avoid silently under-redacting,
+    Rust PII is used only when ADMINA_ENGINE=rust is set explicitly;
+    under 'auto' (the default) the PII path stays on Python for full
+    recall. Firewall and loop breaker are unaffected — they use
+    _resolve_engine() and keep Rust acceleration under 'auto'.
+    """
+    mode = os.environ.get("ADMINA_ENGINE", "auto").lower()
+    if mode not in ("auto", "python", "rust"):
+        raise ValueError(
+            f"ADMINA_ENGINE must be auto|python|rust, got {mode!r}"
+        )
+    if mode == "rust":
+        if not _rust_available:
+            logger.warning(
+                "ADMINA_ENGINE=rust but admina-core is not installed — "
+                "PII falls back to python (pip install 'admina-framework[rust]')"
+            )
+            return "python"
+        return "rust"
+    if mode == "auto" and _rust_available:
+        logger.debug(
+            "PII engine stays on Python under ADMINA_ENGINE=auto for full "
+            "recall (EU national IDs + NER); set ADMINA_ENGINE=rust to "
+            "use the faster Rust scanner (lower PII recall)"
+        )
+    return "python"
+
+
 # ── Firewall YAML overrides ─────────────────────────────────────────────────
 
 def _load_firewall_yaml_overrides() -> tuple[list, list]:
@@ -328,7 +361,7 @@ _PII_ENGINE_FACTORIES: dict[str, Callable[[], PIIBridge]] = {}
 
 
 def _spacy_regex_pii() -> PIIBridge:
-    if _resolve_engine() == "rust":
+    if _resolve_pii_engine() == "rust":
         return _RustPiiBridge()
     return _PythonPiiBridge()
 
@@ -376,6 +409,7 @@ def engine_status() -> dict[str, Any]:
         "rust_version": admina_core.version() if _rust_available else None,
         "selection": os.environ.get("ADMINA_ENGINE", "auto"),
         "active": _resolve_engine(),
+        "pii_active": _resolve_pii_engine(),
     }
 
 

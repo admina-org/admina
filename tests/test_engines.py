@@ -260,3 +260,38 @@ def test_sdk_loaders_use_engines_module(monkeypatch):
         assert engine.get_stats()["engine"] == "python"
     assert governed_agent._load_firewall().get_stats()["engine"] == "python"
     assert governed_agent._load_loop_breaker().get_stats()["engine"] == "python"
+
+
+# ── PII recall-safe default ───────────────────────────────────────────────────
+
+def test_pii_recall_safe_default(monkeypatch):
+    """Under auto (default), PII stays on Python even when Rust is present."""
+    pytest.importorskip("admina_core")
+    monkeypatch.delenv("ADMINA_ENGINE", raising=False)  # auto
+    _reload_engines()
+    from admina import engines
+    # firewall uses rust under auto...
+    assert engines.engine_status()["active"] == "rust"
+    # ...but PII stays python for recall safety
+    assert engines.engine_status()["pii_active"] == "python"
+    assert engines.get_pii_engine().get_stats()["engine"] == "python"
+
+
+def test_pii_rust_only_when_explicit(monkeypatch):
+    pytest.importorskip("admina_core")
+    monkeypatch.setenv("ADMINA_ENGINE", "rust")
+    _reload_engines()
+    from admina import engines
+    assert engines.get_pii_engine().get_stats()["engine"] == "rust"
+
+
+def test_default_pii_redacts_eu_national_ids(monkeypatch):
+    """The default PII engine must redact EU national IDs (the recall gap)."""
+    monkeypatch.delenv("ADMINA_ENGINE", raising=False)
+    _reload_engines()
+    from admina import engines
+    out = engines.get_pii_engine().redact(
+        "codice fiscale RSSMRA80A01H501U and DNI 12345678Z"
+    )
+    assert "RSSMRA80A01H501U" not in out["redacted_text"]
+    assert "12345678Z" not in out["redacted_text"]
