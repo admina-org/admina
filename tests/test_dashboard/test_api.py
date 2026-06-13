@@ -115,6 +115,16 @@ class _FakeLoopBreaker:
         return {}
 
 
+class _FakeLoopBreakerForced:
+    """Loop breaker stub that always reports a loop (is_loop=True)."""
+
+    def check(self, session_id: str, content: str) -> dict:
+        return {"is_loop": True, "similarity": 0.95}
+
+    def get_stats(self) -> dict:
+        return {}
+
+
 class _FakeRedis:
     """Minimal async Redis stand-in."""
 
@@ -132,6 +142,7 @@ class _FakeSettings:
     AI_INFRA_LLM_ENABLED: bool = False
     ADMINA_API_KEY: str = ""
     ALLOW_UNAUTHENTICATED: bool = True
+    GOVERNANCE_MODE: str = "enforce"
 
 
 # ── Build a test app ─────────────────────────────────────────
@@ -148,6 +159,7 @@ def _build_test_app(
     metrics: dict | None = None,
     redis: Any = _UNSET,
     settings: Any = None,
+    loop_breaker: Any = None,
 ) -> FastAPI:
     """Create a minimal FastAPI app with dashboard + integration routers."""
     from admina.proxy.api.dashboard import create_dashboard_endpoints
@@ -187,11 +199,13 @@ def _build_test_app(
     )
     app.include_router(dash)
 
+    _loop_breaker_instance = loop_breaker if loop_breaker is not None else _FakeLoopBreaker()
     integ = create_integration_endpoints(
         get_firewall=lambda: _FakeFirewall(),
         get_pii_scanner=lambda: _FakePII(),
-        get_loop_breaker=lambda: _FakeLoopBreaker(),
+        get_loop_breaker=lambda: _loop_breaker_instance,
         get_forensic_box=lambda: forensic_box,
+        get_settings=lambda: settings,
     )
     app.include_router(integ)
     return app
@@ -562,6 +576,62 @@ class TestValidateEndpoint:
         data = _run(go())
         assert "latency_ms" in data
         assert data["latency_ms"] >= 0
+
+    def test_validate_risk_level_uppercase_on_block(self) -> None:
+        """A firewall-triggered BLOCK must report an UPPERCASE risk_level."""
+        app = _build_test_app()
+
+        async def go():
+            async with _client(app) as c:
+                return await c.post(
+                    "/api/v1/validate",
+                    json={"content": "DROP TABLE users; --"},
+                )
+
+        r = _run(go())
+        body = r.json()
+        assert body["action"] == "BLOCK"
+        assert body["risk_level"] == body["risk_level"].upper(), (
+            f"risk_level must be uppercase; got {body['risk_level']!r}"
+        )
+        assert body["risk_level"] in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+
+    def test_validate_honors_observe_mode(self) -> None:
+        """In observe mode a firewall-triggered block is downgraded to ALLOW."""
+        observe_settings = _FakeSettings(GOVERNANCE_MODE="observe")
+        app = _build_test_app(settings=observe_settings)
+
+        async def go():
+            async with _client(app) as c:
+                return await c.post(
+                    "/api/v1/validate",
+                    json={"content": "DROP TABLE users; --"},
+                )
+
+        r = _run(go())
+        assert r.json()["action"] == "ALLOW"
+
+    def test_validate_loop_reports_block_not_circuit_break(self) -> None:
+        """A loop-triggered CIRCUIT_BREAK must surface as BLOCK to REST consumers.
+
+        External callers (n8n, CheshireCat, OpenClaw) have never received
+        CIRCUIT_BREAK from this endpoint; the contract maps loop→BLOCK.
+        """
+        app = _build_test_app(loop_breaker=_FakeLoopBreakerForced())
+
+        async def go():
+            async with _client(app) as c:
+                return await c.post(
+                    "/api/v1/validate",
+                    json={"content": "repeated content"},
+                )
+
+        r = _run(go())
+        body = r.json()
+        assert body["action"] == "BLOCK", (
+            f"loop must map to BLOCK for external REST consumers; got {body['action']!r}"
+        )
+        assert body["checks"]["loop_breaker"]["is_loop"] is True
 
 
 class TestAuditEndpoint:

@@ -469,6 +469,7 @@ _integration_router = create_integration_endpoints(
     get_pii_scanner=lambda: app.state.proxy.pii_redactor,
     get_loop_breaker=lambda: app.state.proxy.loop_breaker,
     get_forensic_box=lambda: app.state.proxy.forensic_box,
+    get_settings=lambda: settings,
 )
 app.include_router(_integration_router)
 
