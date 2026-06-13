@@ -36,6 +36,9 @@ from admina.core.types import GovernanceResponse as GovResponse
 
 logger = logging.getLogger("admina.proxy")
 
+# Recursion cap: DoS protection against deeply nested payloads.
+_MAX_SCAN_DEPTH = 6
+
 
 @dataclass
 class GovernanceResult:
@@ -151,13 +154,15 @@ async def run_pipeline(
 
 def _extract_text_fields(obj: Any, depth: int = 0) -> list[str]:
     """Recursively extract all string fields from a dict/list."""
-    if depth > 5:
+    if depth > _MAX_SCAN_DEPTH:
         return []
     texts: list[str] = []
     if isinstance(obj, str):
         texts.append(obj)
     elif isinstance(obj, dict):
-        for v in obj.values():
+        # Scan keys as well as values: injection or PII in a field name is not skipped.
+        for k, v in obj.items():
+            texts.extend(_extract_text_fields(k, depth + 1))
             texts.extend(_extract_text_fields(v, depth + 1))
     elif isinstance(obj, list):
         for item in obj:
@@ -173,7 +178,7 @@ def _redact_params(params: dict, pii_redactor: Any) -> tuple[dict, dict]:
 
 
 def _deep_redact(obj: Any, result: dict, pii_redactor: Any, depth: int = 0) -> Any:
-    if depth > 5:
+    if depth > _MAX_SCAN_DEPTH:
         return obj
     if isinstance(obj, str):
         r = pii_redactor.redact(obj)
@@ -181,7 +186,21 @@ def _deep_redact(obj: Any, result: dict, pii_redactor: Any, depth: int = 0) -> A
         result["count"] += r["count"]
         return r["redacted_text"]
     elif isinstance(obj, dict):
-        return {k: _deep_redact(v, result, pii_redactor, depth + 1) for k, v in obj.items()}
+        # Redact keys as well as values: injection or PII in a field name is not skipped.
+        # Non-string keys (int, tuple, …) pass through _deep_redact unchanged (final return obj).
+        # When two distinct keys redact to the same placeholder, disambiguate with a numeric
+        # suffix so no value is silently dropped (data-loss guard).
+        out: dict = {}
+        for k, v in obj.items():
+            rk = _deep_redact(k, result, pii_redactor, depth + 1)
+            rv = _deep_redact(v, result, pii_redactor, depth + 1)
+            if isinstance(rk, str) and rk in out:
+                base, suffix = rk, 2
+                while f"{base}#{suffix}" in out:
+                    suffix += 1
+                rk = f"{base}#{suffix}"
+            out[rk] = rv
+        return out
     elif isinstance(obj, list):
         return [_deep_redact(item, result, pii_redactor, depth + 1) for item in obj]
     return obj

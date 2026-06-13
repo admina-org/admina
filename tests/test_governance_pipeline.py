@@ -85,23 +85,27 @@ class TestExtractTextFields:
         assert _extract_text_fields("hello") == ["hello"]
 
     def test_dict(self):
+        # Keys are now scanned alongside values (injection/PII in field names).
         result = _extract_text_fields({"a": "x", "b": "y"})
-        assert sorted(result) == ["x", "y"]
+        assert sorted(result) == ["a", "b", "x", "y"]
 
     def test_nested(self):
+        # Keys "a" and "b" are extracted in addition to the nested value.
         result = _extract_text_fields({"a": {"b": "deep"}})
-        assert result == ["deep"]
+        assert set(result) == {"a", "b", "deep"}
 
     def test_list(self):
         result = _extract_text_fields(["a", "b"])
         assert result == ["a", "b"]
 
     def test_depth_limit(self):
+        # DoS cap: content nested beyond _MAX_SCAN_DEPTH is not returned.
+        # Build 10 levels deep; the leaf string "hello" at depth 10 must be dropped.
         deep = "hello"
         for _ in range(10):
             deep = {"nested": deep}
         result = _extract_text_fields(deep)
-        assert result == []
+        assert "hello" not in result
 
     def test_empty(self):
         assert _extract_text_fields({}) == []
