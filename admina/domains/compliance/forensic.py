@@ -20,6 +20,7 @@ Hash-chain integrity, immutable audit trail.
 import hashlib
 import json
 import logging
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -73,6 +74,7 @@ class ForensicBlackBox(BaseForensicStore):
         self.s3_base_delay_s = max(0.0, float(s3_base_delay_s))
         self.chain_head: str = "GENESIS"
         self.record_count: int = 0
+        self._write_lock = threading.Lock()
         if self.filesystem_dir is not None:
             self.filesystem_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_bucket()
@@ -234,33 +236,40 @@ class ForensicBlackBox(BaseForensicStore):
         Record an event to the forensic black box.
         Adds hash-chain integrity and eIDAS-style timestamp.
         Returns the forensic record with integrity metadata.
+
+        Concurrent calls are serialized by ``_write_lock`` so that
+        ``record_count`` increments and ``chain_head`` updates are
+        atomic with respect to each other and the backend I/O.
+        Holding the lock through I/O is intentional: correctness of the
+        tamper-evident chain takes precedence over throughput.
         """
-        self.record_count += 1
+        with self._write_lock:
+            self.record_count += 1
 
-        forensic_record = {
-            "sequence_number": self.record_count,
-            "timestamp_utc": datetime.now(UTC).isoformat(),
-            "timestamp_unix_ms": int(time.time() * 1000),
-            "previous_hash": self.chain_head,
-            "event": event,
-        }
+            forensic_record = {
+                "sequence_number": self.record_count,
+                "timestamp_utc": datetime.now(UTC).isoformat(),
+                "timestamp_unix_ms": int(time.time() * 1000),
+                "previous_hash": self.chain_head,
+                "event": event,
+            }
 
-        record_json = json.dumps(forensic_record, sort_keys=True, default=str)
-        record_hash = self._compute_hash(record_json)
-        forensic_record["record_hash"] = record_hash
+            record_json = json.dumps(forensic_record, sort_keys=True, default=str)
+            record_hash = self._compute_hash(record_json)
+            forensic_record["record_hash"] = record_hash
 
-        self.chain_head = record_hash
+            self.chain_head = record_hash
 
-        # Store the record and persist the updated chain state
-        self._store_to_s3(forensic_record)
-        self._persist_chain_state()
+            # Store the record and persist the updated chain state
+            self._store_to_s3(forensic_record)
+            self._persist_chain_state()
 
-        return {
-            "sequence_number": self.record_count,
-            "record_hash": record_hash,
-            "previous_hash": forensic_record["previous_hash"],
-            "stored": (self.boto3_client is not None or self.filesystem_dir is not None),
-        }
+            return {
+                "sequence_number": self.record_count,
+                "record_hash": record_hash,
+                "previous_hash": forensic_record["previous_hash"],
+                "stored": (self.boto3_client is not None or self.filesystem_dir is not None),
+            }
 
     def _store_to_s3(self, record: dict):
         """Persist a forensic record using the configured backend."""

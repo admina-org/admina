@@ -360,3 +360,25 @@ class TestChainStateReconstruction:
     def test_forensic_empty_store_starts_at_genesis(self, tmp_path):
         fb = ForensicBlackBox(filesystem_dir=str(tmp_path))
         assert fb.record_count == 0 and fb.chain_head == "GENESIS"
+
+
+def test_forensic_concurrent_records_do_not_fork(tmp_path):
+    import asyncio
+    import threading
+    from admina.domains.compliance.forensic import ForensicBlackBox
+
+    fb = ForensicBlackBox(filesystem_dir=str(tmp_path))
+
+    def _w(i):
+        fb.record({"event": f"e{i}"})
+
+    threads = [threading.Thread(target=_w, args=(i,)) for i in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert fb.record_count == 20
+    res = asyncio.run(fb.verify_chain())
+    assert res["valid"] is True
+    assert res["records"] == 20  # 20 distinct sequence numbers, no fork/dup
