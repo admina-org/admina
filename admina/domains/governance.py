@@ -177,6 +177,17 @@ def _redact_params(params: dict, pii_redactor: Any) -> tuple[dict, dict]:
     return redacted, total_result
 
 
+def redact_response_result(result: Any, pii_redactor: Any) -> tuple[Any, int]:
+    """Recursively PII-redact an MCP tool result (str | dict | list).
+
+    Returns (redacted_result, pii_count). Mirrors the request-side deep
+    redaction so dict-shaped results are not leaked.
+    """
+    acc: dict[str, Any] = {"redacted_text": "", "entities": [], "count": 0}
+    redacted = _deep_redact(result, acc, pii_redactor)
+    return redacted, acc["count"]
+
+
 def _deep_redact(obj: Any, result: dict, pii_redactor: Any, depth: int = 0) -> Any:
     if depth > _MAX_SCAN_DEPTH:
         return obj

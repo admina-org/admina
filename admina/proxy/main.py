@@ -58,7 +58,7 @@ from admina.engines import (
 from admina.proxy.api.dashboard import create_dashboard_endpoints
 from admina.proxy.api.integration import create_integration_endpoints
 from admina.proxy.config import GovernanceEvent, settings
-from admina.domains.governance import run_pipeline, safe_serialize
+from admina.domains.governance import redact_response_result, run_pipeline, safe_serialize
 from admina.proxy.multi_upstream import MultiUpstreamRouter
 from admina.proxy.state import ProxyState
 
@@ -1397,10 +1397,11 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
 
         response_data = upstream_response.json()
 
-        # Redact PII from response too (bidirectional)
-        if isinstance(response_data.get("result"), str):
-            resp_redact = state.pii_redactor.redact(response_data["result"])
-            response_data["result"] = resp_redact["redacted_text"]
+        # Redact PII from response too (bidirectional — dict-shaped results included)
+        if settings.PII_REDACTION_ENABLED and "result" in response_data:
+            response_data["result"], _resp_pii_count = redact_response_result(
+                response_data["result"], state.pii_redactor
+            )
 
         # ─── Governance Guards: inspect response ──────────────
         if state.governance_guards:

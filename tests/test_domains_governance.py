@@ -77,6 +77,32 @@ def test_deep_redact_redacts_dict_keys():
     assert "[EMAIL]" in out
 
 
+def test_redact_response_result_handles_dict():
+    from admina.domains.governance import redact_response_result
+
+    class _FakePII:
+        def redact(self, text):
+            red = text.replace("a@b.com", "[EMAIL]")
+            return {"redacted_text": red, "entities": [], "count": text.count("a@b.com")}
+
+    out, n = redact_response_result({"text": "mail a@b.com", "nested": ["x a@b.com"]}, _FakePII())
+    assert "a@b.com" not in str(out)
+    assert n == 2
+
+
+def test_redact_response_result_handles_plain_string():
+    from admina.domains.governance import redact_response_result
+
+    class _FakePII:
+        def redact(self, text):
+            return {"redacted_text": text.replace("a@b.com", "[EMAIL]"),
+                    "entities": [], "count": text.count("a@b.com")}
+
+    out, n = redact_response_result("contact a@b.com", _FakePII())
+    assert out == "contact [EMAIL]"
+    assert n == 1
+
+
 def test_deep_redact_key_collision_preserves_all_values():
     from admina.domains.governance import _deep_redact
 

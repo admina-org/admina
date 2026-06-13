@@ -21,8 +21,15 @@ from __future__ import annotations
 from admina.domains.governance import (
     GovernanceResult,
     _extract_text_fields,
+    redact_response_result,
     run_pipeline,
     safe_serialize,
 )
 
-__all__ = ["GovernanceResult", "_extract_text_fields", "run_pipeline", "safe_serialize"]
+__all__ = [
+    "GovernanceResult",
+    "_extract_text_fields",
+    "redact_response_result",
+    "run_pipeline",
+    "safe_serialize",
+]
