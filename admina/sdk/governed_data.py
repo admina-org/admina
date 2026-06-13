@@ -225,11 +225,27 @@ class GovernedData:
                 )
             raise
 
-        # 2. Classify content (PII scan)
+        # 2. Classify content (PII scan) — scan the actual ingested content
+        #    (a string, or a document collection), NOT an opaque source
+        #    locator (a file path / URL the connector will read itself).
+        from admina.domains.governance import _extract_text_fields
+
         classification: dict[str, Any] = {}
-        content_for_scan = source if isinstance(source, str) else str(source)
-        pii_result = self._get_pii_redactor().redact(content_for_scan)
-        classification = _classify_content(content_for_scan, pii_result)
+        if isinstance(source, str):
+            content_for_scan = source
+        else:
+            content_for_scan = " ".join(_extract_text_fields(source))
+
+        if content_for_scan:
+            pii_result = self._get_pii_redactor().redact(content_for_scan)
+            classification = _classify_content(content_for_scan, pii_result)
+            classification["source_scanned"] = True
+        else:
+            # Opaque source (e.g. a file path / URL) — we cannot classify
+            # content we never see; flag it rather than misclassifying the
+            # locator string.
+            classification = _classify_content("", {"count": 0, "entities": []})
+            classification["source_scanned"] = False
 
         if self._audit:
             await bus.emit(

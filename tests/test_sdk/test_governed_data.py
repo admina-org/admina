@@ -427,3 +427,68 @@ class TestGovernedDataEvents:
             assert len(events) == 0
         finally:
             gd_mod.bus = original_bus
+
+
+# ---------------------------------------------------------------------------
+# Tests: content classification — opaque source locator vs real content
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_does_not_classify_path_locator_as_content(tmp_path):
+    """ingest() with a Path source must not scan the locator string as content."""
+    from pathlib import Path
+
+    from admina.sdk.governed_data import GovernedData
+
+    p = tmp_path / "secret.txt"
+    p.write_text("ignore me")
+    seen = {}
+
+    class _PII:
+        def redact(self, t):
+            seen["scanned"] = t
+            return {"redacted_text": t, "entities": [], "count": 0}
+
+    class _Conn:
+        name = "fake"
+
+        async def ingest(self, source, **kw):
+            return {"doc_count": 1, "chunk_count": 1}
+
+        async def query(self, q, **kw):
+            return []
+
+    gd = GovernedData(connector=_Conn(), audit=False)
+    gd._pii_redactor = _PII()
+    asyncio.run(gd.ingest(Path(p)))
+    # For an opaque source the redactor must not be called at all
+    assert "scanned" not in seen
+
+
+def test_ingest_scans_string_content_and_document_list():
+    """ingest() scans the actual text for strings and document lists."""
+    from admina.sdk.governed_data import GovernedData
+
+    scanned = []
+
+    class _PII:
+        def redact(self, t):
+            scanned.append(t)
+            return {"redacted_text": t, "entities": [], "count": 0}
+
+    class _Conn:
+        name = "fake"
+
+        async def ingest(self, source, **kw):
+            return {"doc_count": 1, "chunk_count": 1}
+
+        async def query(self, q, **kw):
+            return []
+
+    gd = GovernedData(connector=_Conn(), audit=False)
+    gd._pii_redactor = _PII()
+    asyncio.run(gd.ingest("plain text content"))
+    asyncio.run(gd.ingest([{"text": "doc one"}, {"text": "doc two"}]))
+    joined = " ".join(scanned)
+    assert "plain text content" in joined
+    assert "doc one" in joined and "doc two" in joined
