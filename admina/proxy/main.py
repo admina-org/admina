@@ -58,7 +58,7 @@ from admina.engines import (
 from admina.proxy.api.dashboard import create_dashboard_endpoints
 from admina.proxy.api.integration import create_integration_endpoints
 from admina.proxy.config import GovernanceEvent, settings
-from admina.proxy.governance import run_pipeline, safe_serialize
+from admina.domains.governance import run_pipeline, safe_serialize
 from admina.proxy.multi_upstream import MultiUpstreamRouter
 from admina.proxy.state import ProxyState
 
