@@ -280,6 +280,7 @@ def test_guard_contract_error_is_recorded_not_silent():
 
 def test_run_pipeline_loop_can_be_disabled():
     import asyncio
+
     from admina.domains.governance import run_pipeline
 
     calls = {"n": 0}
@@ -299,11 +300,18 @@ def test_run_pipeline_loop_can_be_disabled():
 
     res = asyncio.run(
         run_pipeline(
-            body={"params": {"content": "x"}}, content_str="x", session_id="s",
-            agent_id="a", request_id="r", params={"content": "x"},
-            firewall=_FW(), pii_redactor=_PII(), loop_breaker=_Loop(),
-            governance_guards=[], loop_enabled=False,
+            body={"params": {"content": "x"}},
+            content_str="x",
+            session_id="s",
+            agent_id="a",
+            request_id="r",
+            params={"content": "x"},
+            firewall=_FW(),
+            pii_redactor=_PII(),
+            loop_breaker=_Loop(),
+            governance_guards=[],
+            loop_enabled=False,
         )
     )
-    assert calls["n"] == 0             # loop breaker not called
+    assert calls["n"] == 0  # loop breaker not called
     assert res.action.value == "allow"  # not circuit-broken

@@ -442,6 +442,7 @@ class TestGovernedAgentEvents:
 
 def test_governed_agent_session_is_stable_across_calls():
     import asyncio
+
     from admina.sdk.governed_agent import GovernedAgent
 
     seen = []
@@ -463,12 +464,16 @@ def test_governed_agent_session_is_stable_across_calls():
 
 def test_governed_agent_redacts_pii_in_dict_key():
     import asyncio
+
     from admina.sdk.governed_agent import GovernedAgent
 
     class _PII:
         def redact(self, t):
-            return {"redacted_text": t.replace("a@b.com", "[EMAIL]"),
-                    "entities": [], "count": t.count("a@b.com")}
+            return {
+                "redacted_text": t.replace("a@b.com", "[EMAIL]"),
+                "entities": [],
+                "count": t.count("a@b.com"),
+            }
 
     async def _up(method, params, **kw):
         return params  # echo redacted params back
@@ -481,12 +486,16 @@ def test_governed_agent_redacts_pii_in_dict_key():
 
 def test_governed_agent_redacts_non_dict_response():
     import asyncio
+
     from admina.sdk.governed_agent import GovernedAgent
 
     class _PII:
         def redact(self, t):
-            return {"redacted_text": t.replace("a@b.com", "[EMAIL]"),
-                    "entities": [], "count": t.count("a@b.com")}
+            return {
+                "redacted_text": t.replace("a@b.com", "[EMAIL]"),
+                "entities": [],
+                "count": t.count("a@b.com"),
+            }
 
     async def _up(method, params, **kw):
         return "contact a@b.com"  # STRING result

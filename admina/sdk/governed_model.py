@@ -277,11 +277,7 @@ class GovernedModel:
         governance["latency_us"] = latency_us
 
         # 7. Compute action
-        action = (
-            "REDACT"
-            if (pii_prompt_count > 0 or pii_response_count > 0)
-            else "ALLOW"
-        )
+        action = "REDACT" if (pii_prompt_count > 0 or pii_response_count > 0) else "ALLOW"
 
         # 8. Emit MODEL_RESPONSE event
         if self._audit:
