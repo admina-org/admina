@@ -224,6 +224,22 @@ def safe_serialize(obj: Any) -> Any:
     return obj
 
 
+def build_governance_details(result: GovernanceResult) -> dict:
+    """Assemble the persisted governance details for forensic/analytics sinks.
+
+    Mirrors the flat checks dict that was previously stored as ``details`` in
+    ClickHouse and the forensic record, and adds ``would_action`` (the shadow
+    decision) when set in observe/dry-run mode so downstream analytics can count
+    would-have-blocked events.
+
+    The returned dict is safe to pass directly as ``GovernanceEvent.details``.
+    """
+    details: dict[str, Any] = dict(result.checks)
+    if result.would_action is not None:
+        details["would_action"] = safe_serialize(result.would_action)
+    return details
+
+
 def _build_gov_response(
     result: GovernanceResult,
     request_id: str,

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 
-from admina.domains.governance import run_pipeline
+from admina.domains.governance import build_governance_details, run_pipeline
 
 
 class _FW:  # noqa: D401
@@ -118,3 +118,115 @@ def test_deep_redact_key_collision_preserves_all_values():
     # both values survive (no silent drop); both keys redacted to [EMAIL]-ish
     assert sorted(out.values()) == [1, 2]
     assert all("@" not in k for k in out)
+
+
+# ── build_governance_details tests ──────────────────────────
+
+
+class _FWInject:
+    def check(self, t):
+        return {"is_injection": "inject" in t.lower(), "risk_level": "high"}
+
+
+class _PIINoOp:
+    def redact(self, t):
+        return {"redacted_text": t, "entities": [], "count": 0}
+
+
+class _LoopNoOp:
+    def check(self, s, c):
+        return {"is_loop": False, "similarity": 0.0}
+
+
+def _run_pipeline(**kwargs):
+    return asyncio.run(run_pipeline(**kwargs))
+
+
+def _base_pipeline_kwargs(**overrides):
+    base = dict(
+        body={"params": {"content": "hello"}},
+        content_str="hello",
+        session_id="s",
+        agent_id="a",
+        request_id="r",
+        params={"content": "hello"},
+        firewall=_FWInject(),
+        pii_redactor=_PIINoOp(),
+        loop_breaker=_LoopNoOp(),
+        governance_guards=[],
+    )
+    base.update(overrides)
+    return base
+
+
+def test_build_details_includes_would_action_in_observe():
+    """In observe mode, would_action must appear in the persisted details dict."""
+    res = _run_pipeline(
+        **_base_pipeline_kwargs(
+            body={"params": {"content": "please inject now"}},
+            content_str="please inject now",
+            params={"content": "please inject now"},
+            mode="observe",
+        )
+    )
+    assert res.action.value == "allow"  # downgraded
+    details = build_governance_details(res)
+    assert "would_action" in details, "persisted details must carry would_action in observe mode"
+    assert details["would_action"] == "block"  # lowercase, matches dashboard `.upper()` path
+
+
+def test_build_details_includes_would_action_in_dry_run():
+    """dry-run is equivalent to observe for analytics persistence."""
+    res = _run_pipeline(
+        **_base_pipeline_kwargs(
+            body={"params": {"content": "please inject now"}},
+            content_str="please inject now",
+            params={"content": "please inject now"},
+            mode="dry-run",
+        )
+    )
+    assert res.action.value == "allow"
+    details = build_governance_details(res)
+    assert details["would_action"] == "block"
+
+
+def test_build_details_omits_would_action_in_enforce():
+    """In enforce mode the action stays block; would_action must NOT appear."""
+    res = _run_pipeline(
+        **_base_pipeline_kwargs(
+            body={"params": {"content": "please inject now"}},
+            content_str="please inject now",
+            params={"content": "please inject now"},
+            mode="enforce",
+        )
+    )
+    assert res.action.value == "block"  # not downgraded
+    details = build_governance_details(res)
+    assert "would_action" not in details
+
+
+def test_build_details_omits_would_action_on_clean_traffic_observe():
+    """Clean traffic in observe mode: would_action absent (nothing would have been blocked)."""
+    res = _run_pipeline(
+        **_base_pipeline_kwargs(
+            mode="observe",
+        )
+    )
+    assert res.action.value == "allow"
+    assert res.would_action is None
+    details = build_governance_details(res)
+    assert "would_action" not in details
+
+
+def test_build_details_is_flat_checks_dict():
+    """Details dict is a flat copy of the checks dict (firewall, loop_breaker, etc.
+    at the top level) so the dashboard can read d.get('firewall') directly.
+    would_action is the only key added on top of the checks."""
+    res = _run_pipeline(**_base_pipeline_kwargs())
+    details = build_governance_details(res)
+    # The details must contain the checks keys at the top level.
+    for key in res.checks:
+        assert key in details
+    # No extra metadata keys beyond checks content and optional would_action.
+    assert "action" not in details
+    assert "risk_level" not in details

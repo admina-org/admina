@@ -21,6 +21,7 @@ from __future__ import annotations
 from admina.domains.governance import (
     GovernanceResult,
     _extract_text_fields,
+    build_governance_details,
     redact_response_result,
     run_pipeline,
     safe_serialize,
@@ -29,6 +30,7 @@ from admina.domains.governance import (
 __all__ = [
     "GovernanceResult",
     "_extract_text_fields",
+    "build_governance_details",
     "redact_response_result",
     "run_pipeline",
     "safe_serialize",

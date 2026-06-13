@@ -936,3 +936,117 @@ class TestDashboardLiveWebSocket:
         client = TestClient(app)
         with client.websocket_connect("/api/dashboard/live") as ws:
             ws.close()
+
+
+# ══════════════════════════════════════════════════════════════
+#  Dashboard suggestions — would_action analytics
+# ══════════════════════════════════════════════════════════════
+
+
+import json as _json
+
+
+@dataclass
+class _CHResult:
+    result_rows: list
+
+
+class _FakeCH:
+    """Minimal ClickHouse stub — returns pre-canned rows for each query call."""
+
+    def __init__(self, rows_by_call: list[list]) -> None:
+        # Each entry is the result_rows for the n-th ch.query() call.
+        self._calls = iter(rows_by_call)
+
+    def query(self, _sql: str) -> _CHResult:
+        try:
+            return _CHResult(result_rows=next(self._calls))
+        except StopIteration:
+            return _CHResult(result_rows=[])
+
+
+@dataclass
+class _ObserveSettings:
+    CLICKHOUSE_DB: str = "admina"
+    UPSTREAM_MCP_URL: str = "http://mock-mcp:9000"
+    AI_INFRA_LLM_ENABLED: bool = False
+    ADMINA_API_KEY: str = ""
+    ALLOW_UNAUTHENTICATED: bool = True
+    GOVERNANCE_MODE: str = "observe"
+
+
+class TestDashboardSuggestionsWouldAction:
+    """Suggestions endpoint correctly counts would-have-blocked events from persisted details."""
+
+    def _make_details(self, **extra) -> str:
+        """Build a details JSON with an injection hit in the firewall sub-key."""
+        d = {
+            "firewall": {
+                "is_injection": True,
+                "risk_level": "high",
+                "patterns": [{"pattern": "prompt_injection", "risk_level": "high"}],
+            },
+            "loop_breaker": {"is_loop": False, "similarity": 0.0},
+        }
+        d.update(extra)
+        return _json.dumps(d)
+
+    def test_suggestions_no_clickhouse_returns_error(self) -> None:
+        app = _build_test_app(clickhouse=None)
+
+        async def go():
+            async with _client(app) as c:
+                return await c.get("/api/dashboard/suggestions?min_count=1")
+
+        r = _run(go())
+        assert r.status_code == 200
+        data = r.json()
+        assert "error" in data
+
+    def test_observe_mode_with_would_action_events_produces_nonzero_would_blocked(self) -> None:
+        """In observe mode, events that carry would_action=block must produce
+        a non-zero cat_would_blocked count and trigger a would_block_in_enforce
+        suggestion rather than the 'safe to switch to enforce' message."""
+        # Build 6 events, all with would_action=block (injection caught in observe mode).
+        row = ("allow", "high", self._make_details(would_action="block"))
+        main_rows = [row] * 6  # 6 would-have-blocked events
+        # Second query (trend) returns empty.
+        ch = _FakeCH(rows_by_call=[main_rows, []])
+        settings = _ObserveSettings()
+        app = _build_test_app(clickhouse=ch, settings=settings)
+
+        async def go():
+            async with _client(app) as c:
+                return await c.get("/api/dashboard/suggestions?min_count=1")
+
+        r = _run(go())
+        assert r.status_code == 200
+        data = r.json()
+        types = {s["type"] for s in data["suggestions"]}
+        # Must see a would_block_in_enforce suggestion — not observe_clean.
+        assert "would_block_in_enforce" in types, (
+            "Expected would_block_in_enforce suggestion when would_action events are present; "
+            f"got: {types}"
+        )
+        assert "observe_clean" not in types, (
+            "observe_clean must NOT fire when there are would-have-blocked events"
+        )
+
+    def test_observe_mode_no_would_action_events_produces_observe_clean(self) -> None:
+        """Without would_action in stored details, the dashboard falls back to
+        the 'safe to switch to enforce' message (the pre-fix behavior for clean traffic)."""
+        row = ("allow", "low", _json.dumps({"loop_breaker": {"is_loop": False, "similarity": 0.0}}))
+        main_rows = [row] * 3
+        ch = _FakeCH(rows_by_call=[main_rows, []])
+        settings = _ObserveSettings()
+        app = _build_test_app(clickhouse=ch, settings=settings)
+
+        async def go():
+            async with _client(app) as c:
+                return await c.get("/api/dashboard/suggestions?min_count=1")
+
+        r = _run(go())
+        assert r.status_code == 200
+        data = r.json()
+        types = {s["type"] for s in data["suggestions"]}
+        assert "observe_clean" in types

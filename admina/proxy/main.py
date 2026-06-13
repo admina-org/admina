@@ -58,7 +58,12 @@ from admina.engines import (
 from admina.proxy.api.dashboard import create_dashboard_endpoints
 from admina.proxy.api.integration import create_integration_endpoints
 from admina.proxy.config import GovernanceEvent, settings
-from admina.domains.governance import redact_response_result, run_pipeline, safe_serialize
+from admina.domains.governance import (
+    build_governance_details,
+    redact_response_result,
+    run_pipeline,
+    safe_serialize,
+)
 from admina.proxy.multi_upstream import MultiUpstreamRouter
 from admina.proxy.state import ProxyState
 
@@ -1250,14 +1255,12 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
         mode=settings.GOVERNANCE_MODE,
     )
 
-    governance_result = {
-        "action": pipeline_result.action,
-        "risk_level": pipeline_result.risk_level,
-        "checks": pipeline_result.checks,
-    }
+    persisted_details = build_governance_details(pipeline_result)
     redacted_body = pipeline_result.redacted_body
     governance_latency = pipeline_result.latency_ms
     gov_response = pipeline_result.gov_response
+    action = pipeline_result.action
+    risk_level = pipeline_result.risk_level
 
     if pipeline_result.checks.get("pii_redaction", {}).get("count", 0) > 0:
         state.inc_metric("requests_redacted")
@@ -1276,14 +1279,14 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
 
     # ── Fire alerts on block/circuit-break (non-blocking) ─────
     if (
-        governance_result["action"] in (GovernanceAction.BLOCK, GovernanceAction.CIRCUIT_BREAK)
+        action in (GovernanceAction.BLOCK, GovernanceAction.CIRCUIT_BREAK)
         and state.alert_channels
     ):
         _alert = {
             "level": gov_response.risk_level,
             "domain": gov_response.domain,
             "summary": f"{gov_response.action} — {method} from agent {agent_id}",
-            "details": {k: safe_serialize(v) for k, v in governance_result["checks"].items()},
+            "details": {k: safe_serialize(v) for k, v in pipeline_result.checks.items()},
             "event_id": event_id,
             "session_id": session_id,
         }
@@ -1302,11 +1305,11 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                     "agent_id": agent_id,
                     "session_id": session_id,
                     "method": method,
-                    "action": governance_result["action"],
-                    "risk_level": governance_result["risk_level"],
+                    "action": action,
+                    "risk_level": risk_level,
                     "governance_latency_ms": round(governance_latency, 2),
                     "checks": {
-                        k: safe_serialize(v) for k, v in governance_result["checks"].items()
+                        k: safe_serialize(v) for k, v in pipeline_result.checks.items()
                     },
                 }
             ),
@@ -1324,9 +1327,9 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                 session_id=session_id,
                 method=method,
                 tool_name=params.get("name", "") if isinstance(params, dict) else "",
-                action=governance_result["action"],
-                risk_level=governance_result["risk_level"],
-                details=governance_result["checks"],
+                action=action,
+                risk_level=risk_level,
+                details=persisted_details,
                 latency_ms=governance_latency,
                 request_hash=hashlib.sha256(content_str.encode()).hexdigest()[:32],
             ),
@@ -1334,7 +1337,7 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
     )
 
     # ─── Respond based on governance decision ─────────────────
-    if governance_result["action"] == GovernanceAction.BLOCK:
+    if action == GovernanceAction.BLOCK:
         state.inc_metric("requests_blocked")
         if state.router.is_multi_upstream and path.startswith("route/"):
             state.router.record_block(path.removeprefix("route/").split("/")[0])
@@ -1342,14 +1345,14 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
             "[BLOCKED] request %s: %s (risk=%s)",
             event_id,
             method,
-            governance_result["risk_level"],
+            risk_level,
         )
         return JSONResponse(
             status_code=403,
             content=mcp_transport.format_block_response(gov_response, body),
         )
 
-    if governance_result["action"] == GovernanceAction.CIRCUIT_BREAK:
+    if action == GovernanceAction.CIRCUIT_BREAK:
         state.inc_metric("requests_blocked")
         if state.router.is_multi_upstream and path.startswith("route/"):
             state.router.record_block(path.removeprefix("route/").split("/")[0])
