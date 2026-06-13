@@ -49,6 +49,12 @@ from admina.core.event_bus import bus as governance_bus
 from admina.core.types import EventType, GovernanceAction
 from admina.domains.compliance.forensic import ForensicBlackBox
 from admina.domains.compliance.otel import OTELGovernanceExporter
+from admina.domains.governance import (
+    build_governance_details,
+    redact_response_result,
+    run_pipeline,
+    safe_serialize,
+)
 from admina.engines import (
     engine_status,
     get_firewall,
@@ -58,12 +64,6 @@ from admina.engines import (
 from admina.proxy.api.dashboard import create_dashboard_endpoints
 from admina.proxy.api.integration import create_integration_endpoints
 from admina.proxy.config import GovernanceEvent, settings
-from admina.domains.governance import (
-    build_governance_details,
-    redact_response_result,
-    run_pipeline,
-    safe_serialize,
-)
 from admina.proxy.multi_upstream import MultiUpstreamRouter
 from admina.proxy.state import ProxyState
 
@@ -1279,10 +1279,7 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
     )
 
     # ── Fire alerts on block/circuit-break (non-blocking) ─────
-    if (
-        action in (GovernanceAction.BLOCK, GovernanceAction.CIRCUIT_BREAK)
-        and state.alert_channels
-    ):
+    if action in (GovernanceAction.BLOCK, GovernanceAction.CIRCUIT_BREAK) and state.alert_channels:
         _alert = {
             "level": gov_response.risk_level,
             "domain": gov_response.domain,
@@ -1309,9 +1306,7 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                     "action": action,
                     "risk_level": risk_level,
                     "governance_latency_ms": round(governance_latency, 2),
-                    "checks": {
-                        k: safe_serialize(v) for k, v in pipeline_result.checks.items()
-                    },
+                    "checks": {k: safe_serialize(v) for k, v in pipeline_result.checks.items()},
                 }
             ),
         )

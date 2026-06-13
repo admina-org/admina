@@ -95,8 +95,11 @@ def test_redact_response_result_handles_plain_string():
 
     class _FakePII:
         def redact(self, text):
-            return {"redacted_text": text.replace("a@b.com", "[EMAIL]"),
-                    "entities": [], "count": text.count("a@b.com")}
+            return {
+                "redacted_text": text.replace("a@b.com", "[EMAIL]"),
+                "entities": [],
+                "count": text.count("a@b.com"),
+            }
 
     out, n = redact_response_result("contact a@b.com", _FakePII())
     assert out == "contact [EMAIL]"
@@ -234,26 +237,41 @@ def test_build_details_is_flat_checks_dict():
 
 def test_guard_contract_error_is_recorded_not_silent():
     import asyncio
+
     from admina.domains.governance import run_pipeline
 
     class _FW:
-        def check(self, t): return {"is_injection": False, "risk_level": "low"}
+        def check(self, t):
+            return {"is_injection": False, "risk_level": "low"}
+
     class _PII:
-        def redact(self, t): return {"redacted_text": t, "entities": [], "count": 0}
+        def redact(self, t):
+            return {"redacted_text": t, "entities": [], "count": 0}
+
     class _Loop:
-        def check(self, s, c): return {"is_loop": False, "similarity": 0.0}
+        def check(self, s, c):
+            return {"is_loop": False, "similarity": 0.0}
 
     class BadGuard:
         name = "bad"
+
         def inspect_request(self, payload):  # SYNC on an async contract → TypeError when awaited
             return {"action": "ALLOW"}
 
-    res = asyncio.run(run_pipeline(
-        body={"params": {"content": "hi"}}, content_str="hi", session_id="s",
-        agent_id="a", request_id="r", params={"content": "hi"},
-        firewall=_FW(), pii_redactor=_PII(), loop_breaker=_Loop(),
-        governance_guards=[BadGuard()],
-    ))
+    res = asyncio.run(
+        run_pipeline(
+            body={"params": {"content": "hi"}},
+            content_str="hi",
+            session_id="s",
+            agent_id="a",
+            request_id="r",
+            params={"content": "hi"},
+            firewall=_FW(),
+            pii_redactor=_PII(),
+            loop_breaker=_Loop(),
+            governance_guards=[BadGuard()],
+        )
+    )
     assert "guard_bad" in res.checks
     assert res.checks["guard_bad"].get("error") is not None
     assert res.checks["guard_bad"]["action"] == "ERROR"

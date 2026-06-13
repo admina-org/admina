@@ -22,7 +22,6 @@ Provides a simpler REST interface for non-MCP callers:
 from __future__ import annotations
 
 import logging
-import time
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -30,6 +29,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 logger = logging.getLogger("admina.api.integration")
+
 
 # Sentinel default settings object used when no get_settings callable is
 # provided (e.g. in integration tests that don't need mode awareness).

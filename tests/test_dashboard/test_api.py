@@ -20,6 +20,7 @@ Covers ``/api/dashboard/*`` and ``/api/v1/{validate,audit}``.
 from __future__ import annotations
 
 import asyncio
+import json as _json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -1011,9 +1012,6 @@ class TestDashboardLiveWebSocket:
 # ══════════════════════════════════════════════════════════════
 #  Dashboard suggestions — would_action analytics
 # ══════════════════════════════════════════════════════════════
-
-
-import json as _json
 
 
 @dataclass
