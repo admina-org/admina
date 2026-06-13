@@ -23,7 +23,8 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Callable, Protocol
+from collections.abc import Callable
+from typing import Any, Protocol
 
 logger = logging.getLogger("admina.engines")
 
@@ -51,6 +52,7 @@ except ImportError:
 
 # ── Engine selector ─────────────────────────────────────────────────────────
 
+
 def _resolve_engine() -> str:
     """Return the effective engine name based on ADMINA_ENGINE env override.
 
@@ -61,9 +63,7 @@ def _resolve_engine() -> str:
     """
     mode = os.environ.get("ADMINA_ENGINE", "auto").lower()
     if mode not in ("auto", "python", "rust"):
-        raise ValueError(
-            f"ADMINA_ENGINE must be auto|python|rust, got {mode!r}"
-        )
+        raise ValueError(f"ADMINA_ENGINE must be auto|python|rust, got {mode!r}")
     if mode == "rust" and not _rust_available:
         logger.warning(
             "ADMINA_ENGINE=rust but admina-core is not installed — "
@@ -88,9 +88,7 @@ def _resolve_pii_engine() -> str:
     """
     mode = os.environ.get("ADMINA_ENGINE", "auto").lower()
     if mode not in ("auto", "python", "rust"):
-        raise ValueError(
-            f"ADMINA_ENGINE must be auto|python|rust, got {mode!r}"
-        )
+        raise ValueError(f"ADMINA_ENGINE must be auto|python|rust, got {mode!r}")
     if mode == "rust":
         if not _rust_available:
             logger.warning(
@@ -109,6 +107,7 @@ def _resolve_pii_engine() -> str:
 
 
 # ── Firewall YAML overrides ─────────────────────────────────────────────────
+
 
 def _load_firewall_yaml_overrides() -> tuple[list, list]:
     """Read agent_security.firewall.{custom_patterns,disabled_categories}
@@ -141,6 +140,7 @@ def _load_firewall_yaml_overrides() -> tuple[list, list]:
 
 # ── Bridge Protocols ────────────────────────────────────────────────────────
 
+
 class FirewallBridge(Protocol):
     """Protocol for firewall bridge implementations."""
 
@@ -163,6 +163,7 @@ class LoopBreakerBridge(Protocol):
 
 
 # ── Firewall bridges ────────────────────────────────────────────────────────
+
 
 class _PythonFirewallBridge:
     """Wraps the existing Python InjectionFirewall with a compatible interface."""
@@ -228,6 +229,7 @@ class _RustFirewallBridge:
 
 # ── PII scanner bridges ─────────────────────────────────────────────────────
 
+
 class _PythonPiiBridge:
     """Wraps the Python PIIRedactor."""
 
@@ -279,6 +281,7 @@ class _RustPiiBridge:
 
 # ── Loop breaker bridges ────────────────────────────────────────────────────
 
+
 class _PythonLoopBridge:
     """Wraps the Python LoopBreaker."""
 
@@ -325,6 +328,7 @@ class _RustLoopBridge:
 
 
 # ── Factory functions ───────────────────────────────────────────────────────
+
 
 def get_firewall() -> FirewallBridge:
     """Get the configured firewall engine.
@@ -400,6 +404,7 @@ def get_pii_scanner() -> PIIBridge:
 
 
 # ── Status / diagnostics ────────────────────────────────────────────────────
+
 
 def engine_status() -> dict[str, Any]:
     """Get engine status for diagnostics."""

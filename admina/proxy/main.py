@@ -49,15 +49,15 @@ from admina.core.event_bus import bus as governance_bus
 from admina.core.types import EventType, GovernanceAction
 from admina.domains.compliance.forensic import ForensicBlackBox
 from admina.domains.compliance.otel import OTELGovernanceExporter
-from admina.proxy.api.dashboard import create_dashboard_endpoints
-from admina.proxy.api.integration import create_integration_endpoints
-from admina.proxy.config import GovernanceEvent, settings
 from admina.engines import (
     engine_status,
     get_firewall,
     get_loop_breaker,
     get_pii_engine,
 )
+from admina.proxy.api.dashboard import create_dashboard_endpoints
+from admina.proxy.api.integration import create_integration_endpoints
+from admina.proxy.config import GovernanceEvent, settings
 from admina.proxy.governance import run_pipeline, safe_serialize
 from admina.proxy.multi_upstream import MultiUpstreamRouter
 from admina.proxy.state import ProxyState

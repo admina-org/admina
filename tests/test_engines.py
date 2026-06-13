@@ -20,8 +20,8 @@ import sys
 
 import pytest
 
-
 # ── Helpers ─────────────────────────────────────────────────────────────────
+
 
 def _reload_engines():
     """Remove cached admina.engines from sys.modules so env-var changes take effect."""
@@ -31,6 +31,7 @@ def _reload_engines():
 
 
 # ── Selection / override tests ────────────────────────────────────────────────
+
 
 def test_engine_selection_python_forced(monkeypatch):
     monkeypatch.setenv("ADMINA_ENGINE", "python")
@@ -53,6 +54,7 @@ def test_engine_selection_invalid_value(monkeypatch):
 
 # ── PII engine resolver ───────────────────────────────────────────────────────
 
+
 def test_pii_engine_resolver_default_and_unknown(monkeypatch):
     monkeypatch.setenv("ADMINA_ENGINE", "python")
     _reload_engines()
@@ -67,6 +69,7 @@ def test_pii_engine_resolver_default_and_unknown(monkeypatch):
 
 
 # ── YAML overrides reach the engine ──────────────────────────────────────────
+
 
 def test_firewall_yaml_overrides_reach_engine(monkeypatch, tmp_path):
     monkeypatch.setenv("ADMINA_ENGINE", "python")
@@ -93,6 +96,7 @@ def test_firewall_yaml_overrides_reach_engine(monkeypatch, tmp_path):
 
 # ── Self-review note: YAML overrides force Python bridge even when Rust available ──
 
+
 def test_overrides_force_python_firewall(monkeypatch, tmp_path):
     """When custom_patterns are set, get_firewall() must use Python even with ADMINA_ENGINE=auto."""
     pytest.importorskip("admina_core")
@@ -118,6 +122,7 @@ def test_overrides_force_python_firewall(monkeypatch, tmp_path):
 
 
 # ── Rust stats schema matches Python ─────────────────────────────────────────
+
 
 def test_rust_stats_schema_matches_python_firewall(monkeypatch):
     pytest.importorskip("admina_core")
@@ -169,6 +174,7 @@ def test_rust_stats_schema_matches_python_loop_breaker(monkeypatch):
 
 # ── engine_status fields ──────────────────────────────────────────────────────
 
+
 def test_engine_status_fields(monkeypatch):
     monkeypatch.setenv("ADMINA_ENGINE", "python")
     _reload_engines()
@@ -184,6 +190,7 @@ def test_engine_status_fields(monkeypatch):
 
 # ── Deprecated alias ──────────────────────────────────────────────────────────
 
+
 def test_get_pii_scanner_alias(monkeypatch):
     monkeypatch.setenv("ADMINA_ENGINE", "python")
     _reload_engines()
@@ -194,6 +201,7 @@ def test_get_pii_scanner_alias(monkeypatch):
 
 
 # ── Rust requested but unavailable → fallback ────────────────────────────────
+
 
 def test_rust_requested_but_unavailable_falls_back(monkeypatch, caplog):
     import logging
@@ -209,6 +217,7 @@ def test_rust_requested_but_unavailable_falls_back(monkeypatch, caplog):
 
 
 # ── Rust PII stats value semantics ───────────────────────────────────────────
+
 
 def test_rust_pii_stats_count_entities_not_calls(monkeypatch):
     """total_redacted must count cumulative entities, not redact() call count.
@@ -233,6 +242,7 @@ def test_rust_pii_stats_count_entities_not_calls(monkeypatch):
 
 
 # ── Integrations singletons delegate to admina.engines ───────────────────────
+
 
 def test_integrations_singletons_use_engines_module(monkeypatch):
     monkeypatch.setenv("ADMINA_ENGINE", "python")
@@ -264,12 +274,14 @@ def test_sdk_loaders_use_engines_module(monkeypatch):
 
 # ── PII recall-safe default ───────────────────────────────────────────────────
 
+
 def test_pii_recall_safe_default(monkeypatch):
     """Under auto (default), PII stays on Python even when Rust is present."""
     pytest.importorskip("admina_core")
     monkeypatch.delenv("ADMINA_ENGINE", raising=False)  # auto
     _reload_engines()
     from admina import engines
+
     # firewall uses rust under auto...
     assert engines.engine_status()["active"] == "rust"
     # ...but PII stays python for recall safety
@@ -282,6 +294,7 @@ def test_pii_rust_only_when_explicit(monkeypatch):
     monkeypatch.setenv("ADMINA_ENGINE", "rust")
     _reload_engines()
     from admina import engines
+
     assert engines.get_pii_engine().get_stats()["engine"] == "rust"
 
 
@@ -290,8 +303,7 @@ def test_default_pii_redacts_eu_national_ids(monkeypatch):
     monkeypatch.delenv("ADMINA_ENGINE", raising=False)
     _reload_engines()
     from admina import engines
-    out = engines.get_pii_engine().redact(
-        "codice fiscale RSSMRA80A01H501U and DNI 12345678Z"
-    )
+
+    out = engines.get_pii_engine().redact("codice fiscale RSSMRA80A01H501U and DNI 12345678Z")
     assert "RSSMRA80A01H501U" not in out["redacted_text"]
     assert "12345678Z" not in out["redacted_text"]

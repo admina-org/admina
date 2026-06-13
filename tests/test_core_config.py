@@ -180,7 +180,11 @@ class TestFirewallOverrides:
                 "agent_security": {
                     "firewall": {
                         "custom_patterns": [
-                            {"regex": "secret-project-x", "category": "internal", "risk_level": "high"}
+                            {
+                                "regex": "secret-project-x",
+                                "category": "internal",
+                                "risk_level": "high",
+                            }
                         ],
                         "disabled_categories": ["role_hijack"],
                     }
