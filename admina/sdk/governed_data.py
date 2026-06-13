@@ -71,10 +71,10 @@ VALID_ZONES = {"local", "eu", "us", "custom"}
 
 
 def _load_pii_redactor() -> Any:
-    """Lazily load the PII redactor to avoid import-time spaCy load."""
-    from admina.domains.data_sovereignty.pii import PIIRedactor
+    """Engine from admina.engines (honors ADMINA_ENGINE and pii_engine)."""
+    from admina.engines import get_pii_engine
 
-    return PIIRedactor()
+    return get_pii_engine()
 
 
 def _classify_content(text: str, pii_result: dict) -> dict[str, Any]:

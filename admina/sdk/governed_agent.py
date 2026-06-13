@@ -53,24 +53,24 @@ UpstreamCallable = Callable[..., Awaitable[dict]]
 
 
 def _load_firewall() -> Any:
-    """Lazily load the InjectionFirewall."""
-    from admina.domains.agent_security.firewall import InjectionFirewall
+    """Engine from admina.engines (honors ADMINA_ENGINE and YAML firewall overrides)."""
+    from admina.engines import get_firewall
 
-    return InjectionFirewall()
+    return get_firewall()
 
 
 def _load_loop_breaker() -> Any:
-    """Lazily load the LoopBreaker."""
-    from admina.domains.agent_security.loop_breaker import LoopBreaker
+    """Engine from admina.engines (honors ADMINA_ENGINE)."""
+    from admina.engines import get_loop_breaker
 
-    return LoopBreaker()
+    return get_loop_breaker()
 
 
 def _load_pii_redactor() -> Any:
-    """Lazily load the PII redactor."""
-    from admina.domains.data_sovereignty.pii import PIIRedactor
+    """Engine from admina.engines (honors ADMINA_ENGINE and pii_engine)."""
+    from admina.engines import get_pii_engine
 
-    return PIIRedactor()
+    return get_pii_engine()
 
 
 def _extract_text(params: dict) -> str:

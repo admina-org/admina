@@ -245,3 +245,18 @@ def test_integrations_singletons_use_engines_module(monkeypatch):
     assert ie.get_firewall() is fw  # singleton preserved
     # teardown: reset singletons so other tests get a fresh engine
     ie._firewall = ie._pii_redactor = ie._loop_breaker = None
+
+
+def test_sdk_loaders_use_engines_module(monkeypatch):
+    monkeypatch.setenv("ADMINA_ENGINE", "python")
+    from admina.sdk import governed_agent, governed_data, governed_model
+
+    for loader in (
+        governed_agent._load_pii_redactor,
+        governed_model._load_pii_redactor,
+        governed_data._load_pii_redactor,
+    ):
+        engine = loader()
+        assert engine.get_stats()["engine"] == "python"
+    assert governed_agent._load_firewall().get_stats()["engine"] == "python"
+    assert governed_agent._load_loop_breaker().get_stats()["engine"] == "python"

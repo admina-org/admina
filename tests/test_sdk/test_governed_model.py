@@ -172,8 +172,14 @@ class TestGovernedModelModelName:
 class TestGovernedModelPII:
     """Tests for PII redaction in GovernedModel."""
 
-    def test_pii_redacted_in_prompt(self) -> None:
-        """PII in the prompt is redacted before reaching the adapter."""
+    def test_pii_redacted_in_prompt(self, monkeypatch) -> None:
+        """PII in the prompt is redacted before reaching the adapter.
+
+        Pinned to the Python engine: the ``[EMAIL]`` token is Python-specific
+        (Rust produces ``[EMAIL_REDACTED]``).  The enforcement assertion
+        (email address absent) holds on both engines.
+        """
+        monkeypatch.setenv("ADMINA_ENGINE", "python")
         adapter = MockAdapter()
         model = GovernedModel("test-model", adapter=adapter, pii_redaction=True)
         asyncio.run(model.ask("Contact me at test@example.com"))
