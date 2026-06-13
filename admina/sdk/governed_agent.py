@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from admina.core.event_bus import EventType, GovernanceEvent, bus
+from admina.domains.governance import _deep_redact, _extract_text_fields
 from admina.sdk._compat import run_sync
 
 __all__ = ["GovernedAgent", "GovernedMCPResponse"]
@@ -73,73 +74,11 @@ def _load_pii_redactor() -> Any:
     return get_pii_engine()
 
 
-def _extract_text(params: dict) -> str:
-    """Extract scannable text from params dict.
-
-    Args:
-        params: The call params.
-
-    Returns:
-        Concatenated string values for scanning.
-    """
-    texts: list[str] = []
-    _collect_strings(params, texts, depth=0)
-    return " ".join(texts) if texts else ""
-
-
-def _collect_strings(obj: Any, acc: list[str], depth: int) -> None:
-    """Recursively collect string values from nested structures.
-
-    Args:
-        obj: Value to inspect.
-        acc: Accumulator list.
-        depth: Recursion depth (capped at 5).
-    """
-    if depth > 5:
-        return
-    if isinstance(obj, str):
-        acc.append(obj)
-    elif isinstance(obj, dict):
-        for v in obj.values():
-            _collect_strings(v, acc, depth + 1)
-    elif isinstance(obj, list):
-        for item in obj:
-            _collect_strings(item, acc, depth + 1)
-
-
-def _redact_dict(obj: Any, pii_redactor: Any, depth: int = 0) -> tuple[Any, int]:
-    """Recursively redact PII in nested structures.
-
-    Args:
-        obj: Value to redact.
-        pii_redactor: Object with .redact(text) method.
-        depth: Recursion depth (capped at 5).
-
-    Returns:
-        Tuple of (redacted value, total PII count).
-    """
-    if depth > 5:
-        return obj, 0
-    if isinstance(obj, str):
-        r = pii_redactor.redact(obj)
-        return r["redacted_text"], r["count"]
-    if isinstance(obj, dict):
-        total = 0
-        out = {}
-        for k, v in obj.items():
-            rv, c = _redact_dict(v, pii_redactor, depth + 1)
-            out[k] = rv
-            total += c
-        return out, total
-    if isinstance(obj, list):
-        total = 0
-        out_list = []
-        for item in obj:
-            rv, c = _redact_dict(item, pii_redactor, depth + 1)
-            out_list.append(rv)
-            total += c
-        return out_list, total
-    return obj, 0
+def _redact_value(obj: Any, pii_redactor: Any) -> tuple[Any, int]:
+    """Collision-safe deep redaction returning (redacted, pii_count)."""
+    acc: dict[str, Any] = {"redacted_text": "", "entities": [], "count": 0}
+    redacted = _deep_redact(obj, acc, pii_redactor)
+    return redacted, acc["count"]
 
 
 class GovernedAgent:
@@ -180,6 +119,7 @@ class GovernedAgent:
         self._pii_redaction = pii_redaction
         self._firewall_enabled = firewall_enabled
         self._loop_detection = loop_detection
+        self._session_id = str(uuid.uuid4())
         self._firewall: Any = None
         self._loop_breaker: Any = None
         self._pii_redactor: Any = None
@@ -221,7 +161,7 @@ class GovernedAgent:
         Returns:
             GovernedMCPResponse with result, action, and governance info.
         """
-        session_id = kwargs.pop("session_id", None) or str(uuid.uuid4())
+        session_id = kwargs.pop("session_id", None) or self._session_id
         start_us = time.time() * 1_000_000
         governance: dict[str, Any] = {}
 
@@ -236,23 +176,9 @@ class GovernedAgent:
                 )
             )
 
-        text_to_scan = _extract_text(params)
+        text_to_scan = " ".join(_extract_text_fields(params))
 
-        # 2. Firewall check
-        if self._firewall_enabled and text_to_scan:
-            fw_result = self._get_firewall().check(text_to_scan)
-            governance["firewall"] = fw_result
-            if fw_result.get("is_injection"):
-                return await self._blocked_response(
-                    session_id,
-                    start_us,
-                    "BLOCK",
-                    fw_result.get("risk_level", "HIGH"),
-                    "firewall",
-                    governance,
-                )
-
-        # 3. Loop detection
+        # 2. Loop detection
         if self._loop_detection and text_to_scan:
             loop_result = self._get_loop_breaker().check(
                 session_id,
@@ -269,13 +195,24 @@ class GovernedAgent:
                     governance,
                 )
 
+        # 3. Firewall check
+        if self._firewall_enabled and text_to_scan:
+            fw_result = self._get_firewall().check(text_to_scan)
+            governance["firewall"] = fw_result
+            if fw_result.get("is_injection"):
+                return await self._blocked_response(
+                    session_id,
+                    start_us,
+                    "BLOCK",
+                    fw_result.get("risk_level", "HIGH"),
+                    "firewall",
+                    governance,
+                )
+
         # 4. PII redaction on request (inbound)
         redacted_params = params
         if self._pii_redaction:
-            redacted_params, pii_count = _redact_dict(
-                params,
-                self._get_pii_redactor(),
-            )
+            redacted_params, pii_count = _redact_value(params, self._get_pii_redactor())
             governance["pii_request"] = {
                 "redacted": pii_count > 0,
                 "count": pii_count,
@@ -286,11 +223,8 @@ class GovernedAgent:
 
         # 6. PII redaction on response (outbound)
         redacted_result = upstream_result
-        if self._pii_redaction and isinstance(upstream_result, dict):
-            redacted_result, pii_count = _redact_dict(
-                upstream_result,
-                self._get_pii_redactor(),
-            )
+        if self._pii_redaction:
+            redacted_result, pii_count = _redact_value(upstream_result, self._get_pii_redactor())
             governance["pii_response"] = {
                 "redacted": pii_count > 0,
                 "count": pii_count,

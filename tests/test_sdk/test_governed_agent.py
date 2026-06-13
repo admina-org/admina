@@ -20,10 +20,10 @@ import asyncio
 from typing import Any
 
 from admina.core.event_bus import EventBus, EventType, GovernanceEvent
+from admina.domains.governance import _extract_text_fields
 from admina.sdk.governed_agent import (
     GovernedAgent,
     GovernedMCPResponse,
-    _extract_text,
 )
 
 # ---------------------------------------------------------------------------
@@ -67,22 +67,23 @@ class TestGovernedMCPResponse:
 
 
 class TestHelpers:
-    """Tests for helper functions."""
+    """Tests for helper functions (now using shared _extract_text_fields)."""
 
     def test_extract_text_flat(self) -> None:
-        """Extracts strings from a flat dict."""
-        text = _extract_text({"prompt": "hello", "model": "llama3"})
-        assert "hello" in text
-        assert "llama3" in text
+        """Extracts strings from a flat dict (keys and values)."""
+        fields = _extract_text_fields({"prompt": "hello", "model": "llama3"})
+        joined = " ".join(fields)
+        assert "hello" in joined
+        assert "llama3" in joined
 
     def test_extract_text_nested(self) -> None:
         """Extracts strings from nested structures."""
-        text = _extract_text({"messages": [{"content": "hi there"}]})
-        assert "hi there" in text
+        fields = _extract_text_fields({"messages": [{"content": "hi there"}]})
+        assert "hi there" in " ".join(fields)
 
     def test_extract_text_empty(self) -> None:
-        """Empty dict yields empty string."""
-        assert _extract_text({}) == ""
+        """Empty dict yields empty list."""
+        assert _extract_text_fields({}) == []
 
 
 # ---------------------------------------------------------------------------
@@ -432,3 +433,65 @@ class TestGovernedAgentEvents:
 
         assert "latency_us" in resp.governance
         assert resp.governance["latency_us"] > 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: stable session, dict-key PII, non-dict response redaction
+# ---------------------------------------------------------------------------
+
+
+def test_governed_agent_session_is_stable_across_calls():
+    import asyncio
+    from admina.sdk.governed_agent import GovernedAgent
+
+    seen = []
+
+    class _Loop:
+        def check(self, session_id, text):
+            seen.append(session_id)
+            return {"is_loop": False, "similarity": 0.0}
+
+    async def _up(method, params, **kw):
+        return {"ok": True}
+
+    ga = GovernedAgent(_up, audit=False, firewall_enabled=False)
+    ga._loop_breaker = _Loop()  # inject so no real engine load
+    asyncio.run(ga.call("m", {"content": "hi"}))
+    asyncio.run(ga.call("m", {"content": "hi again"}))
+    assert seen[0] == seen[1]  # same session across two calls on one instance
+
+
+def test_governed_agent_redacts_pii_in_dict_key():
+    import asyncio
+    from admina.sdk.governed_agent import GovernedAgent
+
+    class _PII:
+        def redact(self, t):
+            return {"redacted_text": t.replace("a@b.com", "[EMAIL]"),
+                    "entities": [], "count": t.count("a@b.com")}
+
+    async def _up(method, params, **kw):
+        return params  # echo redacted params back
+
+    ga = GovernedAgent(_up, audit=False, firewall_enabled=False, loop_detection=False)
+    ga._pii_redactor = _PII()
+    resp = asyncio.run(ga.call("m", {"a@b.com": "v"}))  # PII in a KEY
+    assert "a@b.com" not in str(resp.result)
+
+
+def test_governed_agent_redacts_non_dict_response():
+    import asyncio
+    from admina.sdk.governed_agent import GovernedAgent
+
+    class _PII:
+        def redact(self, t):
+            return {"redacted_text": t.replace("a@b.com", "[EMAIL]"),
+                    "entities": [], "count": t.count("a@b.com")}
+
+    async def _up(method, params, **kw):
+        return "contact a@b.com"  # STRING result
+
+    ga = GovernedAgent(_up, audit=False, firewall_enabled=False, loop_detection=False)
+    ga._pii_redactor = _PII()
+    resp = asyncio.run(ga.call("m", {"x": "y"}))
+    assert "a@b.com" not in str(resp.result)
