@@ -178,6 +178,10 @@ class TestS3ObjectLock:
         def get_object(self, **kwargs):
             raise RuntimeError("no existing state")  # forces a fresh chain
 
+        def list_objects_v2(self, **kwargs):
+            # No records exist yet → reconstruction finds nothing → stays GENESIS/0.
+            return {"Contents": [], "IsTruncated": False}
+
         def put_object(self, **kwargs):
             self.puts.append(kwargs)
             return {}
@@ -264,3 +268,95 @@ class TestBaseForensicStoreContract:
         result = asyncio.run(box.verify_chain())
         assert result["valid"] is True
         assert result["records"] == 0
+
+
+class TestS3ChainStateReconstruction:
+    """When the S3 chain-state key is missing the chain must be reconstructed
+    from the immutable record objects — not silently restarted from GENESIS."""
+
+    class _FullFakeS3:
+        """In-memory S3 fake that stores all objects in a dict keyed by Key.
+
+        Supports the methods called by ForensicBlackBox:
+          head_bucket, put_object, get_object, list_objects_v2.
+        """
+
+        def __init__(self):
+            self._store: dict[str, bytes] = {}
+
+        def head_bucket(self, **kwargs):
+            return {}
+
+        def put_object(self, **kwargs):
+            self._store[kwargs["Key"]] = kwargs["Body"]
+            return {}
+
+        def get_object(self, **kwargs):
+            key = kwargs["Key"]
+            if key not in self._store:
+                raise KeyError(f"no object: {key}")
+            import io
+            return {"Body": io.BytesIO(self._store[key])}
+
+        def list_objects_v2(self, **kwargs):
+            keys = list(self._store.keys())
+            return {
+                "Contents": [{"Key": k} for k in keys],
+                "IsTruncated": False,
+            }
+
+    def test_s3_reconstructs_chain_from_existing_records(self):
+        import io as _io
+
+        s3 = self._FullFakeS3()
+        box = ForensicBlackBox(boto3_client=s3, bucket="b")
+
+        box.record({"i": 1})
+        box.record({"i": 2})
+        box.record({"i": 3})
+
+        head_before = box.chain_head
+        count_before = box.record_count  # 3
+
+        # Simulate lost state key — the record objects remain intact.
+        del s3._store[_STATE_FILE]
+
+        # A fresh instance must reconstruct from the 3 S3 record objects.
+        box2 = ForensicBlackBox(boto3_client=s3, bucket="b")
+        assert box2.record_count == count_before  # reconstructed, not 0
+        assert box2.chain_head == head_before      # reconstructed, not GENESIS
+
+
+class TestChainStateReconstruction:
+    """When the mutable state file is missing or corrupt, the chain must be
+    reconstructed from the immutable records on disk — not silently restarted
+    from GENESIS (which would fork the audit trail)."""
+
+    def test_forensic_reconstructs_chain_after_state_file_lost(self, tmp_path):
+        fb = ForensicBlackBox(filesystem_dir=str(tmp_path))
+        fb.record({"event": "a"})
+        fb.record({"event": "b"})
+        head_before = fb.chain_head
+        count_before = fb.record_count  # 2
+
+        (tmp_path / "_chain_state.json").unlink()  # lose the state file
+
+        fb2 = ForensicBlackBox(filesystem_dir=str(tmp_path))
+        assert fb2.record_count == count_before     # reconstructed, not 0
+        assert fb2.chain_head == head_before        # reconstructed, not GENESIS
+
+        r = fb2.record({"event": "c"})
+        assert r["sequence_number"] == 3            # chain CONTINUES
+        assert r["previous_hash"] == head_before
+
+    def test_forensic_reconstructs_on_corrupt_state(self, tmp_path):
+        fb = ForensicBlackBox(filesystem_dir=str(tmp_path))
+        fb.record({"event": "a"})
+        head, count = fb.chain_head, fb.record_count
+        (tmp_path / "_chain_state.json").write_text("{ corrupt json")  # tamper/corruption
+        fb2 = ForensicBlackBox(filesystem_dir=str(tmp_path))
+        assert fb2.record_count == count and fb2.chain_head == head
+
+    def test_forensic_empty_store_starts_at_genesis(self, tmp_path):
+        fb = ForensicBlackBox(filesystem_dir=str(tmp_path))
+        assert fb.record_count == 0 and fb.chain_head == "GENESIS"

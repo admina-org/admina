@@ -136,6 +136,26 @@ class ForensicBlackBox(BaseForensicStore):
             return  # mkdir already done in __init__
         logger.warning("No forensic backend configured — events kept in memory only")
 
+    def _reconstruct_chain_state_from_records(self) -> bool:
+        """Rebuild chain_head/record_count from the stored records.
+
+        Returns True if records were found. Used when the mutable state file
+        is missing or corrupt, so the chain is never silently restarted from
+        GENESIS while records still exist.
+        """
+        records = self._read_back_records()
+        if not records:
+            return False
+        last = records[-1]  # _read_back_records sorts by sequence_number
+        self.record_count = last.get("sequence_number", len(records))
+        self.chain_head = last.get("record_hash", "GENESIS")
+        logger.warning(
+            "Forensic chain state reconstructed from %d stored record(s) "
+            "(state file missing or corrupt): seq=%d, head=%s...",
+            len(records), self.record_count, self.chain_head[:16],
+        )
+        return True
+
     def _restore_chain_state(self):
         """Restore chain_head and record_count from the configured backend."""
         if self.boto3_client is not None:
@@ -151,6 +171,7 @@ class ForensicBlackBox(BaseForensicStore):
                 )
             except Exception:  # noqa: BLE001 — NoSuchKey or similar
                 logger.info("No existing forensic chain state in S3, starting fresh")
+                self._reconstruct_chain_state_from_records()
             return
         if self.filesystem_dir is not None:
             state_path = self.filesystem_dir / _CHAIN_STATE_KEY
@@ -165,7 +186,13 @@ class ForensicBlackBox(BaseForensicStore):
                         self.chain_head[:16],
                     )
                 except (OSError, json.JSONDecodeError):
-                    logger.warning("Corrupt chain state at %s — starting fresh", state_path)
+                    logger.error(
+                        "Corrupt forensic chain state at %s — reconstructing from records",
+                        state_path,
+                    )
+                    self._reconstruct_chain_state_from_records()
+            else:
+                self._reconstruct_chain_state_from_records()
 
     def _persist_chain_state(self):
         """Persist chain_head and record_count to the configured backend."""
