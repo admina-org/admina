@@ -70,6 +70,7 @@ async def run_pipeline(
     governance_guards: list,
     injection_enabled: bool = True,
     pii_enabled: bool = True,
+    loop_enabled: bool = True,
     mode: str = "enforce",
 ) -> GovernanceResult:
     """Execute the full governance pipeline and return a GovernanceResult.
@@ -77,6 +78,11 @@ async def run_pipeline(
     This function is pure logic — no HTTP, no storage, no side effects.
     The caller (mcp_proxy) handles rate limiting, forensic storage,
     ClickHouse, event bus, and HTTP responses.
+
+    ``loop_enabled`` controls whether the loop-breaker stage runs.  Set to
+    ``False`` for single-shot callers (e.g. GovernedModel) that have no
+    cross-call session state; the stage is skipped and ``loop_result`` is
+    set to a no-op dict so downstream code is unaffected.
     """
     start_time = time.perf_counter()
     result = GovernanceResult()
@@ -84,11 +90,14 @@ async def run_pipeline(
     result.mode = mode
 
     # 1. Loop Breaker
-    loop_result = loop_breaker.check(session_id, content_str)
-    result.checks["loop_breaker"] = loop_result
-    if loop_result["is_loop"]:
-        result.action = GovernanceAction.CIRCUIT_BREAK
-        result.risk_level = RiskLevel.HIGH
+    if loop_enabled:
+        loop_result = loop_breaker.check(session_id, content_str)
+        result.checks["loop_breaker"] = loop_result
+        if loop_result["is_loop"]:
+            result.action = GovernanceAction.CIRCUIT_BREAK
+            result.risk_level = RiskLevel.HIGH
+    else:
+        loop_result = {"is_loop": False, "similarity": None}
 
     # 2. Anti-Injection Firewall
     if result.action != GovernanceAction.CIRCUIT_BREAK and injection_enabled:
