@@ -258,3 +258,97 @@ class TestDashboardSessionToken:
         tok = main._issue_dashboard_token()
         monkeypatch.setattr(main.settings, "ADMINA_API_KEY", "key-two-abcdef123456")
         assert main._verify_dashboard_token(tok) is False
+
+
+def test_verify_credential_accepts_raw_key_and_signed_cookie(monkeypatch):
+    from admina.proxy import main as m
+
+    monkeypatch.setattr(m.settings, "ADMINA_API_KEY", "supersecretkey123456", raising=False)
+    token = m._issue_dashboard_token()
+
+    assert m.verify_credential(headers={"X-API-Key": "supersecretkey123456"}, query_params={}, cookies={}) is True
+    assert m.verify_credential(headers={"Authorization": "Bearer supersecretkey123456"}, query_params={}, cookies={}) is True
+    assert m.verify_credential(headers={}, query_params={"api_key": "supersecretkey123456"}, cookies={}) is True
+    assert m.verify_credential(headers={}, query_params={}, cookies={"admina_session": token}) is True
+    assert m.verify_credential(headers={"X-API-Key": "nope"}, query_params={}, cookies={}) is False
+    assert m.verify_credential(headers={}, query_params={}, cookies={"admina_session": "supersecretkey123456"}) is False
+    assert m.verify_credential(headers={}, query_params={}, cookies={}) is False
+
+
+def test_verify_credential_false_when_no_key_configured(monkeypatch):
+    from admina.proxy import main as m
+    monkeypatch.setattr(m.settings, "ADMINA_API_KEY", "", raising=False)
+    assert m.verify_credential(headers={"X-API-Key": "anything"}, query_params={}, cookies={}) is False
+
+
+def test_http_rejects_api_key_in_query_param(monkeypatch):
+    """auth_middleware must NOT pass query_params to verify_credential for HTTP
+    requests — the raw key in ?api_key= would leak into access logs. Query-param
+    auth is WebSocket-only; HTTP must use the X-API-Key header.
+    """
+    import asyncio
+
+    from starlette.requests import Request
+    from starlette.responses import Response
+    from starlette.types import Scope
+
+    from admina.proxy import main as m
+
+    _KEY = "mysecretkey-abcdef123456"
+    monkeypatch.setattr(m.settings, "ADMINA_API_KEY", _KEY, raising=False)
+
+    # Stub _get_state so we don't need a real app/lifespan.  Return a proxy
+    # state with no auth_providers so the middleware falls through to the
+    # ADMINA_API_KEY branch (which is what we want to test).
+    class _FakeState:
+        auth_providers: list = []
+
+    monkeypatch.setattr(m, "_get_state", lambda req: _FakeState())
+
+    # Capture every call to verify_credential so we can assert query_params={}.
+    calls: list[dict] = []
+    _real_verify = m.verify_credential
+
+    def _spy(**kwargs):
+        calls.append(kwargs)
+        return _real_verify(**kwargs)
+
+    monkeypatch.setattr(m, "verify_credential", _spy)
+
+    async def _call_next(req: Request) -> Response:
+        return Response("ok", status_code=200)
+
+    # --- case 1: key only via query string — must be rejected ---
+    scope_qp: Scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/api/stats",
+        "query_string": f"api_key={_KEY}".encode(),
+        "headers": [],
+    }
+    resp = asyncio.run(m.auth_middleware(Request(scope_qp), _call_next))
+
+    assert resp.status_code == 401, (
+        f"Expected 401 when key is passed via ?api_key= on HTTP, got {resp.status_code}"
+    )
+
+    # Confirm the middleware forwarded query_params={} (not the real QP).
+    assert calls, "verify_credential was never called"
+    assert calls[0]["query_params"] == {}, (
+        "auth_middleware must pass query_params={} to verify_credential for HTTP requests; "
+        f"got query_params={calls[0]['query_params']!r}"
+    )
+
+    # --- case 2: same key via X-API-Key header — must be accepted ---
+    calls.clear()
+    scope_hdr: Scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/api/stats",
+        "query_string": b"",
+        "headers": [(b"x-api-key", _KEY.encode())],
+    }
+    resp2 = asyncio.run(m.auth_middleware(Request(scope_hdr), _call_next))
+    assert resp2.status_code == 200, (
+        f"Expected 200 when key is in X-API-Key header, got {resp2.status_code}"
+    )

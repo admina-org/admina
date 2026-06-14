@@ -545,6 +545,38 @@ def _verify_dashboard_token(token: str, now: int | None = None) -> bool:
     return (now if now is not None else int(time.time())) < exp
 
 
+def verify_credential(
+    *,
+    headers: Any = None,
+    query_params: Any = None,
+    cookies: Any = None,
+) -> bool:
+    """Authenticate from credential parts (header / query / cookie).
+
+    Accepts the raw ``ADMINA_API_KEY`` via ``X-API-Key`` /
+    ``Authorization: Bearer`` / ``?api_key=`` (constant-time compare), OR the
+    signed ``admina_session`` cookie (verified, never the raw key). Single
+    source of truth shared by the HTTP middleware, the WebSocket upgrade, and
+    the API-key auth provider so they cannot drift.
+    """
+    headers = headers or {}
+    query_params = query_params or {}
+    cookies = cookies or {}
+    if not settings.ADMINA_API_KEY:
+        return False
+    auth_header = headers.get("Authorization") or headers.get("authorization") or ""
+    raw = (
+        headers.get("X-API-Key")
+        or headers.get("x-api-key")
+        or auth_header.removeprefix("Bearer ").strip()
+        or query_params.get("api_key")
+        or ""
+    )
+    if raw and _secrets.compare_digest(raw, settings.ADMINA_API_KEY):
+        return True
+    return _verify_dashboard_token(cookies.get(_DASHBOARD_COOKIE, ""))
+
+
 if _DASHBOARD_DIR.is_dir():
     from fastapi.responses import HTMLResponse
     from fastapi.staticfiles import StaticFiles
@@ -628,19 +660,17 @@ async def auth_middleware(request: Request, call_next) -> JSONResponse:
         )
 
     # 2. Fallback: static ADMINA_API_KEY check.
-    # API clients present the raw key via X-API-Key / Authorization: Bearer
-    # (compared in constant time). Browsers present the `admina_session`
-    # cookie issued by the bundled dashboard at GET /, which holds a signed
-    # expiring token — verified by signature, never the raw key.
+    # API clients present the raw key via X-API-Key / Authorization: Bearer.
+    # Browsers present the `admina_session` cookie issued by the bundled
+    # dashboard at GET /, which holds a signed expiring token — verified by
+    # signature, never the raw key.
+    # query-param key auth is WebSocket-only (browsers can't set WS headers); HTTP uses the header
     if settings.ADMINA_API_KEY:
-        header_key = (
-            request.headers.get("X-API-Key")
-            or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-        )
-        authorized = (
-            header_key and _secrets.compare_digest(header_key, settings.ADMINA_API_KEY)
-        ) or _verify_dashboard_token(request.cookies.get(_DASHBOARD_COOKIE, ""))
-        if not authorized:
+        if not verify_credential(
+            headers=request.headers,
+            query_params={},
+            cookies=request.cookies,
+        ):
             return JSONResponse(
                 status_code=401,
                 content={
