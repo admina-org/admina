@@ -492,16 +492,32 @@ class TestAPIKeyAuthProvider:
             return base64.urlsafe_b64encode(f"{payload}.{sig}".encode()).decode("ascii")
 
         # valid signed cookie → authenticated
-        user = _run(provider.authenticate({"path": "/api/x", "headers": {}, "cookies": {"admina_session": _mint(key)}}))
+        user = _run(
+            provider.authenticate(
+                {"path": "/api/x", "headers": {}, "cookies": {"admina_session": _mint(key)}}
+            )
+        )
         assert user and user.get("user_id")
 
         # raw key as cookie → REJECTED (must be a signed token, not the raw key)
         with pytest.raises(PermissionError):
-            _run(provider.authenticate({"path": "/api/x", "headers": {}, "cookies": {"admina_session": key}}))
+            _run(
+                provider.authenticate(
+                    {"path": "/api/x", "headers": {}, "cookies": {"admina_session": key}}
+                )
+            )
 
         # tampered cookie → rejected
         with pytest.raises(PermissionError):
-            _run(provider.authenticate({"path": "/api/x", "headers": {}, "cookies": {"admina_session": "garbage.tampered"}}))
+            _run(
+                provider.authenticate(
+                    {
+                        "path": "/api/x",
+                        "headers": {},
+                        "cookies": {"admina_session": "garbage.tampered"},
+                    }
+                )
+            )
 
         # raw key via header still works
         user2 = _run(provider.authenticate({"path": "/api/x", "headers": {"X-API-Key": key}}))
@@ -542,10 +558,7 @@ def test_unconfigured_provider_filter_drops_keyless():
     keyed = APIKeyAuthProvider(api_key="k" * 16)
     providers = [keyless, keyed]
 
-    filtered = [
-        p for p in providers
-        if getattr(p, "is_configured", lambda: True)()
-    ]
+    filtered = [p for p in providers if getattr(p, "is_configured", lambda: True)()]
     assert filtered == [keyed]
     assert keyless not in filtered
 

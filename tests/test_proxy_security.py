@@ -266,26 +266,51 @@ def test_verify_credential_accepts_raw_key_and_signed_cookie(monkeypatch):
     monkeypatch.setattr(m.settings, "ADMINA_API_KEY", "supersecretkey123456", raising=False)
     token = m._issue_dashboard_token()
 
-    assert m.verify_credential(headers={"X-API-Key": "supersecretkey123456"}, query_params={}, cookies={}) is True
-    assert m.verify_credential(headers={"Authorization": "Bearer supersecretkey123456"}, query_params={}, cookies={}) is True
-    assert m.verify_credential(headers={}, query_params={"api_key": "supersecretkey123456"}, cookies={}) is True
-    assert m.verify_credential(headers={}, query_params={}, cookies={"admina_session": token}) is True
+    assert (
+        m.verify_credential(
+            headers={"X-API-Key": "supersecretkey123456"}, query_params={}, cookies={}
+        )
+        is True
+    )
+    assert (
+        m.verify_credential(
+            headers={"Authorization": "Bearer supersecretkey123456"}, query_params={}, cookies={}
+        )
+        is True
+    )
+    assert (
+        m.verify_credential(
+            headers={}, query_params={"api_key": "supersecretkey123456"}, cookies={}
+        )
+        is True
+    )
+    assert (
+        m.verify_credential(headers={}, query_params={}, cookies={"admina_session": token}) is True
+    )
     assert m.verify_credential(headers={"X-API-Key": "nope"}, query_params={}, cookies={}) is False
-    assert m.verify_credential(headers={}, query_params={}, cookies={"admina_session": "supersecretkey123456"}) is False
+    assert (
+        m.verify_credential(
+            headers={}, query_params={}, cookies={"admina_session": "supersecretkey123456"}
+        )
+        is False
+    )
     assert m.verify_credential(headers={}, query_params={}, cookies={}) is False
 
 
 def test_verify_credential_false_when_no_key_configured(monkeypatch):
     from admina.proxy import main as m
+
     monkeypatch.setattr(m.settings, "ADMINA_API_KEY", "", raising=False)
-    assert m.verify_credential(headers={"X-API-Key": "anything"}, query_params={}, cookies={}) is False
+    assert (
+        m.verify_credential(headers={"X-API-Key": "anything"}, query_params={}, cookies={}) is False
+    )
 
 
 class TestNoKeyFailClosed:
     """With no ADMINA_API_KEY and no auth providers, the middleware must
     return 401 for protected paths unless ALLOW_UNAUTHENTICATED=true."""
 
-    def _make_request(self, path: str = "/api/stats", headers: list | None = None) -> "Request":
+    def _make_request(self, path: str = "/api/stats", headers: list | None = None):
         from starlette.requests import Request
 
         scope = {

@@ -175,8 +175,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # Drop providers that declare themselves unconfigured (e.g. keyless APIKeyAuthProvider).
     # A provider without is_configured() defaults to True — kept.
     state.auth_providers = [
-        p for p in state.auth_providers
-        if getattr(p, "is_configured", lambda: True)()
+        p for p in state.auth_providers if getattr(p, "is_configured", lambda: True)()
     ]
     if state.governance_guards:
         logger.info(

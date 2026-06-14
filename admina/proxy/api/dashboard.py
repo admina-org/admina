@@ -232,13 +232,17 @@ def create_dashboard_endpoints(
 
         expected = getattr(settings, "ADMINA_API_KEY", "") or ""
         if expected:
-            ok = bool(
-                verify_credential(
-                    headers=dict(websocket.headers),
-                    query_params=dict(websocket.query_params),
-                    cookies=dict(websocket.cookies),
+            ok = (
+                bool(
+                    verify_credential(
+                        headers=dict(websocket.headers),
+                        query_params=dict(websocket.query_params),
+                        cookies=dict(websocket.cookies),
+                    )
                 )
-            ) if verify_credential is not None else False
+                if verify_credential is not None
+                else False
+            )
             if not ok:
                 await websocket.close(code=1008)
                 return

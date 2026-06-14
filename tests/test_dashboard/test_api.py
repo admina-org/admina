@@ -162,9 +162,7 @@ def _mint_session_token(api_key: str, *, now: int | None = None) -> str:
     """Mint a valid signed session token for *api_key* (mirrors proxy/main.py)."""
     exp = (now if now is not None else int(time.time())) + _SESSION_TTL
     payload = str(exp)
-    sig = hmac.new(
-        api_key.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
+    sig = hmac.new(api_key.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
     return base64.urlsafe_b64encode(f"{payload}.{sig}".encode()).decode("ascii")
 
 
@@ -1026,7 +1024,9 @@ class TestDashboardLiveWebSocket:
         fake_settings = _FakeSettings()
         fake_settings.ADMINA_API_KEY = "secret-key"
         fake_settings.ALLOW_UNAUTHENTICATED = False
-        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
+        app = _build_test_app(
+            settings=fake_settings, verify_credential=_make_verifier(fake_settings)
+        )
         client = TestClient(app)
         with pytest.raises(WebSocketDisconnect) as excinfo:
             with client.websocket_connect("/api/dashboard/live"):
@@ -1040,7 +1040,9 @@ class TestDashboardLiveWebSocket:
         fake_settings = _FakeSettings()
         fake_settings.ADMINA_API_KEY = "secret-key"
         fake_settings.ALLOW_UNAUTHENTICATED = False
-        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
+        app = _build_test_app(
+            settings=fake_settings, verify_credential=_make_verifier(fake_settings)
+        )
         client = TestClient(app)
         with pytest.raises(WebSocketDisconnect) as excinfo:
             with client.websocket_connect("/api/dashboard/live?api_key=wrong"):
@@ -1053,7 +1055,9 @@ class TestDashboardLiveWebSocket:
         fake_settings = _FakeSettings()
         fake_settings.ADMINA_API_KEY = "secret-key"
         fake_settings.ALLOW_UNAUTHENTICATED = False
-        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
+        app = _build_test_app(
+            settings=fake_settings, verify_credential=_make_verifier(fake_settings)
+        )
         client = TestClient(app)
         with client.websocket_connect("/api/dashboard/live?api_key=secret-key") as ws:
             ws.close()
@@ -1064,7 +1068,9 @@ class TestDashboardLiveWebSocket:
         fake_settings = _FakeSettings()
         fake_settings.ADMINA_API_KEY = "secret-key"
         fake_settings.ALLOW_UNAUTHENTICATED = False
-        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
+        app = _build_test_app(
+            settings=fake_settings, verify_credential=_make_verifier(fake_settings)
+        )
         client = TestClient(app)
         with client.websocket_connect(
             "/api/dashboard/live", headers={"X-API-Key": "secret-key"}
@@ -1077,7 +1083,9 @@ class TestDashboardLiveWebSocket:
         fake_settings = _FakeSettings()
         fake_settings.ADMINA_API_KEY = ""
         fake_settings.ALLOW_UNAUTHENTICATED = True
-        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
+        app = _build_test_app(
+            settings=fake_settings, verify_credential=_make_verifier(fake_settings)
+        )
         client = TestClient(app)
         with client.websocket_connect("/api/dashboard/live") as ws:
             ws.close()
@@ -1088,7 +1096,9 @@ class TestDashboardLiveWebSocket:
         fake_settings = _FakeSettings()
         fake_settings.ADMINA_API_KEY = "secret-key"
         fake_settings.ALLOW_UNAUTHENTICATED = False
-        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
+        app = _build_test_app(
+            settings=fake_settings, verify_credential=_make_verifier(fake_settings)
+        )
         client = TestClient(app)
         token = _mint_session_token("secret-key")
         with client.websocket_connect(
@@ -1103,7 +1113,9 @@ class TestDashboardLiveWebSocket:
         fake_settings = _FakeSettings()
         fake_settings.ADMINA_API_KEY = "secret-key"
         fake_settings.ALLOW_UNAUTHENTICATED = False
-        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
+        app = _build_test_app(
+            settings=fake_settings, verify_credential=_make_verifier(fake_settings)
+        )
         client = TestClient(app)
         with pytest.raises(WebSocketDisconnect) as excinfo:
             with client.websocket_connect(
@@ -1119,7 +1131,9 @@ class TestDashboardLiveWebSocket:
         fake_settings = _FakeSettings()
         fake_settings.ADMINA_API_KEY = "secret-key"
         fake_settings.ALLOW_UNAUTHENTICATED = False
-        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
+        app = _build_test_app(
+            settings=fake_settings, verify_credential=_make_verifier(fake_settings)
+        )
         client = TestClient(app)
         with pytest.raises(WebSocketDisconnect) as excinfo:
             with client.websocket_connect(
@@ -1136,7 +1150,9 @@ class TestDashboardLiveWebSocket:
         fake_settings.ADMINA_API_KEY = "secret-key"
         fake_settings.ALLOW_UNAUTHENTICATED = False
         fake_settings.CORS_ORIGINS = "http://localhost:3000"
-        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
+        app = _build_test_app(
+            settings=fake_settings, verify_credential=_make_verifier(fake_settings)
+        )
         client = TestClient(app)
         with pytest.raises(WebSocketDisconnect) as excinfo:
             with client.websocket_connect(
@@ -1153,7 +1169,9 @@ class TestDashboardLiveWebSocket:
         fake_settings.ADMINA_API_KEY = "secret-key"
         fake_settings.ALLOW_UNAUTHENTICATED = False
         fake_settings.CORS_ORIGINS = "http://localhost:3000"
-        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
+        app = _build_test_app(
+            settings=fake_settings, verify_credential=_make_verifier(fake_settings)
+        )
         client = TestClient(app)
         with client.websocket_connect(
             "/api/dashboard/live",
@@ -1168,7 +1186,9 @@ class TestDashboardLiveWebSocket:
         fake_settings.ADMINA_API_KEY = "secret-key"
         fake_settings.ALLOW_UNAUTHENTICATED = False
         fake_settings.CORS_ORIGINS = "http://localhost:3000"
-        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
+        app = _build_test_app(
+            settings=fake_settings, verify_credential=_make_verifier(fake_settings)
+        )
         client = TestClient(app)
         with client.websocket_connect(
             "/api/dashboard/live",
