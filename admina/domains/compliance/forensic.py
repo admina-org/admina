@@ -154,7 +154,9 @@ class ForensicBlackBox(BaseForensicStore):
         logger.warning(
             "Forensic chain state reconstructed from %d stored record(s) "
             "(state file missing or corrupt): seq=%d, head=%s...",
-            len(records), self.record_count, self.chain_head[:16],
+            len(records),
+            self.record_count,
+            self.chain_head[:16],
         )
         return True
 

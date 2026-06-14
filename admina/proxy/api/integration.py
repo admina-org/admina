@@ -165,7 +165,9 @@ def create_integration_endpoints(
             "previous_hash": record["previous_hash"],
         }
 
-    @router.get("/forensic/verify", tags=["integration"], summary="Forensic hash-chain integrity check")
+    @router.get(
+        "/forensic/verify", tags=["integration"], summary="Forensic hash-chain integrity check"
+    )
     async def forensic_verify() -> dict[str, Any]:
         """Verify the forensic hash-chain integrity.
 

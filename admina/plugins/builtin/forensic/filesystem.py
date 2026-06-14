@@ -144,10 +144,18 @@ class FilesystemForensicStore(BaseForensicStore):
         if last_n == 0:
             file_count = len(sorted(self._base_dir.glob("[0-9]*.json")))
             if file_count != self._record_count:
-                return {"valid": False, "records": self._record_count, "last_hash": self._chain_head}
+                return {
+                    "valid": False,
+                    "records": self._record_count,
+                    "last_hash": self._chain_head,
+                }
             # prev_hash after the loop is the last record's stored hash
             if prev_hash is not None and prev_hash != self._chain_head:
-                return {"valid": False, "records": self._record_count, "last_hash": self._chain_head}
+                return {
+                    "valid": False,
+                    "records": self._record_count,
+                    "last_hash": self._chain_head,
+                }
 
         return {
             "valid": True,
@@ -180,7 +188,8 @@ class FilesystemForensicStore(BaseForensicStore):
         logger.error(
             "Forensic chain state reconstructed from %d record file(s) "
             "(state file missing or corrupt): seq=%d",
-            len(files), self._record_count,
+            len(files),
+            self._record_count,
         )
         return True
 

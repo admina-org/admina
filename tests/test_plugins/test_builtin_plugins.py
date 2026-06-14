@@ -363,8 +363,8 @@ def test_plugin_forensic_reconstructs_after_state_loss(tmp_path):
     (tmp_path / "_chain_state.json").unlink()  # lose state
 
     s2 = FilesystemForensicStore(base_dir=str(tmp_path))
-    assert s2._record_count == count   # reconstructed, not 0
-    assert s2._chain_head == head      # reconstructed, not GENESIS
+    assert s2._record_count == count  # reconstructed, not 0
+    assert s2._chain_head == head  # reconstructed, not GENESIS
 
     # next append continues the chain and does NOT overwrite record 1
     _run(s2.append({"e": 3}))

@@ -296,6 +296,7 @@ class TestS3ChainStateReconstruction:
             if key not in self._store:
                 raise KeyError(f"no object: {key}")
             import io
+
             return {"Body": io.BytesIO(self._store[key])}
 
         def list_objects_v2(self, **kwargs):
@@ -306,7 +307,6 @@ class TestS3ChainStateReconstruction:
             }
 
     def test_s3_reconstructs_chain_from_existing_records(self):
-        import io as _io
 
         s3 = self._FullFakeS3()
         box = ForensicBlackBox(boto3_client=s3, bucket="b")
@@ -324,7 +324,7 @@ class TestS3ChainStateReconstruction:
         # A fresh instance must reconstruct from the 3 S3 record objects.
         box2 = ForensicBlackBox(boto3_client=s3, bucket="b")
         assert box2.record_count == count_before  # reconstructed, not 0
-        assert box2.chain_head == head_before      # reconstructed, not GENESIS
+        assert box2.chain_head == head_before  # reconstructed, not GENESIS
 
 
 class TestChainStateReconstruction:
@@ -342,11 +342,11 @@ class TestChainStateReconstruction:
         (tmp_path / "_chain_state.json").unlink()  # lose the state file
 
         fb2 = ForensicBlackBox(filesystem_dir=str(tmp_path))
-        assert fb2.record_count == count_before     # reconstructed, not 0
-        assert fb2.chain_head == head_before        # reconstructed, not GENESIS
+        assert fb2.record_count == count_before  # reconstructed, not 0
+        assert fb2.chain_head == head_before  # reconstructed, not GENESIS
 
         r = fb2.record({"event": "c"})
-        assert r["sequence_number"] == 3            # chain CONTINUES
+        assert r["sequence_number"] == 3  # chain CONTINUES
         assert r["previous_hash"] == head_before
 
     def test_forensic_reconstructs_on_corrupt_state(self, tmp_path):
@@ -364,6 +364,7 @@ class TestChainStateReconstruction:
 
 def test_verify_chain_detects_tail_truncation(tmp_path):
     import asyncio
+
     from admina.domains.compliance.forensic import ForensicBlackBox
 
     fb = ForensicBlackBox(filesystem_dir=str(tmp_path))
@@ -372,9 +373,7 @@ def test_verify_chain_detects_tail_truncation(tmp_path):
     assert asyncio.run(fb.verify_chain())["valid"] is True
 
     # delete the last record file (tail truncation) WITHOUT updating state
-    record_files = sorted(
-        p for p in tmp_path.rglob("*.json") if p.name != "_chain_state.json"
-    )
+    record_files = sorted(p for p in tmp_path.rglob("*.json") if p.name != "_chain_state.json")
     record_files[-1].unlink()
 
     res = asyncio.run(fb.verify_chain())
@@ -383,6 +382,7 @@ def test_verify_chain_detects_tail_truncation(tmp_path):
 
 def test_verify_chain_in_memory_still_valid():
     import asyncio
+
     from admina.domains.compliance.forensic import ForensicBlackBox
 
     fb = ForensicBlackBox()  # in-memory, no durable backend
@@ -394,7 +394,9 @@ def test_verify_chain_in_memory_still_valid():
 
 def test_verify_chain_intact_is_valid(tmp_path):
     import asyncio
+
     from admina.domains.compliance.forensic import ForensicBlackBox
+
     fb = ForensicBlackBox(filesystem_dir=str(tmp_path))
     for i in range(3):
         fb.record({"event": f"e{i}"})
@@ -405,6 +407,7 @@ def test_verify_chain_intact_is_valid(tmp_path):
 def test_forensic_concurrent_records_do_not_fork(tmp_path):
     import asyncio
     import threading
+
     from admina.domains.compliance.forensic import ForensicBlackBox
 
     fb = ForensicBlackBox(filesystem_dir=str(tmp_path))

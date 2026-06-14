@@ -1353,9 +1353,7 @@ def doctor() -> None:
             from admina.domains.compliance.forensic import ForensicBlackBox
 
             if forensic_backend == "filesystem":
-                base_dir = env.get(
-                    "FORENSIC_BASE_DIR", os.environ.get("FORENSIC_BASE_DIR", "")
-                )
+                base_dir = env.get("FORENSIC_BASE_DIR", os.environ.get("FORENSIC_BASE_DIR", ""))
                 fbox = ForensicBlackBox(filesystem_dir=base_dir if base_dir else None)
             else:
                 # s3 — needs boto3; construct without credentials (probe only)
@@ -1363,8 +1361,12 @@ def doctor() -> None:
                     import boto3 as _boto3
                 except ImportError:
                     raise ImportError("boto3 not installed")
-                s3_endpoint = env.get("FORENSIC_S3_ENDPOINT", os.environ.get("FORENSIC_S3_ENDPOINT", ""))
-                s3_bucket = env.get("FORENSIC_S3_BUCKET", os.environ.get("FORENSIC_S3_BUCKET", "admina-forensic"))
+                s3_endpoint = env.get(
+                    "FORENSIC_S3_ENDPOINT", os.environ.get("FORENSIC_S3_ENDPOINT", "")
+                )
+                s3_bucket = env.get(
+                    "FORENSIC_S3_BUCKET", os.environ.get("FORENSIC_S3_BUCKET", "admina-forensic")
+                )
                 s3_kwargs: dict = {}
                 if s3_endpoint:
                     s3_kwargs["endpoint_url"] = s3_endpoint
