@@ -387,11 +387,22 @@ class ForensicBlackBox(BaseForensicStore):
         if last_n > 0:
             records = records[-last_n:]
         result = self.verify_records(records)
-        return {
-            "valid": result["valid"],
-            "records": len(records),
-            "last_hash": self.chain_head,
-        }
+        valid = result["valid"]
+
+        # Anchor a FULL verify against the persisted chain head + count so a
+        # truncated tail (records removed after the last seen one) is caught —
+        # verify_records alone cannot see a missing tail because the remaining
+        # records still link cleanly.
+        durable = self.boto3_client is not None or self.filesystem_dir is not None
+        if last_n == 0 and durable:
+            if len(records) != self.record_count:
+                valid = False
+            elif records and records[-1].get("record_hash") != self.chain_head:
+                valid = False
+            elif not records and self.record_count > 0:
+                valid = False
+
+        return {"valid": valid, "records": len(records), "last_hash": self.chain_head}
 
     def _read_back_records(self) -> list[dict]:
         """Read all persisted forensic records, ordered by sequence_number.

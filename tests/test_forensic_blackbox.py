@@ -362,6 +362,46 @@ class TestChainStateReconstruction:
         assert fb.record_count == 0 and fb.chain_head == "GENESIS"
 
 
+def test_verify_chain_detects_tail_truncation(tmp_path):
+    import asyncio
+    from admina.domains.compliance.forensic import ForensicBlackBox
+
+    fb = ForensicBlackBox(filesystem_dir=str(tmp_path))
+    for i in range(5):
+        fb.record({"event": f"e{i}"})
+    assert asyncio.run(fb.verify_chain())["valid"] is True
+
+    # delete the last record file (tail truncation) WITHOUT updating state
+    record_files = sorted(
+        p for p in tmp_path.rglob("*.json") if p.name != "_chain_state.json"
+    )
+    record_files[-1].unlink()
+
+    res = asyncio.run(fb.verify_chain())
+    assert res["valid"] is False  # truncation must be detected
+
+
+def test_verify_chain_in_memory_still_valid():
+    import asyncio
+    from admina.domains.compliance.forensic import ForensicBlackBox
+
+    fb = ForensicBlackBox()  # in-memory, no durable backend
+    fb.record({"event": "x"})
+    fb.record({"event": "y"})
+    # in-memory has no durable records to read back — verify must still pass
+    assert asyncio.run(fb.verify_chain())["valid"] is True
+
+
+def test_verify_chain_intact_is_valid(tmp_path):
+    import asyncio
+    from admina.domains.compliance.forensic import ForensicBlackBox
+    fb = ForensicBlackBox(filesystem_dir=str(tmp_path))
+    for i in range(3):
+        fb.record({"event": f"e{i}"})
+    res = asyncio.run(fb.verify_chain())
+    assert res["valid"] is True and res["records"] == 3
+
+
 def test_forensic_concurrent_records_do_not_fork(tmp_path):
     import asyncio
     import threading
