@@ -20,9 +20,13 @@ Supports both ``X-API-Key`` and ``Authorization: Bearer`` headers.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import logging
 import os
 import secrets
+import time
 from typing import Any
 
 from admina.plugins.base import BaseAuthProvider
@@ -84,16 +88,13 @@ class APIKeyAuthProvider(BaseAuthProvider):
         if path in self._exempt_paths:
             return {"user_id": "anonymous", "roles": ["public"], "metadata": {}}
 
-        # Extract provided key
+        # Accept a raw API key from headers/Bearer, or a signed session cookie.
         provided = self._extract_key(request)
-        if not provided or not secrets.compare_digest(provided, self._api_key):
-            raise PermissionError("Invalid or missing API key")
-
-        return {
-            "user_id": "api_key_user",
-            "roles": ["authenticated"],
-            "metadata": {},
-        }
+        if provided and secrets.compare_digest(provided, self._api_key):
+            return {"user_id": "api_key_user", "roles": ["authenticated"], "metadata": {}}
+        if self._verify_session_cookie(self._extract_session_cookie(request)):
+            return {"user_id": "dashboard_session", "roles": ["authenticated"], "metadata": {}}
+        raise PermissionError("Invalid or missing API key")
 
     async def authorize(
         self,
@@ -121,20 +122,53 @@ class APIKeyAuthProvider(BaseAuthProvider):
 
     @staticmethod
     def _extract_key(request: Any) -> str:
-        """Extract the API key from headers or the bundled-dashboard cookie."""
+        """Extract the raw API key from request headers (X-API-Key or Bearer).
+
+        The admina_session cookie is NOT extracted here — it carries a signed
+        token, not the raw key, and is handled separately by
+        ``_extract_session_cookie`` + ``_verify_session_cookie``.
+        """
         if isinstance(request, dict):
             headers = request.get("headers", {})
-            cookies = request.get("cookies", {})
         else:
             headers = dict(getattr(request, "headers", {}))
-            cookies = dict(getattr(request, "cookies", {}))
 
         key = headers.get("x-api-key", "") or headers.get("X-API-Key", "")
         if not key:
             auth = headers.get("authorization", "") or headers.get("Authorization", "")
             if auth.startswith("Bearer "):
                 key = auth.removeprefix("Bearer ").strip()
-        if not key:
-            # Bundled dashboard auth: cookie set by GET / in admina dev local mode.
-            key = cookies.get("admina_session", "")
         return key
+
+    @staticmethod
+    def _extract_session_cookie(request: Any) -> str:
+        """Extract the admina_session cookie value from a request."""
+        if isinstance(request, dict):
+            cookies = request.get("cookies", {})
+        else:
+            cookies = dict(getattr(request, "cookies", {}))
+        return cookies.get("admina_session", "")
+
+    def _verify_session_cookie(self, token: str) -> bool:
+        """Verify a signed admina_session cookie against the configured key.
+
+        Mirrors the proxy's dashboard token format (HMAC-SHA256 over the
+        expiry). Replicated locally so this plugin does not depend on the
+        proxy package.
+        """
+        if not self._api_key or not token:
+            return False
+        try:
+            raw = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
+            payload, sig = raw.rsplit(".", 1)
+        except (ValueError, UnicodeDecodeError):
+            return False
+        expected = hmac.new(
+            self._api_key.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        if not secrets.compare_digest(sig, expected):
+            return False
+        try:
+            return int(time.time()) < int(payload)
+        except ValueError:
+            return False
