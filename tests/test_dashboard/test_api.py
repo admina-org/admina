@@ -1118,3 +1118,97 @@ class TestDashboardSuggestionsWouldAction:
         data = r.json()
         types = {s["type"] for s in data["suggestions"]}
         assert "observe_clean" in types
+
+
+# ══════════════════════════════════════════════════════════════
+#  Forensic chain verify endpoint tests
+# ══════════════════════════════════════════════════════════════
+
+
+class TestForensicVerifyEndpoint:
+    """GET /api/v1/forensic/verify"""
+
+    def _build_app_with_real_box(self, forensic_box):
+        """Build a minimal test app wired to a real ForensicBlackBox."""
+        from admina.proxy.api.dashboard import create_dashboard_endpoints
+        from admina.proxy.api.integration import create_integration_endpoints
+
+        test_app = FastAPI()
+        dash = create_dashboard_endpoints(
+            get_metrics=lambda: {},
+            get_forensic_box=lambda: forensic_box,
+            get_compliance=lambda: _FakeCompliance(),
+            get_clickhouse=lambda: None,
+            get_settings=lambda: _FakeSettings(),
+            get_redis=lambda: None,
+        )
+        test_app.include_router(dash)
+        integ = create_integration_endpoints(
+            get_firewall=lambda: _FakeFirewall(),
+            get_pii_scanner=lambda: _FakePII(),
+            get_loop_breaker=lambda: _FakeLoopBreaker(),
+            get_forensic_box=lambda: forensic_box,
+            get_settings=lambda: _FakeSettings(),
+        )
+        test_app.include_router(integ)
+        return test_app
+
+    def test_valid_chain_returns_200_valid_true(self, tmp_path) -> None:
+        """A filesystem-backed box with a valid chain returns 200 and valid=true."""
+        from admina.domains.compliance.forensic import ForensicBlackBox
+
+        fbox = ForensicBlackBox(filesystem_dir=str(tmp_path / "forensic"))
+        fbox.record({"event": "test-1", "session_id": "s1"})
+        fbox.record({"event": "test-2", "session_id": "s1"})
+
+        test_app = self._build_app_with_real_box(fbox)
+
+        async def go():
+            async with _client(test_app) as c:
+                return await c.get("/api/v1/forensic/verify")
+
+        r = _run(go())
+        assert r.status_code == 200
+        data = r.json()
+        assert data["valid"] is True
+        assert data["records"] == 2
+        assert data["backend"] == "filesystem"
+
+    def test_tampered_chain_returns_200_valid_false(self, tmp_path) -> None:
+        """Deleting a record file causes verify to return 200 with valid=false (not 500)."""
+        from admina.domains.compliance.forensic import ForensicBlackBox
+
+        forensic_dir = tmp_path / "forensic"
+        fbox = ForensicBlackBox(filesystem_dir=str(forensic_dir))
+        fbox.record({"event": "test-1", "session_id": "s1"})
+        fbox.record({"event": "test-2", "session_id": "s1"})
+
+        # Tamper: delete one record file (excluding the chain-state metadata file)
+        record_files = [p for p in forensic_dir.rglob("*.json") if p.name != "_chain_state.json"]
+        assert record_files, "Expected at least one record file after recording"
+        record_files[0].unlink()
+
+        test_app = self._build_app_with_real_box(fbox)
+
+        async def go():
+            async with _client(test_app) as c:
+                return await c.get("/api/v1/forensic/verify")
+
+        r = _run(go())
+        assert r.status_code == 200
+        data = r.json()
+        assert data["valid"] is False
+
+    def test_no_forensic_box_returns_200_not_configured(self) -> None:
+        """When forensic_box is None, endpoint returns 200 with backend=not_configured."""
+        test_app = self._build_app_with_real_box(None)
+
+        async def go():
+            async with _client(test_app) as c:
+                return await c.get("/api/v1/forensic/verify")
+
+        r = _run(go())
+        assert r.status_code == 200
+        data = r.json()
+        assert data["backend"] == "not_configured"
+        assert data["valid"] is None

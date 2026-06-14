@@ -1343,6 +1343,50 @@ def doctor() -> None:
                 "    proxy /health        --    not reachable (stack down or different port)"
             )
 
+    # ── Forensic hash-chain integrity ───────────────────────
+    click.echo("\n  Forensic chain:")
+    forensic_backend = env.get("FORENSIC_BACKEND", os.environ.get("FORENSIC_BACKEND", "memory"))
+    if forensic_backend in ("filesystem", "s3"):
+        try:
+            import asyncio as _asyncio
+
+            from admina.domains.compliance.forensic import ForensicBlackBox
+
+            if forensic_backend == "filesystem":
+                base_dir = env.get(
+                    "FORENSIC_BASE_DIR", os.environ.get("FORENSIC_BASE_DIR", "")
+                )
+                fbox = ForensicBlackBox(filesystem_dir=base_dir if base_dir else None)
+            else:
+                # s3 — needs boto3; construct without credentials (probe only)
+                try:
+                    import boto3 as _boto3
+                except ImportError:
+                    raise ImportError("boto3 not installed")
+                s3_endpoint = env.get("FORENSIC_S3_ENDPOINT", os.environ.get("FORENSIC_S3_ENDPOINT", ""))
+                s3_bucket = env.get("FORENSIC_S3_BUCKET", os.environ.get("FORENSIC_S3_BUCKET", "admina-forensic"))
+                s3_kwargs: dict = {}
+                if s3_endpoint:
+                    s3_kwargs["endpoint_url"] = s3_endpoint
+                client = _boto3.client("s3", **s3_kwargs)
+                fbox = ForensicBlackBox(boto3_client=client, bucket=s3_bucket)
+
+            chain = _asyncio.run(fbox.verify_chain())
+            n = chain.get("records", 0)
+            if chain.get("valid"):
+                click.echo(f"    {forensic_backend:20s} {ok_mark}  {n} records, valid")
+            else:
+                click.echo(
+                    f"    {forensic_backend:20s} {fail_mark}  chain verification FAILED ({n} records)"
+                )
+                issues.append("Forensic hash-chain integrity check failed")
+        except ImportError as _exc:
+            click.echo(f"    {forensic_backend:20s} --    skipped ({_exc})")
+        except Exception as _exc:
+            click.echo(f"    {forensic_backend:20s} --    skipped (error: {_exc})")
+    else:
+        click.echo(f"    {'not configured':20s} --    memory backend (no durable chain to verify)")
+
     # ── Summary ──────────────────────────────────────────────
     click.echo("\n" + "=" * 55)
     if not issues:

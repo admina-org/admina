@@ -165,4 +165,37 @@ def create_integration_endpoints(
             "previous_hash": record["previous_hash"],
         }
 
+    @router.get("/forensic/verify", tags=["integration"], summary="Forensic hash-chain integrity check")
+    async def forensic_verify() -> dict[str, Any]:
+        """Verify the forensic hash-chain integrity.
+
+        Reads every persisted record back from the configured backend
+        and checks that each record's hash links correctly to the
+        previous one.  An invalid chain is a successful *report*
+        (HTTP 200 with ``"valid": false``) — it is not a server error.
+        Only an unexpected exception produces a 500 response.
+
+        Returns a dict with at least:
+            ``valid`` (bool), ``records`` (int), ``last_hash`` (str),
+            ``backend`` (str — the store_name of the forensic box).
+        """
+        fbox = get_forensic_box()
+        if fbox is None:
+            return {
+                "valid": None,
+                "records": 0,
+                "last_hash": "",
+                "backend": "not_configured",
+                "detail": "Forensic black box not available (no storage backend configured)",
+            }
+
+        result = await fbox.verify_chain()
+        if getattr(fbox, "boto3_client", None) is not None:
+            backend = "s3"
+        elif getattr(fbox, "filesystem_dir", None) is not None:
+            backend = "filesystem"
+        else:
+            backend = "memory"
+        return {**result, "backend": backend}
+
     return router
