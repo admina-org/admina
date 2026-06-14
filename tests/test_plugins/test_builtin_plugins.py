@@ -408,13 +408,15 @@ class TestAPIKeyAuthProvider:
         assert isinstance(auth, BaseAuthProvider)
         assert auth.provider_name == "apikey"
 
-    def test_no_key_allows_everything(self):
+    def test_no_key_is_fail_closed(self):
+        # Previously this returned {"user_id": "anonymous", "roles": ["admin"]} — fail-open bug.
+        # Fixed: a keyless provider raises PermissionError so it cannot grant access to anyone.
         from admina.plugins.builtin.auth.apikey import APIKeyAuthProvider
 
         auth = APIKeyAuthProvider(api_key="")
-        user = _run(auth.authenticate({"headers": {}}))
-        assert user["user_id"] == "anonymous"
-        assert "admin" in user["roles"]
+        assert auth.is_configured() is False
+        with pytest.raises(PermissionError):
+            _run(auth.authenticate({"headers": {}}))
 
     def test_valid_key_authenticates(self):
         from admina.plugins.builtin.auth.apikey import APIKeyAuthProvider
@@ -504,6 +506,48 @@ class TestAPIKeyAuthProvider:
         # raw key via header still works
         user2 = _run(provider.authenticate({"path": "/api/x", "headers": {"X-API-Key": key}}))
         assert user2 and user2.get("user_id")
+
+    def test_is_configured_with_key(self):
+        from admina.plugins.builtin.auth.apikey import APIKeyAuthProvider
+
+        auth = APIKeyAuthProvider(api_key="some-key-abc")
+        assert auth.is_configured() is True
+
+    def test_is_configured_without_key(self):
+        from admina.plugins.builtin.auth.apikey import APIKeyAuthProvider
+
+        auth = APIKeyAuthProvider(api_key="")
+        assert auth.is_configured() is False
+
+
+def test_apikey_provider_keyless_is_fail_closed():
+    """A keyless APIKeyAuthProvider must raise PermissionError, not return admin."""
+    import asyncio
+
+    import pytest
+
+    from admina.plugins.builtin.auth.apikey import APIKeyAuthProvider
+
+    p = APIKeyAuthProvider(api_key="")
+    assert p.is_configured() is False
+    with pytest.raises(PermissionError):
+        asyncio.run(p.authenticate({"path": "/api/x", "headers": {}}))
+
+
+def test_unconfigured_provider_filter_drops_keyless():
+    """The lifespan filter expression drops keyless providers, keeps configured ones."""
+    from admina.plugins.builtin.auth.apikey import APIKeyAuthProvider
+
+    keyless = APIKeyAuthProvider(api_key="")
+    keyed = APIKeyAuthProvider(api_key="k" * 16)
+    providers = [keyless, keyed]
+
+    filtered = [
+        p for p in providers
+        if getattr(p, "is_configured", lambda: True)()
+    ]
+    assert filtered == [keyed]
+    assert keyless not in filtered
 
 
 # ═══════════════════════════════════════════════════════════════

@@ -281,6 +281,89 @@ def test_verify_credential_false_when_no_key_configured(monkeypatch):
     assert m.verify_credential(headers={"X-API-Key": "anything"}, query_params={}, cookies={}) is False
 
 
+class TestNoKeyFailClosed:
+    """With no ADMINA_API_KEY and no auth providers, the middleware must
+    return 401 for protected paths unless ALLOW_UNAUTHENTICATED=true."""
+
+    def _make_request(self, path: str = "/api/stats", headers: list | None = None) -> "Request":
+        from starlette.requests import Request
+
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": path,
+            "query_string": b"",
+            "headers": headers or [],
+        }
+        return Request(scope)
+
+    def test_no_key_no_providers_returns_401(self, monkeypatch):
+        """Keyless proxy with empty auth_providers must reject protected requests."""
+        import asyncio
+
+        from starlette.responses import Response
+
+        from admina.proxy import main as m
+
+        monkeypatch.setattr(m.settings, "ADMINA_API_KEY", "", raising=False)
+        monkeypatch.setattr(m.settings, "ALLOW_UNAUTHENTICATED", False, raising=False)
+
+        class _FakeState:
+            auth_providers: list = []
+
+        monkeypatch.setattr(m, "_get_state", lambda req: _FakeState())
+
+        async def _call_next(req):
+            return Response("ok", status_code=200)
+
+        resp = asyncio.run(m.auth_middleware(self._make_request(), _call_next))
+        assert resp.status_code == 401
+
+    def test_allow_unauthenticated_bypasses_gate(self, monkeypatch):
+        """ALLOW_UNAUTHENTICATED=true lets requests through even with no key."""
+        import asyncio
+
+        from starlette.responses import Response
+
+        from admina.proxy import main as m
+
+        monkeypatch.setattr(m.settings, "ADMINA_API_KEY", "", raising=False)
+        monkeypatch.setattr(m.settings, "ALLOW_UNAUTHENTICATED", True, raising=False)
+
+        class _FakeState:
+            auth_providers: list = []
+
+        monkeypatch.setattr(m, "_get_state", lambda req: _FakeState())
+
+        async def _call_next(req):
+            return Response("ok", status_code=200)
+
+        resp = asyncio.run(m.auth_middleware(self._make_request(), _call_next))
+        assert resp.status_code == 200
+
+    def test_exempt_path_bypasses_auth_gate(self, monkeypatch):
+        """/health is exempt from auth even with no key and no providers."""
+        import asyncio
+
+        from starlette.responses import Response
+
+        from admina.proxy import main as m
+
+        monkeypatch.setattr(m.settings, "ADMINA_API_KEY", "", raising=False)
+        monkeypatch.setattr(m.settings, "ALLOW_UNAUTHENTICATED", False, raising=False)
+
+        class _FakeState:
+            auth_providers: list = []
+
+        monkeypatch.setattr(m, "_get_state", lambda req: _FakeState())
+
+        async def _call_next(req):
+            return Response("ok", status_code=200)
+
+        resp = asyncio.run(m.auth_middleware(self._make_request(path="/health"), _call_next))
+        assert resp.status_code == 200
+
+
 def test_http_rejects_api_key_in_query_param(monkeypatch):
     """auth_middleware must NOT pass query_params to verify_credential for HTTP
     requests — the raw key in ?api_key= would leak into access logs. Query-param

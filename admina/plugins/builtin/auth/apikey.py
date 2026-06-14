@@ -66,6 +66,10 @@ class APIKeyAuthProvider(BaseAuthProvider):
 
     # ── BaseAuthProvider interface ──────────────────────────────
 
+    def is_configured(self) -> bool:
+        """True if this provider has a key and can actually authenticate."""
+        return bool(self._api_key)
+
     async def authenticate(self, request: Any) -> dict:
         """Authenticate a request by API key.
 
@@ -79,9 +83,11 @@ class APIKeyAuthProvider(BaseAuthProvider):
         Raises:
             PermissionError: If the key is missing or invalid.
         """
-        # If no key configured, allow everything (local dev)
+        # No key configured → this provider cannot authenticate anyone.
+        # Returning an admin user here would be fail-open; instead reject so
+        # the middleware's explicit ALLOW_UNAUTHENTICATED gate decides.
         if not self._api_key:
-            return {"user_id": "anonymous", "roles": ["admin"], "metadata": {}}
+            raise PermissionError("API-key auth provider has no key configured")
 
         # Check exempt paths
         path = self._get_path(request)
