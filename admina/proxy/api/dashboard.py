@@ -26,7 +26,6 @@ import csv as _csv
 import io as _io
 import json
 import logging
-import secrets
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -175,6 +174,7 @@ def create_dashboard_endpoints(
     get_otel_exporter: Any = None,
     get_governance_guards: Any = None,
     get_config: Any = None,
+    verify_credential: Any = None,
 ) -> APIRouter:
     """Create a new APIRouter with dashboard endpoints.
 
@@ -196,6 +196,10 @@ def create_dashboard_endpoints(
         get_otel_exporter: Callable returning OTEL exporter | None.
         get_governance_guards: Callable returning list of guards.
         get_config: Callable returning AdminaConfig | None.
+        verify_credential: Callable(headers, query_params, cookies) -> bool.
+            Shared credential verifier for header/query/cookie auth.  When
+            provided, the WebSocket live endpoint routes all auth through it
+            so the signed session cookie is validated correctly.
 
     Returns:
         The configured APIRouter.
@@ -220,16 +224,14 @@ def create_dashboard_endpoints(
         settings = get_settings()
         expected = getattr(settings, "ADMINA_API_KEY", "") or ""
         if expected:
-            # Accept the credential from the X-API-Key header, the
-            # ?api_key=... query param, or the admina_session cookie
-            # set by the bundled dashboard at GET /.
-            provided = (
-                websocket.headers.get("X-API-Key")
-                or websocket.query_params.get("api_key")
-                or websocket.cookies.get("admina_session")
-                or ""
-            )
-            if not provided or not secrets.compare_digest(provided, expected):
+            ok = bool(
+                verify_credential(
+                    headers=dict(websocket.headers),
+                    query_params=dict(websocket.query_params),
+                    cookies=dict(websocket.cookies),
+                )
+            ) if verify_credential is not None else False
+            if not ok:
                 await websocket.close(code=1008)
                 return
         elif not getattr(settings, "ALLOW_UNAUTHENTICATED", False):

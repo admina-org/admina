@@ -20,7 +20,12 @@ Covers ``/api/dashboard/*`` and ``/api/v1/{validate,audit}``.
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import json as _json
+import secrets as _secrets
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -146,6 +151,72 @@ class _FakeSettings:
     GOVERNANCE_MODE: str = "enforce"
 
 
+# ── Token helpers (mirror main._issue_dashboard_token/_verify_dashboard_token)
+# These replicate the 3-line HMAC so tests work without importing main.settings.
+
+_SESSION_TTL = 86400  # matches main._DASHBOARD_SESSION_TTL
+
+
+def _mint_session_token(api_key: str, *, now: int | None = None) -> str:
+    """Mint a valid signed session token for *api_key* (mirrors proxy/main.py)."""
+    exp = (now if now is not None else int(time.time())) + _SESSION_TTL
+    payload = str(exp)
+    sig = hmac.new(
+        api_key.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    return base64.urlsafe_b64encode(f"{payload}.{sig}".encode()).decode("ascii")
+
+
+def _verify_session_token(api_key: str, token: str, *, now: int | None = None) -> bool:
+    """Verify a session token against *api_key* (mirrors proxy/main.py)."""
+    if not api_key or not token:
+        return False
+    try:
+        raw = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
+        payload, sig = raw.rsplit(".", 1)
+    except (ValueError, UnicodeDecodeError):
+        return False
+    expected = hmac.new(
+        api_key.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    if not _secrets.compare_digest(sig, expected):
+        return False
+    try:
+        return (now if now is not None else int(time.time())) < int(payload)
+    except ValueError:
+        return False
+
+
+def _make_verifier(fake_settings: Any):
+    """Return a verify_credential callable bound to *fake_settings* (not main.settings)."""
+
+    def _verify(
+        *,
+        headers: Any = None,
+        query_params: Any = None,
+        cookies: Any = None,
+    ) -> bool:
+        headers = headers or {}
+        query_params = query_params or {}
+        cookies = cookies or {}
+        key = getattr(fake_settings, "ADMINA_API_KEY", "") or ""
+        if not key:
+            return False
+        auth_header = headers.get("Authorization") or headers.get("authorization") or ""
+        raw = (
+            headers.get("X-API-Key")
+            or headers.get("x-api-key")
+            or auth_header.removeprefix("Bearer ").strip()
+            or query_params.get("api_key")
+            or ""
+        )
+        if raw and _secrets.compare_digest(raw, key):
+            return True
+        return _verify_session_token(key, cookies.get("admina_session", ""))
+
+    return _verify
+
+
 # ── Build a test app ─────────────────────────────────────────
 
 
@@ -161,6 +232,7 @@ def _build_test_app(
     redis: Any = _UNSET,
     settings: Any = None,
     loop_breaker: Any = None,
+    verify_credential: Any = None,
 ) -> FastAPI:
     """Create a minimal FastAPI app with dashboard + integration routers."""
     from admina.proxy.api.dashboard import create_dashboard_endpoints
@@ -197,6 +269,7 @@ def _build_test_app(
         get_redis=lambda: redis,
         get_engine_status=lambda: engine_status,
         get_http_client=lambda: None,
+        verify_credential=verify_credential,
     )
     app.include_router(dash)
 
@@ -949,10 +1022,10 @@ class TestDashboardLiveWebSocket:
         from starlette.testclient import TestClient
         from starlette.websockets import WebSocketDisconnect
 
-        settings = _FakeSettings()
-        settings.ADMINA_API_KEY = "secret-key"
-        settings.ALLOW_UNAUTHENTICATED = False
-        app = _build_test_app(settings=settings)
+        fake_settings = _FakeSettings()
+        fake_settings.ADMINA_API_KEY = "secret-key"
+        fake_settings.ALLOW_UNAUTHENTICATED = False
+        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
         client = TestClient(app)
         with pytest.raises(WebSocketDisconnect) as excinfo:
             with client.websocket_connect("/api/dashboard/live"):
@@ -963,10 +1036,10 @@ class TestDashboardLiveWebSocket:
         from starlette.testclient import TestClient
         from starlette.websockets import WebSocketDisconnect
 
-        settings = _FakeSettings()
-        settings.ADMINA_API_KEY = "secret-key"
-        settings.ALLOW_UNAUTHENTICATED = False
-        app = _build_test_app(settings=settings)
+        fake_settings = _FakeSettings()
+        fake_settings.ADMINA_API_KEY = "secret-key"
+        fake_settings.ALLOW_UNAUTHENTICATED = False
+        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
         client = TestClient(app)
         with pytest.raises(WebSocketDisconnect) as excinfo:
             with client.websocket_connect("/api/dashboard/live?api_key=wrong"):
@@ -976,10 +1049,10 @@ class TestDashboardLiveWebSocket:
     def test_websocket_accepts_correct_key_query(self) -> None:
         from starlette.testclient import TestClient
 
-        settings = _FakeSettings()
-        settings.ADMINA_API_KEY = "secret-key"
-        settings.ALLOW_UNAUTHENTICATED = False
-        app = _build_test_app(settings=settings)
+        fake_settings = _FakeSettings()
+        fake_settings.ADMINA_API_KEY = "secret-key"
+        fake_settings.ALLOW_UNAUTHENTICATED = False
+        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
         client = TestClient(app)
         with client.websocket_connect("/api/dashboard/live?api_key=secret-key") as ws:
             ws.close()
@@ -987,10 +1060,10 @@ class TestDashboardLiveWebSocket:
     def test_websocket_accepts_correct_key_header(self) -> None:
         from starlette.testclient import TestClient
 
-        settings = _FakeSettings()
-        settings.ADMINA_API_KEY = "secret-key"
-        settings.ALLOW_UNAUTHENTICATED = False
-        app = _build_test_app(settings=settings)
+        fake_settings = _FakeSettings()
+        fake_settings.ADMINA_API_KEY = "secret-key"
+        fake_settings.ALLOW_UNAUTHENTICATED = False
+        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
         client = TestClient(app)
         with client.websocket_connect(
             "/api/dashboard/live", headers={"X-API-Key": "secret-key"}
@@ -1000,13 +1073,59 @@ class TestDashboardLiveWebSocket:
     def test_websocket_allows_unauthenticated_when_flag_set(self) -> None:
         from starlette.testclient import TestClient
 
-        settings = _FakeSettings()
-        settings.ADMINA_API_KEY = ""
-        settings.ALLOW_UNAUTHENTICATED = True
-        app = _build_test_app(settings=settings)
+        fake_settings = _FakeSettings()
+        fake_settings.ADMINA_API_KEY = ""
+        fake_settings.ALLOW_UNAUTHENTICATED = True
+        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
         client = TestClient(app)
         with client.websocket_connect("/api/dashboard/live") as ws:
             ws.close()
+
+    def test_ws_accepts_signed_session_cookie(self) -> None:
+        from starlette.testclient import TestClient
+
+        fake_settings = _FakeSettings()
+        fake_settings.ADMINA_API_KEY = "secret-key"
+        fake_settings.ALLOW_UNAUTHENTICATED = False
+        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
+        client = TestClient(app)
+        token = _mint_session_token("secret-key")
+        with client.websocket_connect(
+            "/api/dashboard/live", headers={"Cookie": f"admina_session={token}"}
+        ) as ws:
+            ws.close()
+
+    def test_ws_rejects_raw_key_as_cookie(self) -> None:
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        fake_settings = _FakeSettings()
+        fake_settings.ADMINA_API_KEY = "secret-key"
+        fake_settings.ALLOW_UNAUTHENTICATED = False
+        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
+        client = TestClient(app)
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            with client.websocket_connect(
+                "/api/dashboard/live", headers={"Cookie": "admina_session=secret-key"}
+            ):
+                pass
+        assert excinfo.value.code == 1008
+
+    def test_ws_rejects_tampered_cookie(self) -> None:
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        fake_settings = _FakeSettings()
+        fake_settings.ADMINA_API_KEY = "secret-key"
+        fake_settings.ALLOW_UNAUTHENTICATED = False
+        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
+        client = TestClient(app)
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            with client.websocket_connect(
+                "/api/dashboard/live", headers={"Cookie": "admina_session=garbage.tampered"}
+            ):
+                pass
+        assert excinfo.value.code == 1008
 
 
 # ══════════════════════════════════════════════════════════════

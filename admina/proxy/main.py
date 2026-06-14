@@ -461,6 +461,7 @@ _dashboard_router = create_dashboard_endpoints(
     get_otel_exporter=lambda: app.state.proxy.otel_exporter,
     get_governance_guards=lambda: app.state.proxy.governance_guards,
     get_config=lambda: _admina_config,
+    verify_credential=lambda **kw: verify_credential(**kw),
 )
 app.include_router(_dashboard_router)
 
