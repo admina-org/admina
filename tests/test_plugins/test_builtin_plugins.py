@@ -352,6 +352,49 @@ class TestFilesystemForensicStore:
         assert result["records"] == 2
 
 
+def test_plugin_forensic_reconstructs_after_state_loss(tmp_path):
+    from admina.plugins.builtin.forensic.filesystem import FilesystemForensicStore
+
+    s = FilesystemForensicStore(base_dir=str(tmp_path))
+    _run(s.append({"e": 1}))
+    _run(s.append({"e": 2}))
+    head, count = s._chain_head, s._record_count
+
+    (tmp_path / "_chain_state.json").unlink()  # lose state
+
+    s2 = FilesystemForensicStore(base_dir=str(tmp_path))
+    assert s2._record_count == count   # reconstructed, not 0
+    assert s2._chain_head == head      # reconstructed, not GENESIS
+
+    # next append continues the chain and does NOT overwrite record 1
+    _run(s2.append({"e": 3}))
+    assert (tmp_path / "00000003.json").exists()
+    original_rec1 = (tmp_path / "00000001.json").read_text()
+    assert '"sequence_number": 1' in original_rec1  # still the ORIGINAL record 1
+
+
+def test_plugin_forensic_refuses_overwrite(tmp_path):
+    from admina.plugins.builtin.forensic.filesystem import FilesystemForensicStore
+
+    s = FilesystemForensicStore(base_dir=str(tmp_path))
+    _run(s.append({"e": 1}))
+    # force a state that would re-write sequence 1 (simulate a reset bug slipping through)
+    s._record_count = 0
+    with pytest.raises(RuntimeError, match="already exists"):
+        _run(s.append({"e": "dup"}))  # would write 00000001.json again
+
+
+def test_plugin_forensic_verify_detects_truncation(tmp_path):
+    from admina.plugins.builtin.forensic.filesystem import FilesystemForensicStore
+
+    s = FilesystemForensicStore(base_dir=str(tmp_path))
+    for i in range(4):
+        _run(s.append({"e": i}))
+    assert _run(s.verify_chain())["valid"] is True
+    sorted(tmp_path.glob("[0-9]*.json"))[-1].unlink()  # truncate tail
+    assert _run(s.verify_chain())["valid"] is False
+
+
 # ═══════════════════════════════════════════════════════════════
 # 8. APIKeyAuthProvider
 # ═══════════════════════════════════════════════════════════════

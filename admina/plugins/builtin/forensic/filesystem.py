@@ -21,6 +21,7 @@ single-node deployments where S3/MinIO is not available.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -47,6 +48,7 @@ class FilesystemForensicStore(BaseForensicStore):
         self._base_dir.mkdir(parents=True, exist_ok=True)
         self._chain_head: str = "GENESIS"
         self._record_count: int = 0
+        self._lock = asyncio.Lock()
         self._restore_chain_state()
 
     # ── BaseForensicStore interface ─────────────────────────────
@@ -54,36 +56,48 @@ class FilesystemForensicStore(BaseForensicStore):
     async def append(self, record: dict) -> str:
         """Write a governance record to a local JSON file.
 
+        Concurrent calls are serialized by ``_lock`` so that
+        ``_record_count`` increments and ``_chain_head`` updates are
+        atomic with respect to each other and filesystem I/O.
+
         Args:
             record: The governance event dict.
 
         Returns:
             The SHA-256 hash of the stored record.
         """
-        self._record_count += 1
+        async with self._lock:
+            self._record_count += 1
 
-        forensic_record = {
-            "sequence_number": self._record_count,
-            "timestamp_utc": datetime.now(UTC).isoformat(),
-            "timestamp_unix_ms": int(time.time() * 1000),
-            "previous_hash": self._chain_head,
-            "event": record,
-        }
+            forensic_record = {
+                "sequence_number": self._record_count,
+                "timestamp_utc": datetime.now(UTC).isoformat(),
+                "timestamp_unix_ms": int(time.time() * 1000),
+                "previous_hash": self._chain_head,
+                "event": record,
+            }
 
-        record_json = json.dumps(forensic_record, sort_keys=True, default=str)
-        record_hash = hashlib.sha256(record_json.encode("utf-8")).hexdigest()
-        forensic_record["record_hash"] = record_hash
-        self._chain_head = record_hash
+            record_json = json.dumps(forensic_record, sort_keys=True, default=str)
+            record_hash = hashlib.sha256(record_json.encode("utf-8")).hexdigest()
+            forensic_record["record_hash"] = record_hash
+            self._chain_head = record_hash
 
-        # Write record file
-        record_file = self._base_dir / f"{self._record_count:08d}.json"
-        record_file.write_text(
-            json.dumps(forensic_record, indent=2, default=str),
-            encoding="utf-8",
-        )
+            # Write record file — refuse to overwrite an existing file to
+            # preserve chain integrity (a pre-existing file means the
+            # sequence counter was silently reset or corrupted).
+            record_file = self._base_dir / f"{self._record_count:08d}.json"
+            if record_file.exists():
+                raise RuntimeError(
+                    f"forensic record {record_file.name} already exists — "
+                    f"refusing to overwrite (chain integrity)"
+                )
+            record_file.write_text(
+                json.dumps(forensic_record, indent=2, default=str),
+                encoding="utf-8",
+            )
 
-        self._persist_chain_state()
-        return record_hash
+            self._persist_chain_state()
+            return record_hash
 
     async def verify_chain(self, last_n: int = 0) -> dict:
         """Verify hash-chain integrity by re-reading stored records.
@@ -125,6 +139,16 @@ class FilesystemForensicStore(BaseForensicStore):
                 }
             prev_hash = stored_hash
 
+        # Anchor a full verify against the persisted head + count so a
+        # truncated tail is detected (the remaining records still link).
+        if last_n == 0:
+            file_count = len(sorted(self._base_dir.glob("[0-9]*.json")))
+            if file_count != self._record_count:
+                return {"valid": False, "records": self._record_count, "last_hash": self._chain_head}
+            # prev_hash after the loop is the last record's stored hash
+            if prev_hash is not None and prev_hash != self._chain_head:
+                return {"valid": False, "records": self._record_count, "last_hash": self._chain_head}
+
         return {
             "valid": True,
             "records": self._record_count,
@@ -138,8 +162,35 @@ class FilesystemForensicStore(BaseForensicStore):
 
     # ── Internal helpers ────────────────────────────────────────
 
+    def _reconstruct_from_records(self) -> bool:
+        """Rebuild _chain_head/_record_count from stored record files.
+
+        Used when the state file is missing or corrupt, so the chain is
+        never silently restarted from GENESIS while records still exist.
+        """
+        files = sorted(self._base_dir.glob("[0-9]*.json"))
+        if not files:
+            return False
+        try:
+            last = json.loads(files[-1].read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        self._record_count = last.get("sequence_number", len(files))
+        self._chain_head = last.get("record_hash", "GENESIS")
+        logger.error(
+            "Forensic chain state reconstructed from %d record file(s) "
+            "(state file missing or corrupt): seq=%d",
+            len(files), self._record_count,
+        )
+        return True
+
     def _restore_chain_state(self) -> None:
-        """Restore chain state from the state file on startup."""
+        """Restore chain state from the state file on startup.
+
+        When the state file is missing or corrupt, falls back to
+        reconstructing state from the stored record files so the chain is
+        never silently restarted from GENESIS while records still exist.
+        """
         state_file = self._base_dir / "_chain_state.json"
         if state_file.exists():
             try:
@@ -147,7 +198,13 @@ class FilesystemForensicStore(BaseForensicStore):
                 self._chain_head = state.get("chain_head", "GENESIS")
                 self._record_count = state.get("record_count", 0)
             except (OSError, json.JSONDecodeError):
-                pass
+                logger.error(
+                    "Corrupt forensic chain state at %s — reconstructing from records",
+                    state_file,
+                )
+                self._reconstruct_from_records()
+        else:
+            self._reconstruct_from_records()
 
     def _persist_chain_state(self) -> None:
         """Persist chain state to a JSON file."""
