@@ -222,6 +222,14 @@ def create_dashboard_endpoints(
         ``X-API-Key`` header transparently.
         """
         settings = get_settings()
+        origin = websocket.headers.get("origin")
+        if origin:
+            _cors_raw = getattr(settings, "CORS_ORIGINS", "") or ""
+            allowed = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+            if "*" not in allowed and origin not in allowed:
+                await websocket.close(code=1008)
+                return
+
         expected = getattr(settings, "ADMINA_API_KEY", "") or ""
         if expected:
             ok = bool(

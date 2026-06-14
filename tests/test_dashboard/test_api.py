@@ -149,6 +149,7 @@ class _FakeSettings:
     ADMINA_API_KEY: str = ""
     ALLOW_UNAUTHENTICATED: bool = True
     GOVERNANCE_MODE: str = "enforce"
+    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:8080"
 
 
 # ── Token helpers (mirror main._issue_dashboard_token/_verify_dashboard_token)
@@ -1126,6 +1127,54 @@ class TestDashboardLiveWebSocket:
             ):
                 pass
         assert excinfo.value.code == 1008
+
+    def test_ws_rejects_disallowed_origin(self) -> None:
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        fake_settings = _FakeSettings()
+        fake_settings.ADMINA_API_KEY = "secret-key"
+        fake_settings.ALLOW_UNAUTHENTICATED = False
+        fake_settings.CORS_ORIGINS = "http://localhost:3000"
+        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
+        client = TestClient(app)
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            with client.websocket_connect(
+                "/api/dashboard/live",
+                headers={"Origin": "http://evil.example", "X-API-Key": "secret-key"},
+            ) as ws:
+                ws.receive_text()
+        assert excinfo.value.code == 1008
+
+    def test_ws_allows_configured_origin(self) -> None:
+        from starlette.testclient import TestClient
+
+        fake_settings = _FakeSettings()
+        fake_settings.ADMINA_API_KEY = "secret-key"
+        fake_settings.ALLOW_UNAUTHENTICATED = False
+        fake_settings.CORS_ORIGINS = "http://localhost:3000"
+        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
+        client = TestClient(app)
+        with client.websocket_connect(
+            "/api/dashboard/live",
+            headers={"Origin": "http://localhost:3000", "X-API-Key": "secret-key"},
+        ) as ws:
+            ws.close()
+
+    def test_ws_allows_absent_origin(self) -> None:
+        from starlette.testclient import TestClient
+
+        fake_settings = _FakeSettings()
+        fake_settings.ADMINA_API_KEY = "secret-key"
+        fake_settings.ALLOW_UNAUTHENTICATED = False
+        fake_settings.CORS_ORIGINS = "http://localhost:3000"
+        app = _build_test_app(settings=fake_settings, verify_credential=_make_verifier(fake_settings))
+        client = TestClient(app)
+        with client.websocket_connect(
+            "/api/dashboard/live",
+            headers={"X-API-Key": "secret-key"},
+        ) as ws:
+            ws.close()
 
 
 # ══════════════════════════════════════════════════════════════
