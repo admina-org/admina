@@ -146,7 +146,70 @@ class TestOpenAIAdapter:
 
 
 # ═══════════════════════════════════════════════════════════════
-# 3. ChromaDBConnector
+# 3. AnthropicAdapter
+# ═══════════════════════════════════════════════════════════════
+
+
+class TestAnthropicAdapter:
+    def test_name_and_supports_model(self):
+        pytest.importorskip("anthropic")
+        from admina.plugins.builtin.adapters.anthropic import AnthropicAdapter
+
+        a = AnthropicAdapter(api_key="k", default_model="claude-x")
+        assert a.name == "anthropic"
+        assert a.supports_model("claude-x") is True
+        assert a.supports_model("gpt-4o") is False
+
+    def test_send_shapes_request_and_normalizes_response(self):
+        pytest.importorskip("anthropic")
+        import asyncio
+
+        from admina.plugins.builtin.adapters.anthropic import AnthropicAdapter
+
+        class _Block:
+            type = "text"
+            text = "hi there"
+
+        class _Usage:
+            input_tokens = 3
+            output_tokens = 5
+
+        class _Msg:
+            content = [_Block()]
+            usage = _Usage()
+
+        class _Messages:
+            def create(self, **kw):
+                _Messages.kw = kw
+                return _Msg()
+
+        class _Client:
+            messages = _Messages()
+
+        a = AnthropicAdapter(api_key="k", default_model="claude-x")
+        a._client = _Client()
+        out = asyncio.run(a.send("hello", context="be brief", max_tokens=64))
+        assert out["text"] == "hi there"
+        assert out["metadata"]["tokens"] == 8
+        assert out["metadata"]["model"] == "claude-x"
+        assert _Messages.kw["system"] == "be brief"
+        assert _Messages.kw["messages"] == [{"role": "user", "content": "hello"}]
+        assert _Messages.kw["max_tokens"] == 64
+
+    def test_requires_model(self):
+        pytest.importorskip("anthropic")
+        import asyncio
+
+        from admina.plugins.builtin.adapters.anthropic import AnthropicAdapter
+
+        a = AnthropicAdapter(api_key="k")  # no default_model, no env
+        a._client = object()
+        with pytest.raises(ValueError, match="model"):
+            asyncio.run(a.send("hi"))
+
+
+# ═══════════════════════════════════════════════════════════════
+# 4. ChromaDBConnector
 # ═══════════════════════════════════════════════════════════════
 
 
