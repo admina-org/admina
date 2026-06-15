@@ -639,6 +639,41 @@ class TestSpaCyRegexPIIEngine:
         assert "user@example.com" not in redacted
 
 
+def test_spacy_regex_resolve_overlaps_no_corruption():
+    from admina.plugins.builtin.pii.spacy_regex import SpaCyRegexPIIEngine
+
+    eng = SpaCyRegexPIIEngine()
+    # directly exercise the overlap resolver with deliberately overlapping spans
+    overlapping = [
+        {"type": "EMAIL", "start": 5, "end": 20, "text": "a@b.com.example", "confidence": 0.95},
+        {"type": "URL", "start": 12, "end": 28, "text": "example.com/path", "confidence": 0.9},
+    ]
+    resolved = SpaCyRegexPIIEngine._resolve_overlaps(overlapping)
+    spans = sorted((m["start"], m["end"]) for m in resolved)
+    for (s1, e1), (s2, e2) in zip(spans, spans[1:]):
+        assert e1 <= s2, f"overlap remains: {(s1,e1)} {(s2,e2)}"
+    # the union [5,28] must be fully covered (no fragment): the kept span(s) span 5..28
+    assert min(s for s, _ in spans) == 5
+    assert max(e for _, e in spans) == 28
+
+
+def test_spacy_regex_redact_no_fragment_on_overlap():
+    import asyncio
+
+    from admina.plugins.builtin.pii.spacy_regex import SpaCyRegexPIIEngine
+
+    eng = SpaCyRegexPIIEngine()
+    text = "x" * 5 + "a@b.com.example/" + "y" * 5  # positions 5..20-ish
+    matches = [
+        {"type": "EMAIL", "start": 5, "end": 20, "text": text[5:20], "confidence": 0.95},
+        {"type": "URL", "start": 12, "end": 25, "text": text[12:25], "confidence": 0.9},
+    ]
+    red = asyncio.run(eng.redact(text, matches))
+    # no leftover fragment from either span; the redacted region is a single placeholder run
+    assert "a@b.com" not in red
+    assert text[12:25] not in red
+
+
 # ═══════════════════════════════════════════════════════════════
 # 10. LogAlertChannel
 # ═══════════════════════════════════════════════════════════════

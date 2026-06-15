@@ -122,8 +122,11 @@ class SpaCyRegexPIIEngine(BasePIIEngine):
                     continue
                 if allowed and ent.label_ not in allowed:
                     continue
-                # Skip if already covered by a regex match
-                overlap = any(m["start"] <= ent.start_char < m["end"] for m in matches)
+                # Skip if already covered by a regex match (full interval-overlap test)
+                overlap = any(
+                    not (ent.end_char <= mm["start"] or ent.start_char >= mm["end"])
+                    for mm in matches
+                )
                 if overlap:
                     continue
                 matches.append(
@@ -136,7 +139,8 @@ class SpaCyRegexPIIEngine(BasePIIEngine):
                     }
                 )
 
-        # Sort by position
+        # Resolve overlapping spans before returning
+        matches = self._resolve_overlaps(matches)
         matches.sort(key=lambda m: m["start"])
         return matches
 
@@ -155,6 +159,27 @@ class SpaCyRegexPIIEngine(BasePIIEngine):
             placeholder = f"[{m['type']}]"
             text = text[: m["start"]] + placeholder + text[m["end"] :]
         return text
+
+    @staticmethod
+    def _resolve_overlaps(matches: list[dict]) -> list[dict]:
+        """Merge overlapping spans into non-overlapping ones.
+
+        Sorted by (start, -length); a match overlapping the last kept span is
+        merged into it (extending the kept span's end to cover the union) so
+        redaction can never corrupt text or leave a fragment from a partially
+        overlapping detection. The first/longer span's type wins.
+        """
+        if not matches:
+            return matches
+        ordered = sorted(matches, key=lambda m: (m["start"], -(m["end"] - m["start"])))
+        kept: list[dict] = []
+        for m in ordered:
+            if kept and m["start"] < kept[-1]["end"]:
+                if m["end"] > kept[-1]["end"]:
+                    kept[-1] = {**kept[-1], "end": m["end"]}
+                continue
+            kept.append(m)
+        return kept
 
     @property
     def supported_languages(self) -> list[str]:
