@@ -127,6 +127,17 @@ rust = [
 # you have a local copy of guardrails-ai installed, the plugin will
 # detect it and work. Re-introduce the extra once upstream is restored.
 full = ["admina-framework[proxy,nlp,telemetry]"]
+# Model-adapter provider SDKs — each adapter lazy-imports its SDK, so the
+# extra only controls whether the provider wheel is present.
+openai = ["openai>=1.0,<3"]
+ollama = ["ollama>=0.3,<1"]
+anthropic = ["anthropic>=0.39,<1"]
+mistral = ["mistralai>=1.0,<3"]
+gemini = ["google-genai>=1.0,<3"]
+bedrock = ["boto3>=1.34,<2"]
+adapters = ["admina-framework[openai,ollama,anthropic,mistral,gemini,bedrock]"]
+# NOTE: [presidio] is added to [all] when the [presidio] extra lands.
+all = ["admina-framework[proxy,nlp,telemetry,adapters]"]
 
 [dependency-groups]
 dev = [

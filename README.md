@@ -127,6 +127,21 @@ pip install "admina-framework[proxy]"
 pip install "admina-framework[full]"
 python -m spacy download en_core_web_sm   # for [full] only
 
+# Model-adapter provider SDKs (per-provider extras):
+pip install "admina-framework[openai]"      # openai>=1.0
+pip install "admina-framework[ollama]"      # ollama>=0.3
+pip install "admina-framework[anthropic]"   # anthropic>=0.39
+pip install "admina-framework[mistral]"     # mistralai>=1.0
+pip install "admina-framework[gemini]"      # google-genai>=1.0
+pip install "admina-framework[bedrock]"     # boto3>=1.34 (AWS Bedrock)
+
+# All provider SDKs at once:
+pip install "admina-framework[adapters]"
+
+# Everything (proxy + NLP + telemetry + all adapters):
+pip install "admina-framework[all]"
+python -m spacy download en_core_web_sm   # for [all] only
+
 # Optional: Rust-accelerated engine (auto-detected at runtime).
 # Opt-in extra — pulls in the admina-core wheel from PyPI.
 pip install "admina-framework[rust]"
@@ -164,6 +179,12 @@ pip install -e ".[proxy]"
 
 # Everything (proxy + NLP + telemetry)
 pip install -e ".[full]"
+
+# All model-adapter SDKs
+pip install -e ".[adapters]"
+
+# Everything (proxy + NLP + telemetry + all adapters)
+pip install -e ".[all]"
 
 # CLI workflow
 admina init my-project   # Scaffold a governed AI project
