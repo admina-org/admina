@@ -19,8 +19,30 @@ Automated risk classification, gap analysis, and compliance reporting.
 
 import logging
 from datetime import UTC, datetime
+from typing import Any
 
 logger = logging.getLogger("admina.eu_ai_act")
+
+
+def _coerce_checks(value: Any, n: int) -> list[bool]:
+    """Normalise a declared-compliance value to exactly *n* booleans.
+
+    bool → that value for the first check, the rest unmet (a single claim
+    does not satisfy all N checks); list → padded with False / truncated to
+    n; None → all unmet. Prevents a bool/short input from being zip-truncated
+    into a falsely high score.
+    """
+    if value is None:
+        return [False] * n
+    if isinstance(value, bool):
+        declared = [value]
+    elif isinstance(value, list):
+        declared = [bool(v) for v in value]
+    else:
+        declared = [False]
+    declared = declared[:n]
+    declared += [False] * (n - len(declared))
+    return declared
 
 # ── EU AI Act application timeline (Art. 113, Regulation 2024/1689) ─────────
 # Reflects the "AI Act Omnibus" agreement reached by Council and Parliament
@@ -288,8 +310,9 @@ class EUAIActCompliance:
         passed_checks = 0
 
         for req_key, req_info in HIGH_RISK_REQUIREMENTS.items():
-            checks = current_compliance.get(req_key, [False] * len(req_info["checks"]))
-            for i, (check_desc, is_met) in enumerate(zip(req_info["checks"], checks)):
+            n = len(req_info["checks"])
+            declared = _coerce_checks(current_compliance.get(req_key), n)
+            for i, (check_desc, is_met) in enumerate(zip(req_info["checks"], declared)):
                 total_checks += 1
                 if is_met:
                     passed_checks += 1

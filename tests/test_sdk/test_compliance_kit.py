@@ -225,6 +225,37 @@ class TestGapAnalysis:
                 current_compliance={"record_keeping": "not a bool"},  # type: ignore[dict-item]
             )
 
+    def test_gap_analysis_bool_is_not_full_compliance(self) -> None:
+        """A single True per requirement must not yield 100% / COMPLIANT.
+
+        A bare bool normalises to one check met, leaving the remaining
+        checks in each requirement unmet — the engine must pad rather than
+        zip-truncate.
+        """
+        from admina.domains.compliance.eu_ai_act import HIGH_RISK_REQUIREMENTS
+
+        kit = ComplianceKit(audit=False)
+        report = kit.gap_analysis(
+            framework="eu_ai_act",
+            risk_category="high",
+            current_compliance={k: True for k in HIGH_RISK_REQUIREMENTS},
+        )
+        # one bool per requirement = 1-of-4 checks met, NOT 100%
+        assert report.compliance_score < 100.0
+        assert report.status != "COMPLIANT"
+
+    def test_generate_report_accepts_bool_without_crashing(self) -> None:
+        """generate_report passes raw bool values to the engine without TypeError."""
+        kit = ComplianceKit(audit=False)
+        rep = kit.generate_report(
+            system_name="TestSystem",
+            description="Medical diagnosis AI",
+            use_case="Healthcare diagnostics",
+            data_types=["health"],
+            current_compliance={"risk_management": True},
+        )
+        assert rep is not None
+
 
 # ---------------------------------------------------------------------------
 # Tests: report generation
