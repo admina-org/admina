@@ -119,6 +119,22 @@ _VERSION_SUFFIX_RX = re.compile(
 )
 
 
+def _luhn_valid(number: str) -> bool:
+    """Return True if the digit string passes the Luhn checksum."""
+    digits = [int(c) for c in number if c.isdigit()]
+    if len(digits) < 13:  # shortest valid PAN length
+        return False
+    checksum = 0
+    parity = len(digits) % 2
+    for i, d in enumerate(digits):
+        if i % 2 == parity:
+            d *= 2
+            if d > 9:
+                d -= 9
+        checksum += d
+    return checksum % 10 == 0
+
+
 def _is_real_ipv4(text: str, start: int, end: int) -> bool:
     """Heuristic: skip IP-shaped numbers that are clearly version strings.
 
@@ -213,6 +229,8 @@ class PIIRedactor:
             matches = list(pattern.finditer(redacted))
             if cat_name == "IP_ADDRESS":
                 matches = [m for m in matches if _is_real_ipv4(redacted, m.start(), m.end())]
+            elif cat_name == "CREDIT_CARD":
+                matches = [m for m in matches if _luhn_valid(m.group())]
 
             if not matches:
                 continue

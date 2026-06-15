@@ -138,7 +138,8 @@ New patterns are contributed via PR to
 Detects and redacts PII in text. Two modes:
 
 - **Regex-only** (default, fast): email, phone, SSN, US credit card
-  (Luhn-validated), IBAN, IPv4. Rust path.
+  (Luhn-validated — Python engine only; Rust path does not run Luhn),
+  IBAN, IPv4. Python engine default; Rust path opt-in via `ADMINA_ENGINE=rust`.
 - **Regex + spaCy NER** (`pip install admina-framework[nlp]`): adds named-entity
   detection for `PERSON`, `ORG`, `GPE`. Python only.
 
@@ -151,7 +152,7 @@ Detects and redacts PII in text. Two modes:
   [`guardrailsai`](README.md#guardrailsai) extra.
 - **Regex precision varies by category.** Phone-number regex has high
   recall but low precision (matches version strings, IDs). Credit-card
-  regex uses Luhn validation and is reliable. IBAN regex does not
+  regex uses Luhn validation (Python engine) and is reliable. IBAN regex does not
   validate the country-specific checksum and may match invalid IBANs.
 - **No image or document parsing.** Admina sees text only. PII embedded
   in images, PDFs, or audio passes through unchanged. Pre-process those

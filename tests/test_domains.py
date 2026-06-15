@@ -121,8 +121,8 @@ class TestPII:
 
     def test_credit_card_redaction(self):
         pii = self._get_scanner()
-        r = pii.redact("Card: 4111-2222-3333-4444")
-        assert "4111-2222-3333-4444" not in r["redacted_text"]
+        r = pii.redact("Card: 4111-1111-1111-1111")
+        assert "4111-1111-1111-1111" not in r["redacted_text"]
         assert r["count"] >= 1
 
     def test_ip_redaction(self):
@@ -154,6 +154,20 @@ class TestPII:
         pii = self._get_scanner()
         r = pii.redact("Email: test@mail.com")
         assert "entities" in r
+
+    def test_credit_card_requires_valid_luhn(self):
+        from admina.domains.data_sovereignty.pii import PIIRedactor
+        r = PIIRedactor()
+        valid = "4242 4242 4242 4242"     # canonical valid Luhn test card
+        invalid = "1234 5678 9012 3456"   # 16 digits, fails Luhn
+
+        out_v = r.redact(f"card {valid}")
+        assert "4242" not in out_v["redacted_text"]
+        assert any(e["type"] == "CREDIT_CARD" for e in out_v["entities"])
+
+        out_i = r.redact(f"num {invalid}")
+        assert "1234 5678 9012 3456" in out_i["redacted_text"]   # NOT redacted (fails Luhn)
+        assert not any(e["type"] == "CREDIT_CARD" for e in out_i["entities"])
 
 
 # ═══════════════════════════════════════════════════════
