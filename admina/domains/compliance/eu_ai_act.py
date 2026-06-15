@@ -44,6 +44,7 @@ def _coerce_checks(value: Any, n: int) -> list[bool]:
     declared += [False] * (n - len(declared))
     return declared
 
+
 # ── EU AI Act application timeline (Art. 113, Regulation 2024/1689) ─────────
 # Reflects the "AI Act Omnibus" agreement reached by Council and Parliament
 # on 7 May 2026 (Omnibus VII), which postponed several high-risk deadlines

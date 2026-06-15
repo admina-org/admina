@@ -642,8 +642,7 @@ class TestSpaCyRegexPIIEngine:
 def test_spacy_regex_resolve_overlaps_no_corruption():
     from admina.plugins.builtin.pii.spacy_regex import SpaCyRegexPIIEngine
 
-    eng = SpaCyRegexPIIEngine()
-    # directly exercise the overlap resolver with deliberately overlapping spans
+    # directly exercise the overlap resolver (static) with deliberately overlapping spans
     overlapping = [
         {"type": "EMAIL", "start": 5, "end": 20, "text": "a@b.com.example", "confidence": 0.95},
         {"type": "URL", "start": 12, "end": 28, "text": "example.com/path", "confidence": 0.9},
@@ -651,7 +650,7 @@ def test_spacy_regex_resolve_overlaps_no_corruption():
     resolved = SpaCyRegexPIIEngine._resolve_overlaps(overlapping)
     spans = sorted((m["start"], m["end"]) for m in resolved)
     for (s1, e1), (s2, e2) in zip(spans, spans[1:]):
-        assert e1 <= s2, f"overlap remains: {(s1,e1)} {(s2,e2)}"
+        assert e1 <= s2, f"overlap remains: {(s1, e1)} {(s2, e2)}"
     # the union [5,28] must be fully covered (no fragment): the kept span(s) span 5..28
     assert min(s for s, _ in spans) == 5
     assert max(e for _, e in spans) == 28

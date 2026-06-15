@@ -157,16 +157,17 @@ class TestPII:
 
     def test_credit_card_requires_valid_luhn(self):
         from admina.domains.data_sovereignty.pii import PIIRedactor
+
         r = PIIRedactor()
-        valid = "4242 4242 4242 4242"     # canonical valid Luhn test card
-        invalid = "1234 5678 9012 3456"   # 16 digits, fails Luhn
+        valid = "4242 4242 4242 4242"  # canonical valid Luhn test card
+        invalid = "1234 5678 9012 3456"  # 16 digits, fails Luhn
 
         out_v = r.redact(f"card {valid}")
         assert "4242" not in out_v["redacted_text"]
         assert any(e["type"] == "CREDIT_CARD" for e in out_v["entities"])
 
         out_i = r.redact(f"num {invalid}")
-        assert "1234 5678 9012 3456" in out_i["redacted_text"]   # NOT redacted (fails Luhn)
+        assert "1234 5678 9012 3456" in out_i["redacted_text"]  # NOT redacted (fails Luhn)
         assert not any(e["type"] == "CREDIT_CARD" for e in out_i["entities"])
 
 
