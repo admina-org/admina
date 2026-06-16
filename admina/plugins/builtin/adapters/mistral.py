@@ -63,7 +63,10 @@ class MistralAdapter(BaseModelAdapter):
         """Lazily import and create the Mistral client."""
         if self._client is None:
             try:
-                from mistralai.client import Mistral  # type: ignore[import-untyped]
+                try:
+                    from mistralai import Mistral  # type: ignore[import-untyped]
+                except ImportError:
+                    from mistralai.client import Mistral  # type: ignore[import-untyped]
             except ImportError as exc:
                 raise ImportError(
                     "The 'mistralai' package is required for MistralAdapter. "

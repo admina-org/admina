@@ -24,6 +24,7 @@ Requires: ``pip install openai``  (same dependency as the OpenAI adapter).
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from admina.plugins.builtin.adapters.openai import OpenAIAdapter
 
@@ -40,6 +41,7 @@ class VLLMAdapter(OpenAIAdapter):
             ``"http://localhost:8000/v1"``.
         default_model: Default model name (HuggingFace model id loaded by
             the server).  Falls back to ``ADMINA_VLLM_MODEL`` env var.
+            No hardcoded default — the caller or environment must supply a value.
     """
 
     name = "vllm"
@@ -55,6 +57,28 @@ class VLLMAdapter(OpenAIAdapter):
             base_url=base_url or os.environ.get("ADMINA_VLLM_BASE_URL", "http://localhost:8000/v1"),
             default_model=default_model or os.environ.get("ADMINA_VLLM_MODEL"),
         )
+        # Override the parent's "gpt-4o" fallback: vLLM requires an explicit
+        # model id (the HuggingFace model served by the instance).
+        self._default_model = default_model or os.environ.get("ADMINA_VLLM_MODEL")
+
+    async def send(
+        self,
+        prompt: str,
+        context: Any = None,
+        **kwargs: Any,
+    ) -> dict:
+        """Send a prompt to the vLLM server.
+
+        Raises ``ValueError`` when no model is resolvable (neither supplied
+        per-call via ``model=`` nor set as the adapter default).
+        """
+        model = kwargs.get("model") or self._default_model
+        if not model:
+            raise ValueError(
+                "VLLMAdapter needs a model: pass model=... or set ADMINA_VLLM_MODEL "
+                "(the model id served by your vLLM instance)"
+            )
+        return await super().send(prompt, context=context, **kwargs)
 
     def supports_model(self, model_name: str) -> bool:
         """Return ``True`` for any model name (vLLM serves whatever is loaded)."""

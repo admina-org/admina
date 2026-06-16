@@ -1168,6 +1168,19 @@ class TestVLLMAdapter:
         assert a.supports_model("any/hf-id") is True
         assert a.supports_model("gpt-4o") is True
 
+    def test_vllm_requires_model(self, monkeypatch):
+        pytest.importorskip("openai")
+        import asyncio
+
+        from admina.plugins.builtin.adapters.vllm import VLLMAdapter
+
+        monkeypatch.delenv("ADMINA_VLLM_MODEL", raising=False)
+        monkeypatch.delenv("ADMINA_OPENAI_MODEL", raising=False)
+        a = VLLMAdapter()  # no model, no env
+        a._client = object()
+        with pytest.raises(ValueError, match="model"):
+            asyncio.run(a.send("hi"))
+
 
 # ═══════════════════════════════════════════════════════════════
 # 18. Registry — all 7 builtin model adapters
