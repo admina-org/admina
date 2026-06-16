@@ -129,12 +129,7 @@ class BedrockAdapter(BaseModelAdapter):
         resp = await asyncio.to_thread(lambda: client.converse(**converse_req))
         latency_ms = (time.monotonic() - start) * 1_000
 
-        text = (
-            resp.get("output", {})
-            .get("message", {})
-            .get("content", [{}])[0]
-            .get("text", "")
-        )
+        text = resp.get("output", {}).get("message", {}).get("content", [{}])[0].get("text", "")
         usage = resp.get("usage", {})
         tokens = usage.get("inputTokens", 0) + usage.get("outputTokens", 0)
 

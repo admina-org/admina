@@ -52,9 +52,14 @@ class BaseModelAdapter(ABC):
     Default implementations:
         * ``OllamaAdapter`` — local Ollama instance (built-in).
         * ``OpenAIAdapter`` — OpenAI-compatible APIs (built-in).
+        * ``AnthropicAdapter`` — Anthropic Claude models via ``anthropic`` SDK (built-in).
+        * ``MistralAdapter`` — Mistral AI models via ``mistralai`` SDK (built-in).
+        * ``BedrockAdapter`` — AWS Bedrock Converse API via ``boto3`` (built-in).
+        * ``GeminiAdapter`` — Google Gemini models via ``google-genai`` SDK (built-in).
+        * ``VLLMAdapter`` — vLLM OpenAI-compatible server (built-in).
 
     Community plugin example:
-        ``admina-adapter-bedrock`` — AWS Bedrock models via boto3.
+        ``admina-adapter-cohere`` — Cohere Command models.
 
     Example usage::
 

@@ -1167,3 +1167,19 @@ class TestVLLMAdapter:
         assert a.supports_model("meta-llama/Llama-3-8B-Instruct") is True
         assert a.supports_model("any/hf-id") is True
         assert a.supports_model("gpt-4o") is True
+
+
+# ═══════════════════════════════════════════════════════════════
+# 18. Registry — all 7 builtin model adapters
+# ═══════════════════════════════════════════════════════════════
+
+
+def test_all_builtin_adapters_register_by_name():
+    from admina.plugins.registry import PluginRegistry
+
+    reg = PluginRegistry()
+    reg.discover()
+    names = set(reg.list("model_adapter"))
+    expected = {"ollama", "openai", "anthropic", "mistral", "bedrock", "gemini", "vllm"}
+    missing = expected - names
+    assert not missing, f"adapters missing from registry: {missing}"

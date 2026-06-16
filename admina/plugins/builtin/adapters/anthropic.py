@@ -60,9 +60,7 @@ class AnthropicAdapter(BaseModelAdapter):
             or os.environ.get("ANTHROPIC_API_KEY")
         )
         self._default_model = default_model or os.environ.get("ADMINA_ANTHROPIC_MODEL")
-        self._max_tokens = max_tokens or int(
-            os.environ.get("ADMINA_ANTHROPIC_MAX_TOKENS", "1024")
-        )
+        self._max_tokens = max_tokens or int(os.environ.get("ADMINA_ANTHROPIC_MAX_TOKENS", "1024"))
         self._client: Any = None
 
     # ── lazy client init ────────────────────────────────────────
