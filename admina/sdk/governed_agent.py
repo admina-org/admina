@@ -29,6 +29,7 @@ from typing import Any
 from admina.core.event_bus import EventType, GovernanceEvent, bus
 from admina.domains.governance import _deep_redact, _extract_text_fields
 from admina.sdk._compat import run_sync
+from admina.sdk.retry import RetryPolicy, run_with_retry
 
 __all__ = ["GovernedAgent", "GovernedMCPResponse"]
 
@@ -104,6 +105,7 @@ class GovernedAgent:
         pii_redaction: bool = True,
         firewall_enabled: bool = True,
         loop_detection: bool = True,
+        retry: RetryPolicy | None = None,
     ) -> None:
         """Initialize GovernedAgent.
 
@@ -113,12 +115,17 @@ class GovernedAgent:
             pii_redaction: If True, redact PII bidirectionally.
             firewall_enabled: If True, run injection firewall.
             loop_detection: If True, run loop breaker.
+            retry: Optional RetryPolicy for transient upstream errors. Default
+                None (single attempt, unchanged behaviour). Retry is opt-in
+                because the upstream callable may be non-idempotent (e.g. a
+                tool call that triggers a payment or a git push).
         """
         self._upstream = upstream
         self._audit = audit
         self._pii_redaction = pii_redaction
         self._firewall_enabled = firewall_enabled
         self._loop_detection = loop_detection
+        self._retry = retry
         self._session_id = str(uuid.uuid4())
         self._firewall: Any = None
         self._loop_breaker: Any = None
@@ -219,7 +226,10 @@ class GovernedAgent:
             }
 
         # 5. Forward to upstream
-        upstream_result = await self._upstream(method, redacted_params, **kwargs)
+        upstream_result = await run_with_retry(
+            lambda: self._upstream(method, redacted_params, **kwargs),
+            self._retry,
+        )
 
         # 6. PII redaction on response (outbound)
         redacted_result = upstream_result

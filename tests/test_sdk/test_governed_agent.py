@@ -504,3 +504,65 @@ def test_governed_agent_redacts_non_dict_response():
     ga._pii_redactor = _PII()
     resp = asyncio.run(ga.call("m", {"x": "y"}))
     assert "a@b.com" not in str(resp.result)
+
+
+# ---------------------------------------------------------------------------
+# Tests: GovernedAgent retry
+# ---------------------------------------------------------------------------
+
+
+def test_governed_agent_retry_succeeds_after_transient():
+    """Upstream raises RetryableUpstreamError twice then returns → call() succeeds, upstream called 3×."""
+    import asyncio
+
+    from admina.sdk.errors import RetryableUpstreamError
+    from admina.sdk.governed_agent import GovernedAgent
+    from admina.sdk.retry import RetryPolicy
+
+    calls = {"n": 0}
+
+    async def _upstream(method, params, **kw):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise RetryableUpstreamError("transient")
+        return {"result": "ok"}
+
+    ga = GovernedAgent(
+        _upstream,
+        audit=False,
+        firewall_enabled=False,
+        loop_detection=False,
+        pii_redaction=False,
+        retry=RetryPolicy(max_attempts=3, base_delay_s=0),
+    )
+    resp = asyncio.run(ga.call("do", {}))
+    assert resp.result == {"result": "ok"}
+    assert calls["n"] == 3
+
+
+def test_governed_agent_retry_none_propagates_after_one_attempt():
+    """With retry=None (default), a transient error propagates after a single attempt."""
+    import asyncio
+
+    import pytest
+
+    from admina.sdk.errors import RetryableUpstreamError
+    from admina.sdk.governed_agent import GovernedAgent
+
+    calls = {"n": 0}
+
+    async def _upstream(method, params, **kw):
+        calls["n"] += 1
+        raise RetryableUpstreamError("transient")
+
+    ga = GovernedAgent(
+        _upstream,
+        audit=False,
+        firewall_enabled=False,
+        loop_detection=False,
+        pii_redaction=False,
+        # retry=None is the default
+    )
+    with pytest.raises(RetryableUpstreamError):
+        asyncio.run(ga.call("do", {}))
+    assert calls["n"] == 1
