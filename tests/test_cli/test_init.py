@@ -151,8 +151,13 @@ class TestScaffoldProject:
             "test-project",
         )
         data = yaml.safe_load((tmp_project / "docker-compose.yml").read_text())
-        assert data["services"]["proxy"]["image"] == f"ghcr.io/admina-org/admina-proxy:{__version__}"
-        assert data["services"]["dashboard"]["image"] == f"ghcr.io/admina-org/admina-dashboard:{__version__}"
+        assert (
+            data["services"]["proxy"]["image"] == f"ghcr.io/admina-org/admina-proxy:{__version__}"
+        )
+        assert (
+            data["services"]["dashboard"]["image"]
+            == f"ghcr.io/admina-org/admina-dashboard:{__version__}"
+        )
         # Must not contain stale hardcoded version
         compose_text = (tmp_project / "docker-compose.yml").read_text()
         assert "0.9.0" not in compose_text
