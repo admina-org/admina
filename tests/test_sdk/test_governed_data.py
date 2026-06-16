@@ -492,3 +492,138 @@ def test_ingest_scans_string_content_and_document_list():
     joined = " ".join(scanned)
     assert "plain text content" in joined
     assert "doc one" in joined and "doc two" in joined
+
+
+# ---------------------------------------------------------------------------
+# Tests: GovernedData retry
+# ---------------------------------------------------------------------------
+
+
+def test_governed_data_ingest_retry_succeeds_after_transient():
+    """connector.ingest raises RetryableUpstreamError twice then succeeds → ingest succeeds, connector called 3×."""
+    import asyncio
+
+    from admina.sdk.errors import RetryableUpstreamError
+    from admina.sdk.governed_data import GovernedData
+    from admina.sdk.retry import RetryPolicy
+
+    calls = {"n": 0}
+
+    class _TransientConn:
+        name = "transient"
+
+        async def ingest(self, source, **kw):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise RetryableUpstreamError("transient ingest")
+            return {"doc_count": 1, "chunk_count": 2}
+
+        async def query(self, q, **kw):
+            return []
+
+    gd = GovernedData(
+        connector=_TransientConn(),
+        audit=False,
+        pii_redaction=False,
+        retry=RetryPolicy(max_attempts=3, base_delay_s=0),
+    )
+    result = asyncio.run(gd.ingest("some content"))
+    assert result.doc_count == 1
+    assert calls["n"] == 3
+
+
+def test_governed_data_query_retry_succeeds_after_transient():
+    """connector.query raises RetryableUpstreamError twice then succeeds → query succeeds, connector called 3×."""
+    import asyncio
+
+    from admina.sdk.errors import RetryableUpstreamError
+    from admina.sdk.governed_data import GovernedData
+    from admina.sdk.retry import RetryPolicy
+
+    calls = {"n": 0}
+
+    class _TransientConn:
+        name = "transient"
+
+        async def ingest(self, source, **kw):
+            return {"doc_count": 0, "chunk_count": 0}
+
+        async def query(self, q, **kw):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise RetryableUpstreamError("transient query")
+            return [{"text": "result", "score": 0.9, "metadata": {}}]
+
+    gd = GovernedData(
+        connector=_TransientConn(),
+        audit=False,
+        pii_redaction=False,
+        retry=RetryPolicy(max_attempts=3, base_delay_s=0),
+    )
+    docs = asyncio.run(gd.query("what?"))
+    assert len(docs) == 1
+    assert docs[0].text == "result"
+    assert calls["n"] == 3
+
+
+def test_governed_data_retry_none_ingest_propagates_after_one_attempt():
+    """With retry=None (default), a transient ingest error propagates after a single attempt."""
+    import asyncio
+
+    import pytest
+
+    from admina.sdk.errors import RetryableUpstreamError
+    from admina.sdk.governed_data import GovernedData
+
+    calls = {"n": 0}
+
+    class _AlwaysTransient:
+        name = "always"
+
+        async def ingest(self, source, **kw):
+            calls["n"] += 1
+            raise RetryableUpstreamError("transient")
+
+        async def query(self, q, **kw):
+            return []
+
+    gd = GovernedData(connector=_AlwaysTransient(), audit=False, pii_redaction=False)
+    with pytest.raises(RetryableUpstreamError):
+        asyncio.run(gd.ingest("data"))
+    assert calls["n"] == 1
+
+
+def test_governed_data_residency_permission_error_not_retried():
+    """A residency PermissionError is raised before the connector call and is never retried."""
+    import asyncio
+
+    import pytest
+
+    from admina.sdk.governed_data import GovernedData
+    from admina.sdk.retry import RetryPolicy
+
+    calls = {"n": 0}
+
+    class _NeverCalled:
+        name = "never"
+
+        async def ingest(self, source, **kw):
+            calls["n"] += 1
+            return {"doc_count": 1, "chunk_count": 1}
+
+        async def query(self, q, **kw):
+            calls["n"] += 1
+            return []
+
+    gd = GovernedData(
+        connector=_NeverCalled(),
+        residency_zone="eu",
+        allowed_zones={"eu"},
+        audit=False,
+        pii_redaction=False,
+        retry=RetryPolicy(max_attempts=5, base_delay_s=0),
+    )
+    # Attempt to ingest into a disallowed zone
+    with pytest.raises(PermissionError):
+        asyncio.run(gd.ingest("data", target_zone="us"))
+    assert calls["n"] == 0  # connector was never reached

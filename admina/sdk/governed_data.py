@@ -28,6 +28,7 @@ from typing import Any
 from admina.core.event_bus import EventType, GovernanceEvent, bus
 from admina.plugins.base import BaseDataConnector
 from admina.sdk._compat import run_sync
+from admina.sdk.retry import RetryPolicy, run_with_retry
 
 __all__ = ["GovernedData", "GovernedDocument", "IngestResult", "BaseDataConnector"]
 
@@ -129,6 +130,7 @@ class GovernedData:
         allowed_zones: set[str] | None = None,
         audit: bool = True,
         pii_redaction: bool = True,
+        retry: RetryPolicy | None = None,
     ) -> None:
         """Initialize GovernedData.
 
@@ -140,12 +142,16 @@ class GovernedData:
                 {residency_zone}.
             audit: If True, emit events to the event bus.
             pii_redaction: If True, redact PII from query results.
+            retry: Optional RetryPolicy for transient connector errors. Default
+                None (single attempt, unchanged behaviour). Residency refusals
+                are raised before the connector call and are never retried.
         """
         self._connector = connector
         self.residency_zone = residency_zone
         self.allowed_zones = allowed_zones or {residency_zone}
         self._audit = audit
         self._pii_redaction = pii_redaction
+        self._retry = retry
         self._pii_redactor: Any = None
 
     def _get_pii_redactor(self) -> Any:
@@ -277,7 +283,10 @@ class GovernedData:
             )
 
         # 4. Pass to connector
-        connector_result = await self._connector.ingest(source, **kwargs)
+        connector_result = await run_with_retry(
+            lambda: self._connector.ingest(source, **kwargs),
+            self._retry,
+        )
 
         latency_us = time.time() * 1_000_000 - start_us
         governance["latency_us"] = latency_us
@@ -355,7 +364,10 @@ class GovernedData:
             )
 
         # 3. Retrieve from connector
-        raw_results = await self._connector.query(query, **kwargs)
+        raw_results = await run_with_retry(
+            lambda: self._connector.query(query, **kwargs),
+            self._retry,
+        )
 
         # 4. Redact PII and wrap results
         documents: list[GovernedDocument] = []
