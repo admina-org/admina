@@ -13,6 +13,156 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-06-16
+
+Model-adapter and governance-unification release. Five new provider
+adapters, configurable retry/backoff on the governed primitives, a uniform
+engine-selection switch across proxy/SDK/integrations, and a set of auth,
+forensic, and correctness hardening fixes.
+
+### Added
+
+- **Five new model adapters**, each a built-in plugin that lazy-imports its
+  provider SDK so the dependency is only required when the adapter is used:
+  - **Anthropic** — `admina-framework[anthropic]`.
+  - **Mistral** — `admina-framework[mistral]`; wraps `mistralai` chat
+    completions (`ADMINA_MISTRAL_API_KEY` / `ADMINA_MISTRAL_MODEL`).
+  - **AWS Bedrock** — `admina-framework[bedrock]`; wraps the `boto3`
+    Converse API using the standard AWS credential chain
+    (`ADMINA_BEDROCK_REGION` / `ADMINA_BEDROCK_MODEL`).
+  - **Google Gemini** — `admina-framework[gemini]`; wraps `google-genai`
+    generate-content (`ADMINA_GEMINI_API_KEY` / `ADMINA_GEMINI_MODEL`).
+  - **vLLM** — an OpenAI-compatible adapter pointed at a local vLLM server
+    (`http://localhost:8000/v1` by default; `ADMINA_VLLM_BASE_URL` /
+    `ADMINA_VLLM_MODEL`, model required).
+- **Per-provider packaging extras** `[anthropic]`, `[mistral]`, `[bedrock]`,
+  `[gemini]`, `[openai]`, `[ollama]`, plus the `[adapters]` roll-up (all
+  providers) and the `[all]` roll-up (`[proxy,nlp,telemetry,adapters]`).
+- **Configurable retry/backoff on the governed primitives.** `RetryPolicy`
+  and a vendored `run_with_retry` executor (no new dependency) let
+  `GovernedModel`, `GovernedAgent`, and `GovernedData` retry transient
+  upstream/connector failures, opt-in via `retry=RetryPolicy(...)` (default
+  is unchanged: a single attempt). Tunable with `ADMINA_RETRY_*` env knobs;
+  callers and adapters can mark errors with `RetryableUpstreamError` /
+  `TerminalUpstreamError`. `GovernedData` never retries past a residency
+  refusal (raised before the region is contacted).
+- **`ADMINA_ENGINE=auto|python|rust`** selects the governance-engine backend
+  uniformly across proxy, SDK, and integrations (an unrecognized value
+  raises). Engines (firewall, PII, loop breaker) are now acquired through a
+  single `admina.engines` package.
+- **Typed firewall config:** `agent_security.firewall.custom_patterns` and
+  `agent_security.firewall.disabled_categories`. The `admina.yaml` `plugins:`
+  list and a new `plugin_config:` block are wired into plugin discovery and
+  instantiation; a plugin whose `__init__` accepts a `config` parameter
+  receives its block.
+- **Forensic chain verification is now reachable**, reporting hash-chain
+  integrity via `admina doctor` and `GET /api/v1/forensic/verify`
+  (verification was previously never invoked by any wired path).
+
+### Changed
+
+- **Behavior change — `GovernedModel.ask()` now runs full governance by
+  default.** It runs the injection firewall on the prompt and any pluggable
+  guards (was PII-only) and can return `action="BLOCK"` with empty text;
+  `GovernedResponse` gains an `action` field (default `"ALLOW"`). Opt out per
+  stage with `GovernedModel(firewall_enabled=False, governance_guards=...,
+  loop_detection=...)`. Loop detection runs only when a `session_id` is
+  supplied per call.
+- **SDK and LangChain/CrewAI callbacks now acquire engines via
+  `admina.engines`.** They gain Rust acceleration for the firewall and loop
+  breaker under `ADMINA_ENGINE=auto` when `admina-core` is installed, and they
+  now honor `admina.yaml` firewall overrides (`custom_patterns` /
+  `disabled_categories`) — both previously proxy-only. PII redaction stays on
+  the Python engine by default for full recall (the Rust scanner does not
+  cover EU national IDs or NER person/org names); Rust PII is opt-in via
+  `ADMINA_ENGINE=rust`.
+- **One canonical governance pipeline.** `POST /mcp`, `POST /api/v1/validate`,
+  and the SDK governed primitives now all run the same pipeline in the same
+  order (loop → firewall → PII → guards). `GovernedAgent` keeps a stable
+  per-instance session so loop detection works across calls.
+
+### Security
+
+- **Closed a fail-open default.** A proxy started with no `ADMINA_API_KEY` no
+  longer authenticates every request as admin: the keyless built-in API-key
+  provider is now fail-closed and is not loaded. With no key and no auth
+  providers, protected requests are rejected unless
+  `ALLOW_UNAUTHENTICATED=true` is explicitly set, and the proxy logs a loud
+  startup warning.
+- **Dashboard live WebSocket authentication and origin checks.** The live
+  feed now validates the signed `admina_session` session cookie (it
+  previously compared the signed token against the raw API key and always
+  failed when a key was set), and the WebSocket upgrade enforces an Origin
+  allow-list (`CORS_ORIGINS`) to mitigate Cross-Site WebSocket Hijacking.
+  Absent-Origin (non-browser) clients still require a valid credential; `'*'`
+  in `CORS_ORIGINS` opts into allowing any origin.
+- **Built-in API-key provider accepts the signed dashboard cookie** (it
+  previously treated the cookie as a raw key and rejected valid browser
+  sessions). HTTP, WebSocket, and provider auth now share one credential
+  verifier so they cannot drift.
+- **Forensic store hardening.** The store now reconstructs its hash-chain
+  state from the persisted records when the state file is missing or corrupt,
+  instead of silently restarting from GENESIS (which forked or overwrote the
+  audit trail); a corrupt state file is logged at ERROR. Concurrent writes are
+  serialized to prevent chain forks, and `verify_chain` anchors against the
+  persisted record count and chain head so a truncated tail is detected as
+  invalid. The `FilesystemForensicStore` plugin gets the same hardening.
+
+### Fixed
+
+- **EU AI Act gap analysis no longer reports a false `COMPLIANT`.** Each
+  requirement's declared checks are padded to the canonical count, so
+  supplying a bool or a short check-list no longer inflates the compliance
+  score (unspecified checks count as unmet); `generate_report` also accepts a
+  bare `bool` in `current_compliance` without raising `TypeError`.
+- **Credit-card PII detection now validates the Luhn checksum** (Python
+  engine), eliminating false positives on arbitrary 16-digit numbers.
+- **PII scanning covers dict keys, not only values.** The proxy now redacts
+  PII in dict-shaped MCP tool results (previously only plain-string results
+  were redacted), and the plugin PII engine merges overlapping detections into
+  non-overlapping spans before redaction (no text corruption or leftover
+  fragments). `GovernedData.ingest()` classifies the actual ingested content
+  rather than misclassifying an opaque source locator (file path, URL) as
+  content; opaque sources are flagged `source_scanned=false`.
+- **`/api/v1/validate` delegates to the canonical pipeline.** It honors
+  `GOVERNANCE_MODE` (observe/dry-run), normalizes `risk_level` casing, and
+  reports loop detection (CIRCUIT_BREAK) as `action="BLOCK"` to REST consumers
+  (the consumer contract is preserved for n8n / CheshireCat / OpenClaw). Note:
+  on a blocked request the `checks` object no longer carries a
+  `pii_redaction` entry (PII is not run after a block) — read it with
+  `.get()`.
+- **Config and observability fixes.** `admina.yaml` `schema_version` is now
+  parsed (was silently ignored); OISG criterion S2 reads the configured API
+  key; and observe / dry-run "would-have-blocked" decisions now persist to the
+  audit trail and reach the dashboard policy-suggestion engine (previously
+  always zero).
+- **Plugin and scaffolding fixes.** Built-in plugins register under their
+  declared `name` (e.g. `ollama`, `apikey`) instead of a lower-cased class
+  name; `admina plugin new` scaffolds working plugins (async methods matching
+  every ABC, correct `admina-framework` dependency floor, Python 3.11
+  requirement, and an `admina.plugins` entry-point); and `admina init`
+  scaffolds docker-compose image tags from the framework version instead of a
+  hardcoded stale tag.
+- **A pluggable governance guard that violates its contract** is now logged at
+  ERROR and recorded in the decision's checks (was a silent skip), so a broken
+  guard is visible in the audit trail.
+- **OpenAI and Ollama adapters offload their blocking SDK calls** via
+  `asyncio.to_thread` (consistent with the new adapters), so the event loop is
+  not blocked and per-attempt retry timeouts can fire.
+
+### Internal
+
+- `admina/proxy/engine_bridge.py` is now a re-export shim over
+  `admina.engines`. The duplicated SDK adapter/connector ABCs were removed —
+  `admina.sdk` re-exports the canonical `admina.plugins.base` definitions — and
+  the dashboard SPA is single-sourced from the packaged copy.
+
+### Documentation
+
+- Corrected the MODEL_CARD engine-equivalence claim (the Rust and Python
+  firewall/PII engines differ — measured, not equivalent) and aligned the
+  documented governance pipeline order (loop → firewall → PII → guards).
+
 ## [0.9.5] — 2026-06-07
 
 Stabilisation release (0.9.x).
