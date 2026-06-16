@@ -930,3 +930,240 @@ class TestRegistryDiscovery:
         )
         # Should find at least the 11 builtin plugin classes
         assert count >= 11
+
+
+# ═══════════════════════════════════════════════════════════════
+# 14. MistralAdapter
+# ═══════════════════════════════════════════════════════════════
+
+
+class TestMistralAdapter:
+    def test_name_and_supports_model(self):
+        pytest.importorskip("mistralai")
+        from admina.plugins.builtin.adapters.mistral import MistralAdapter
+
+        a = MistralAdapter(api_key="k", default_model="mistral-small")
+        assert a.name == "mistral"
+        assert a.supports_model("mistral-small") is True
+        assert a.supports_model("codestral-latest") is True
+        assert a.supports_model("open-mixtral-8x7b") is True
+        assert a.supports_model("ministral-3b") is True
+        assert a.supports_model("gpt-4o") is False
+
+    def test_send_shapes_request_and_normalizes_response(self):
+        pytest.importorskip("mistralai")
+        import asyncio
+
+        from admina.plugins.builtin.adapters.mistral import MistralAdapter
+
+        # Fake response mirroring real mistralai v2 ChatCompletionResponse shape:
+        # resp.choices[0].message.content (str)
+        # resp.usage.prompt_tokens, resp.usage.completion_tokens, resp.usage.total_tokens
+        class _Usage:
+            prompt_tokens = 4
+            completion_tokens = 6
+            total_tokens = 10
+
+        class _Message:
+            content = "hello from mistral"
+
+        class _Choice:
+            message = _Message()
+
+        class _Resp:
+            choices = [_Choice()]
+            usage = _Usage()
+
+        class _Chat:
+            def complete(self, **kw):
+                _Chat.kw = kw
+                return _Resp()
+
+        class _Client:
+            chat = _Chat()
+
+        a = MistralAdapter(api_key="k", default_model="mistral-small")
+        a._client = _Client()
+        out = asyncio.run(a.send("hello", context="be brief"))
+        assert out["text"] == "hello from mistral"
+        assert out["metadata"]["tokens"] == 10
+        assert out["metadata"]["model"] == "mistral-small"
+        # system message prepended when context is given
+        msgs = _Chat.kw["messages"]
+        assert msgs[0]["role"] == "system"
+        assert msgs[0]["content"] == "be brief"
+        assert msgs[-1]["role"] == "user"
+        assert msgs[-1]["content"] == "hello"
+
+    def test_requires_model(self):
+        pytest.importorskip("mistralai")
+        import asyncio
+
+        from admina.plugins.builtin.adapters.mistral import MistralAdapter
+
+        a = MistralAdapter(api_key="k")  # no default_model, no env
+        a._client = object()
+        with pytest.raises(ValueError, match="model"):
+            asyncio.run(a.send("hi"))
+
+
+# ═══════════════════════════════════════════════════════════════
+# 15. BedrockAdapter
+# ═══════════════════════════════════════════════════════════════
+
+
+class TestBedrockAdapter:
+    def test_name_and_supports_model(self):
+        pytest.importorskip("boto3")
+        from admina.plugins.builtin.adapters.bedrock import BedrockAdapter
+
+        a = BedrockAdapter(default_model="anthropic.claude-3-sonnet-20240229-v1:0")
+        assert a.name == "bedrock"
+        assert a.supports_model("anthropic.claude-3") is True
+        assert a.supports_model("meta.llama2-13b") is True
+        assert a.supports_model("amazon.titan-text") is True
+        assert a.supports_model("us.anthropic.claude-3") is True
+        assert a.supports_model("gpt-4o") is False
+
+    def test_send_shapes_request_and_normalizes_response(self):
+        pytest.importorskip("boto3")
+        import asyncio
+
+        from admina.plugins.builtin.adapters.bedrock import BedrockAdapter
+
+        # Fake response mirroring real Bedrock Converse dict response:
+        # resp["output"]["message"]["content"][0]["text"]
+        # resp["usage"]["inputTokens"] + resp["usage"]["outputTokens"]
+        canned_response = {
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": [{"text": "hello from bedrock"}],
+                }
+            },
+            "usage": {
+                "inputTokens": 7,
+                "outputTokens": 5,
+                "totalTokens": 12,
+            },
+            "stopReason": "end_turn",
+        }
+
+        class _FakeClient:
+            def converse(self, **kw):
+                _FakeClient.kw = kw
+                return canned_response
+
+        a = BedrockAdapter(default_model="anthropic.claude-3-sonnet-20240229-v1:0")
+        a._client = _FakeClient()
+        out = asyncio.run(a.send("hello", context="be brief"))
+        assert out["text"] == "hello from bedrock"
+        assert out["metadata"]["tokens"] == 12
+        assert out["metadata"]["model"] == "anthropic.claude-3-sonnet-20240229-v1:0"
+        # Verify Converse request structure
+        kw = _FakeClient.kw
+        assert kw["modelId"] == "anthropic.claude-3-sonnet-20240229-v1:0"
+        assert kw["messages"][0]["role"] == "user"
+        assert kw["messages"][0]["content"] == [{"text": "hello"}]
+        assert kw["system"] == [{"text": "be brief"}]
+        assert "maxTokens" in kw["inferenceConfig"]
+
+    def test_requires_model(self):
+        pytest.importorskip("boto3")
+        import asyncio
+
+        from admina.plugins.builtin.adapters.bedrock import BedrockAdapter
+
+        a = BedrockAdapter()  # no default_model, no env
+        a._client = object()
+        with pytest.raises(ValueError, match="model"):
+            asyncio.run(a.send("hi"))
+
+
+# ═══════════════════════════════════════════════════════════════
+# 16. GeminiAdapter
+# ═══════════════════════════════════════════════════════════════
+
+
+class TestGeminiAdapter:
+    def test_name_and_supports_model(self):
+        pytest.importorskip("google.genai")
+        from admina.plugins.builtin.adapters.gemini import GeminiAdapter
+
+        a = GeminiAdapter(api_key="k", default_model="gemini-1.5-pro")
+        assert a.name == "gemini"
+        assert a.supports_model("gemini-1.5-pro") is True
+        assert a.supports_model("gemini-2.0-flash") is True
+        assert a.supports_model("gpt-4o") is False
+
+    def test_send_shapes_request_and_normalizes_response(self):
+        pytest.importorskip("google.genai")
+        import asyncio
+
+        from admina.plugins.builtin.adapters.gemini import GeminiAdapter
+
+        # Fake response mirroring real google-genai GenerateContentResponse:
+        # resp.text (property)
+        # resp.usage_metadata.prompt_token_count / .candidates_token_count / .total_token_count
+        class _UsageMeta:
+            prompt_token_count = 3
+            candidates_token_count = 7
+            total_token_count = 10
+
+        class _Resp:
+            text = "hello from gemini"
+            usage_metadata = _UsageMeta()
+
+        class _Models:
+            def generate_content(self, **kw):
+                _Models.kw = kw
+                return _Resp()
+
+        class _Client:
+            models = _Models()
+
+        a = GeminiAdapter(api_key="k", default_model="gemini-1.5-pro")
+        a._client = _Client()
+        out = asyncio.run(a.send("hello", context="be brief"))
+        assert out["text"] == "hello from gemini"
+        assert out["metadata"]["tokens"] == 10
+        assert out["metadata"]["model"] == "gemini-1.5-pro"
+        kw = _Models.kw
+        assert kw["model"] == "gemini-1.5-pro"
+        assert kw["contents"] == "hello"
+        assert kw["config"] is not None  # system instruction config present
+
+    def test_requires_model(self):
+        pytest.importorskip("google.genai")
+        import asyncio
+
+        from admina.plugins.builtin.adapters.gemini import GeminiAdapter
+
+        a = GeminiAdapter(api_key="k")  # no default_model, no env
+        a._client = object()
+        with pytest.raises(ValueError, match="model"):
+            asyncio.run(a.send("hi"))
+
+
+# ═══════════════════════════════════════════════════════════════
+# 17. VLLMAdapter
+# ═══════════════════════════════════════════════════════════════
+
+
+class TestVLLMAdapter:
+    def test_name_and_defaults(self):
+        pytest.importorskip("openai")
+        from admina.plugins.builtin.adapters.vllm import VLLMAdapter
+
+        a = VLLMAdapter()
+        assert a.name == "vllm"
+        assert "8000" in a._base_url
+
+    def test_supports_any_model(self):
+        pytest.importorskip("openai")
+        from admina.plugins.builtin.adapters.vllm import VLLMAdapter
+
+        a = VLLMAdapter()
+        assert a.supports_model("meta-llama/Llama-3-8B-Instruct") is True
+        assert a.supports_model("any/hf-id") is True
+        assert a.supports_model("gpt-4o") is True
