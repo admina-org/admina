@@ -22,6 +22,7 @@ Requires: ``pip install openai``  (optional dependency).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -112,7 +113,9 @@ class OpenAIAdapter(BaseModelAdapter):
         messages.append({"role": "user", "content": prompt})
 
         start = time.monotonic()
-        response = client.chat.completions.create(model=model, messages=messages, **kwargs)
+        response = await asyncio.to_thread(
+            lambda: client.chat.completions.create(model=model, messages=messages, **kwargs)
+        )
         latency_ms = (time.monotonic() - start) * 1_000
 
         choice = response.choices[0] if response.choices else None

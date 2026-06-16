@@ -22,6 +22,7 @@ Requires: ``pip install ollama``  (optional dependency).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -97,7 +98,9 @@ class OllamaAdapter(BaseModelAdapter):
         messages.append({"role": "user", "content": prompt})
 
         start = time.monotonic()
-        response = client.chat(model=model, messages=messages, **kwargs)
+        response = await asyncio.to_thread(
+            lambda: client.chat(model=model, messages=messages, **kwargs)
+        )
         latency_ms = (time.monotonic() - start) * 1_000
 
         text = response.get("message", {}).get("content", "")

@@ -1196,3 +1196,54 @@ def test_all_builtin_adapters_register_by_name():
     expected = {"ollama", "openai", "anthropic", "mistral", "bedrock", "gemini", "vllm"}
     missing = expected - names
     assert not missing, f"adapters missing from registry: {missing}"
+
+
+# ═══════════════════════════════════════════════════════════════
+# 19. asyncio.to_thread offload — OpenAI + Ollama
+# ═══════════════════════════════════════════════════════════════
+
+
+def test_openai_send_offloads_blocking_call(monkeypatch):
+    import asyncio
+
+    from admina.plugins.builtin.adapters.openai import OpenAIAdapter
+
+    a = OpenAIAdapter(api_key="k", default_model="gpt-x")
+    # fake client returns a usable response
+    mock_choice = type("C", (), {"message": type("M", (), {"content": "hi"})()})()
+    mock_resp = type("R", (), {"choices": [mock_choice], "usage": type("U", (), {"total_tokens": 4})()})()
+    a._client = type("Cl", (), {"chat": type("Ch", (), {"completions": type("Co", (), {"create": staticmethod(lambda **kw: mock_resp)})()})()})()
+
+    seen = {"to_thread": 0}
+    real = asyncio.to_thread
+
+    async def _spy(fn, *args, **kw):
+        seen["to_thread"] += 1
+        return await real(fn, *args, **kw)
+
+    monkeypatch.setattr(asyncio, "to_thread", _spy)
+    out = asyncio.run(a.send("hello"))
+    assert out["text"] == "hi"
+    assert seen["to_thread"] == 1  # the blocking create() was offloaded
+
+
+def test_ollama_send_offloads_blocking_call(monkeypatch):
+    import asyncio
+
+    from admina.plugins.builtin.adapters.ollama import OllamaAdapter
+
+    a = OllamaAdapter(default_model="llama3")
+    mock_resp = {"message": {"content": "hey"}, "eval_count": 5, "prompt_eval_count": 3}
+    a._client = type("Cl", (), {"chat": staticmethod(lambda **kw: mock_resp)})()
+
+    seen = {"to_thread": 0}
+    real = asyncio.to_thread
+
+    async def _spy(fn, *args, **kw):
+        seen["to_thread"] += 1
+        return await real(fn, *args, **kw)
+
+    monkeypatch.setattr(asyncio, "to_thread", _spy)
+    out = asyncio.run(a.send("hello"))
+    assert out["text"] == "hey"
+    assert seen["to_thread"] == 1  # the blocking chat() was offloaded
