@@ -131,17 +131,17 @@ sequenceDiagram
     C->>P: POST /mcp (JSON-RPC)
     P->>P: Auth middleware
     P->>P: Rate limiting (Redis)
+    P->>LB: Check for reasoning loops
+    alt Loop detected
+        LB-->>P: CIRCUIT_BREAK (429)
+        P-->>C: 429 Too Many Requests
+    end
     P->>FW: Scan for injections
     alt Injection detected
         FW-->>P: BLOCK (403)
         P-->>C: 403 Forbidden
     end
     P->>PII: Redact PII from request
-    P->>LB: Check for reasoning loops
-    alt Loop detected
-        LB-->>P: CIRCUIT_BREAK (429)
-        P-->>C: 429 Too Many Requests
-    end
     P->>G: Plugin guards inspection
     P->>U: Forward to upstream
     U-->>P: Response

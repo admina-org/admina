@@ -35,10 +35,13 @@ functions, and ISO/IEC 42001 clause 8 (Operations).
 | GDPR DPIA Template | Markdown scaffold for Art. 35 DPIA from operator-supplied facts | Python (`admina/domains/compliance/gdpr.py`) | — |
 | Cross-Regulation Matrix | Hand-curated mapping of 12 operational controls across AI Act / NIS2 / GDPR | Python (`admina/domains/compliance/cross_regulation.py`) | — |
 
-All Rust components are pure functions exposed via PyO3. The Python
-fallbacks are behaviorally equivalent for correctness; Rust is faster
-but not more accurate. **Switching engine does not change governance
-outcomes.**
+All Rust components are pure functions exposed via PyO3. Rust is faster,
+but the two engines are not behaviorally equivalent: on an internal
+14-attack evasion corpus the Python firewall blocks all 14 while the Rust
+firewall blocks 7 (plain-text and single-encoding attacks only). The Rust
+PII engine also lacks EU national-ID patterns, spaCy NER, and Luhn
+validation. Python is the higher-recall default; Rust is opt-in for
+latency-sensitive workloads where the narrower coverage is acceptable.
 
 ---
 

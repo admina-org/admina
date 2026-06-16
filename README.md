@@ -220,7 +220,7 @@ flowchart LR
     class P pipe;
 ```
 
-Pipeline (identical in both modes): `PII redaction → firewall → loop-breaker → audit → forensic chain (SHA-256) → OTEL`
+Pipeline (identical in both modes): `loop-breaker → firewall → PII redaction → guards → audit → forensic chain (SHA-256) → OTEL`
 
 ## The 4 Governance Domains
 

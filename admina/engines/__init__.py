@@ -392,8 +392,8 @@ def get_pii_engine(name: str | None = None) -> PIIBridge:
     if factory is None:
         raise ValueError(
             f"Unknown pii_engine {name!r}. Available: "
-            f"{sorted(_PII_ENGINE_FACTORIES)}. 'presidio' requires "
-            f"admina-framework[presidio] (0.10+)."
+            f"{sorted(_PII_ENGINE_FACTORIES)}. "
+            "(A Presidio-backed engine is planned for a later release.)"
         )
     return factory()
 
