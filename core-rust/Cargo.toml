@@ -15,7 +15,7 @@
 
 [package]
 name = "admina_core"
-version = "0.9.5"
+version = "0.10.0"
 edition = "2021"
 description = "Admina governance engines — Rust core with Python bindings"
 license = "Apache-2.0"

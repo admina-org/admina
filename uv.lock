@@ -20,7 +20,7 @@ wheels = [
 
 [[package]]
 name = "admina-framework"
-version = "0.9.5"
+version = "0.10.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
@@ -141,7 +141,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "admina-core", marker = "extra == 'rust'", specifier = ">=0.9.3,<0.10" },
+    { name = "admina-core", marker = "extra == 'rust'", specifier = ">=0.9.3,<0.11" },
     { name = "admina-framework", extras = ["openai", "ollama", "anthropic", "mistral", "gemini", "bedrock"], marker = "extra == 'adapters'" },
     { name = "admina-framework", extras = ["proxy", "nlp", "telemetry"], marker = "extra == 'full'" },
     { name = "admina-framework", extras = ["proxy", "nlp", "telemetry", "adapters"], marker = "extra == 'all'" },

@@ -19,7 +19,7 @@ build-backend = "maturin"
 
 [project]
 name = "admina-core"
-version = "0.9.5"
+version = "0.10.0"
 description = "Admina governance engines — Rust core with Python bindings (firewall, PII, loop breaker, hash chain)"
 readme = "README.md"
 requires-python = ">=3.11"
