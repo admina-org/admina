@@ -22,13 +22,19 @@ Usage::
 from __future__ import annotations
 
 from admina.sdk.compliance_kit import ComplianceKit
+from admina.sdk.errors import RetryableUpstreamError, TerminalUpstreamError
 from admina.sdk.governed_agent import GovernedAgent
 from admina.sdk.governed_data import GovernedData
 from admina.sdk.governed_model import GovernedModel
+from admina.sdk.retry import RetryPolicy, run_with_retry
 
 __all__ = [
     "GovernedModel",
     "GovernedData",
     "GovernedAgent",
     "ComplianceKit",
+    "RetryPolicy",
+    "run_with_retry",
+    "RetryableUpstreamError",
+    "TerminalUpstreamError",
 ]
