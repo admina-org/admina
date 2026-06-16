@@ -28,6 +28,7 @@ from typing import Any
 from admina.core.event_bus import EventType, GovernanceEvent, bus
 from admina.plugins.base import BaseModelAdapter
 from admina.sdk._compat import run_sync
+from admina.sdk.retry import RetryPolicy, run_with_retry
 
 __all__ = ["GovernedModel", "GovernedResponse", "BaseModelAdapter"]
 
@@ -98,6 +99,7 @@ class GovernedModel:
         loop_detection: bool = False,
         governance_guards: list | None = None,
         mode: str = "enforce",
+        retry: RetryPolicy | None = None,
     ) -> None:
         """Initialize GovernedModel.
 
@@ -111,6 +113,8 @@ class GovernedModel:
             loop_detection: If True, run loop detection when a session_id is supplied.
             governance_guards: Optional list of pluggable guard objects.
             mode: Governance enforcement mode.
+            retry: Optional RetryPolicy for transient adapter errors. Default None
+                (single attempt, unchanged behaviour).
         """
         self.model_name = model_name
         self._adapter = adapter
@@ -120,6 +124,7 @@ class GovernedModel:
         self._loop_detection = loop_detection
         self._guards = governance_guards or []
         self._mode = mode
+        self._retry = retry
         self._session_id = str(uuid.uuid4())
         self._pii_redactor: Any = None
         self._firewall: Any = None
@@ -257,7 +262,10 @@ class GovernedModel:
 
         # 5. Call adapter
         kwargs.setdefault("model", self.model_name)
-        adapter_result = await self._adapter.send(redacted_prompt, context=context, **kwargs)
+        adapter_result = await run_with_retry(
+            lambda: self._adapter.send(redacted_prompt, context=context, **kwargs),
+            self._retry,
+        )
         raw_text = adapter_result.get("text", "")
         adapter_metadata = adapter_result.get("metadata", {})
 

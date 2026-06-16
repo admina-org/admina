@@ -430,3 +430,77 @@ def test_governed_model_blocks_real_injection_with_default_engine():
     assert resp.action == "BLOCK"
     assert resp.text == ""
     assert adapter.called is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: GovernedModel retry
+# ---------------------------------------------------------------------------
+
+
+def test_governed_model_retry_succeeds_after_transient():
+    """Adapter raises RetryableUpstreamError twice then succeeds → ask() returns success, adapter called 3×."""
+    import asyncio
+
+    from admina.sdk.errors import RetryableUpstreamError
+    from admina.sdk.governed_model import GovernedModel
+    from admina.sdk.retry import RetryPolicy
+
+    class _TransientAdapter:
+        name = "transient"
+        calls = 0
+
+        async def send(self, prompt, context=None, **kw):
+            _TransientAdapter.calls += 1
+            if _TransientAdapter.calls < 3:
+                raise RetryableUpstreamError("transient")
+            return {"text": "success", "metadata": {}}
+
+        def supports_model(self, m):
+            return True
+
+    adapter = _TransientAdapter()
+    gm = GovernedModel(
+        "m",
+        adapter=adapter,
+        audit=False,
+        firewall_enabled=False,
+        pii_redaction=False,
+        retry=RetryPolicy(max_attempts=3, base_delay_s=0),
+    )
+    resp = asyncio.run(gm.ask("hello"))
+    assert resp.text == "success"
+    assert _TransientAdapter.calls == 3
+
+
+def test_governed_model_retry_none_propagates_after_one_attempt():
+    """With retry=None (default), a transient error propagates after a single attempt."""
+    import asyncio
+
+    import pytest
+
+    from admina.sdk.errors import RetryableUpstreamError
+    from admina.sdk.governed_model import GovernedModel
+
+    class _AlwaysTransient:
+        name = "always"
+        calls = 0
+
+        async def send(self, prompt, context=None, **kw):
+            _AlwaysTransient.calls += 1
+            raise RetryableUpstreamError("transient")
+
+        def supports_model(self, m):
+            return True
+
+    adapter = _AlwaysTransient()
+    gm = GovernedModel(
+        "m",
+        adapter=adapter,
+        audit=False,
+        firewall_enabled=False,
+        pii_redaction=False,
+        # retry=None is the default
+    )
+    with pytest.raises(RetryableUpstreamError):
+        asyncio.run(gm.ask("hello"))
+    assert _AlwaysTransient.calls == 1
