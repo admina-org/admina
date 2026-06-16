@@ -1211,8 +1211,20 @@ def test_openai_send_offloads_blocking_call(monkeypatch):
     a = OpenAIAdapter(api_key="k", default_model="gpt-x")
     # fake client returns a usable response
     mock_choice = type("C", (), {"message": type("M", (), {"content": "hi"})()})()
-    mock_resp = type("R", (), {"choices": [mock_choice], "usage": type("U", (), {"total_tokens": 4})()})()
-    a._client = type("Cl", (), {"chat": type("Ch", (), {"completions": type("Co", (), {"create": staticmethod(lambda **kw: mock_resp)})()})()})()
+    mock_resp = type(
+        "R", (), {"choices": [mock_choice], "usage": type("U", (), {"total_tokens": 4})()}
+    )()
+    a._client = type(
+        "Cl",
+        (),
+        {
+            "chat": type(
+                "Ch",
+                (),
+                {"completions": type("Co", (), {"create": staticmethod(lambda **kw: mock_resp)})()},
+            )()
+        },
+    )()
 
     seen = {"to_thread": 0}
     real = asyncio.to_thread
