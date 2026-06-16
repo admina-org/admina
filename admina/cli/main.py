@@ -168,6 +168,7 @@ def _scaffold_project(
     context: dict[str, object] = {
         "project_name": project_name,
         "domains": {d: d in domains for d in AVAILABLE_DOMAINS},
+        "admina_version": __version__,
     }
 
     # admina.yaml
@@ -400,6 +401,7 @@ def _maybe_regenerate_compose(project_dir: Path, data: dict[str, object]) -> boo
         "project_name": project_name,
         "domains": {d: d in domains for d in AVAILABLE_DOMAINS},
         "with_llm": True,  # init scaffolds the full template; admina dev gates at runtime
+        "admina_version": __version__,
     }
     _generate_file(env, "docker-compose.yml.j2", project_dir / "docker-compose.yml", context)
     hash_file.write_text(current_hash)
@@ -688,6 +690,7 @@ def _run_compose(
             "project_name": project_name,
             "domains": {d: d in domains for d in AVAILABLE_DOMAINS},
             "with_llm": with_llm,
+            "admina_version": __version__,
         }
         _generate_file(env_j, "docker-compose.yml.j2", project_dir / "docker-compose.yml", context)
         hash_file.write_text(current_hash)

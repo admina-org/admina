@@ -141,6 +141,22 @@ class TestScaffoldProject:
         assert "dashboard" in data["services"]
         assert "redis" in data["services"]
 
+    def test_docker_compose_image_tags_use_framework_version(self, tmp_project: Path) -> None:
+        from admina import __version__
+
+        tmp_project.mkdir(parents=True)
+        _scaffold_project(
+            tmp_project,
+            list(AVAILABLE_DOMAINS.keys()),
+            "test-project",
+        )
+        data = yaml.safe_load((tmp_project / "docker-compose.yml").read_text())
+        assert data["services"]["proxy"]["image"] == f"ghcr.io/admina-org/admina-proxy:{__version__}"
+        assert data["services"]["dashboard"]["image"] == f"ghcr.io/admina-org/admina-dashboard:{__version__}"
+        # Must not contain stale hardcoded version
+        compose_text = (tmp_project / "docker-compose.yml").read_text()
+        assert "0.9.0" not in compose_text
+
     def test_docker_compose_without_compliance(self, tmp_project: Path) -> None:
         tmp_project.mkdir(parents=True)
         _scaffold_project(tmp_project, ["agent_security"], "test-project")

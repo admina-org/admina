@@ -7,9 +7,9 @@ services:
   # ── Core: Governance Proxy ──────────────────────────────
 {% if domains.agent_security %}
   proxy:
-    # Pinned to v0.9.0 — change to :latest to track the rolling tag.
+    # Pinned to v{{ admina_version }} — change to :latest to track the rolling tag.
     # Images are published by .github/workflows/release-docker.yml on tag push.
-    image: ghcr.io/admina-org/admina-proxy:0.9.0
+    image: ghcr.io/admina-org/admina-proxy:{{ admina_version }}
     container_name: {{ project_name }}-proxy
     ports:
       - "8080:8080"
@@ -40,7 +40,7 @@ services:
 
   # ── Dashboard ───────────────────────────────────────────
   dashboard:
-    image: ghcr.io/admina-org/admina-dashboard:0.9.0
+    image: ghcr.io/admina-org/admina-dashboard:{{ admina_version }}
     container_name: {{ project_name }}-dashboard
     ports:
       - "3000:80"
