@@ -13,6 +13,23 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-06-17
+
+Security patch release. Updates two dependencies flagged by upstream
+advisories. No API or behaviour changes.
+
+### Security
+
+- **cryptography** updated to 49.0.0 (from 47.0.0), resolving the
+  high-severity advisory affecting `< 48.0.1`. The dependency constraint
+  ceiling is widened from `<48` to `<50`.
+- **pyo3** — the Rust binding behind the optional `admina-core` accelerator
+  — updated 0.24 → 0.29, resolving the high + medium RUSTSEC advisory
+  affecting `< 0.29.0`. The binding is migrated to the pyo3 0.29 `attach`
+  API (`Python::with_gil` → `Python::attach`, `PyObject` → `Py<PyAny>`).
+  No functional change: the Rust engines remain at parity with the Python
+  implementations, verified by the full suite with `admina-core` installed.
+
 ## [0.10.0] — 2026-06-16
 
 Model-adapter and governance-unification release. Five new provider
@@ -524,7 +541,9 @@ environment in `docker-compose.benchmark.yml`.
 
 ---
 
-[Unreleased]: https://github.com/admina-org/admina/compare/v0.9.5...HEAD
+[Unreleased]: https://github.com/admina-org/admina/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/admina-org/admina/compare/v0.10.0...v0.10.1
+[0.10.0]: https://github.com/admina-org/admina/compare/v0.9.5...v0.10.0
 [0.9.5]: https://github.com/admina-org/admina/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/admina-org/admina/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/admina-org/admina/compare/v0.9.2...v0.9.3
