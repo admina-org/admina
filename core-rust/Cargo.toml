@@ -31,7 +31,7 @@ crate-type = ["cdylib", "rlib"]
 # pulling in whichever Python framework the build environment had (e.g.
 # Homebrew Python 3.14), causing a Fatal Python error at import time on
 # Python 3.11/3.12 runtimes.
-pyo3 = { version = "0.24", features = ["extension-module", "abi3-py311"] }
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py311"] }
 regex = "1.10"
 sha2 = "0.10"
 hex = "0.4"

@@ -28,8 +28,8 @@ fn version() -> &'static str {
 
 /// Returns engine info for diagnostics.
 #[pyfunction]
-fn engine_info() -> PyResult<PyObject> {
-    Python::with_gil(|py| {
+fn engine_info() -> PyResult<Py<PyAny>> {
+    Python::attach(|py| {
         let dict = pyo3::types::PyDict::new(py);
         dict.set_item("engine", "rust")?;
         dict.set_item("version", env!("CARGO_PKG_VERSION"))?;

@@ -62,7 +62,7 @@ fn get_pii_patterns() -> &'static Vec<PiiPattern> {
 }
 
 /// Result of PII scanning.
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct PiiResult {
     #[pyo3(get)]
@@ -77,8 +77,8 @@ pub struct PiiResult {
 
 #[pymethods]
 impl PiiResult {
-    fn to_dict(&self) -> PyResult<PyObject> {
-        Python::with_gil(|py| {
+    fn to_dict(&self) -> PyResult<Py<PyAny>> {
+        Python::attach(|py| {
             let dict = pyo3::types::PyDict::new(py);
             dict.set_item("redacted_text", &self.redacted_text)?;
             dict.set_item("count", self.count)?;
@@ -161,8 +161,8 @@ impl RustPiiScanner {
         }
     }
 
-    fn get_stats(&self) -> PyResult<PyObject> {
-        Python::with_gil(|py| {
+    fn get_stats(&self) -> PyResult<Py<PyAny>> {
+        Python::attach(|py| {
             let dict = pyo3::types::PyDict::new(py);
             dict.set_item("total_scans", self.total_scans)?;
             dict.set_item("total_redactions", self.total_redactions)?;

@@ -221,7 +221,7 @@ fn heuristic_score(text: &str) -> (f64, Vec<String>) {
 }
 
 /// Result of a firewall check.
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct FirewallResult {
     #[pyo3(get)]
@@ -238,8 +238,8 @@ pub struct FirewallResult {
 
 #[pymethods]
 impl FirewallResult {
-    fn to_dict(&self) -> PyResult<PyObject> {
-        Python::with_gil(|py| {
+    fn to_dict(&self) -> PyResult<Py<PyAny>> {
+        Python::attach(|py| {
             let dict = pyo3::types::PyDict::new(py);
             dict.set_item("is_injection", self.is_injection)?;
             dict.set_item("risk_level", &self.risk_level)?;
@@ -338,8 +338,8 @@ impl RustFirewall {
         }
     }
 
-    fn get_stats(&self) -> PyResult<PyObject> {
-        Python::with_gil(|py| {
+    fn get_stats(&self) -> PyResult<Py<PyAny>> {
+        Python::attach(|py| {
             let dict = pyo3::types::PyDict::new(py);
             dict.set_item("checks_total", self.checks_total)?;
             dict.set_item("injections_detected", self.injections_detected)?;
