@@ -104,7 +104,7 @@ impl RustLoopBreaker {
 
     /// Check if a request is part of a reasoning loop.
     /// Returns dict with is_loop, similarity, consecutive_count.
-    fn check(&mut self, session_id: &str, content: &str) -> PyResult<PyObject> {
+    fn check(&mut self, session_id: &str, content: &str) -> PyResult<Py<PyAny>> {
         self.total_checks += 1;
         let tf = term_frequencies(content);
 
@@ -144,7 +144,7 @@ impl RustLoopBreaker {
             session.vectors.remove(0);
         }
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let dict = pyo3::types::PyDict::new(py);
             dict.set_item("is_loop", is_loop)?;
             dict.set_item("similarity", max_sim)?;
@@ -160,8 +160,8 @@ impl RustLoopBreaker {
         self.sessions.remove(session_id);
     }
 
-    fn get_stats(&self) -> PyResult<PyObject> {
-        Python::with_gil(|py| {
+    fn get_stats(&self) -> PyResult<Py<PyAny>> {
+        Python::attach(|py| {
             let dict = pyo3::types::PyDict::new(py);
             dict.set_item("total_checks", self.total_checks)?;
             dict.set_item("loops_detected", self.loops_detected)?;

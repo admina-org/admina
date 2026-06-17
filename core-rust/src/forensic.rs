@@ -37,7 +37,7 @@ impl RustHashChain {
 
     /// Create a new hash-chained record.
     /// Returns dict with hash, previous_hash, sequence, timestamp.
-    fn record(&mut self, event_id: &str, data: &str) -> PyResult<PyObject> {
+    fn record(&mut self, event_id: &str, data: &str) -> PyResult<Py<PyAny>> {
         self.sequence += 1;
         self.total_records += 1;
         let now = Utc::now();
@@ -57,7 +57,7 @@ impl RustHashChain {
         let prev = self.previous_hash.clone();
         self.previous_hash = hash.clone();
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let dict = pyo3::types::PyDict::new(py);
             dict.set_item("hash", &hash)?;
             dict.set_item("previous_hash", &prev)?;
@@ -72,14 +72,14 @@ impl RustHashChain {
 
     /// Verify a chain of records.
     /// Takes a list of (hash, previous_hash) tuples, returns (valid, broken_at).
-    fn verify_chain(&self, chain: Vec<(String, String)>) -> PyResult<PyObject> {
-        Python::with_gil(|py| {
+    fn verify_chain(&self, chain: Vec<(String, String)>) -> PyResult<Py<PyAny>> {
+        Python::attach(|py| {
             let dict = pyo3::types::PyDict::new(py);
 
             if chain.is_empty() {
                 dict.set_item("valid", true)?;
                 dict.set_item("length", 0)?;
-                return Ok(dict.into());
+                return Ok(dict.unbind().into());
             }
 
             for i in 1..chain.len() {
@@ -88,7 +88,7 @@ impl RustHashChain {
                     dict.set_item("broken_at", i)?;
                     dict.set_item("expected", &chain[i - 1].0)?;
                     dict.set_item("found", &chain[i].1)?;
-                    return Ok(dict.into());
+                    return Ok(dict.unbind().into());
                 }
             }
 
@@ -106,8 +106,8 @@ impl RustHashChain {
         hex::encode(hasher.finalize())
     }
 
-    fn get_stats(&self) -> PyResult<PyObject> {
-        Python::with_gil(|py| {
+    fn get_stats(&self) -> PyResult<Py<PyAny>> {
+        Python::attach(|py| {
             let dict = pyo3::types::PyDict::new(py);
             dict.set_item("total_records", self.total_records)?;
             dict.set_item("current_sequence", self.sequence)?;
