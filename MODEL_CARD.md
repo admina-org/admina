@@ -397,11 +397,55 @@ inside the benchmark script. These are **performance** metrics, not
 
 ### Accuracy benchmarks
 
-Admina v0.9.0 does **not** ship an accuracy benchmark suite for the
-firewall or PII scanner against a public adversarial dataset. This is a
-known gap. Contributions adding evaluation against public datasets
-(e.g. `garak`, `PromptInject`, AI red-team corpora) are welcome and
-prioritized.
+Admina ships `admina-redteam`, a reproducible detection-efficacy suite
+(`admina/redteam/`, CLI `scripts/redteam.py`). It runs the injection firewall,
+PII redactor and loop-breaker against original, hash-pinned, multilingual
+(EN/IT/FR/ES/DE) corpora on **both** the Python and Rust engines and emits
+precision/recall/FPR plus a per-class Python-vs-Rust matrix. A soft CI gate
+(`tests/test_redteam_efficacy.py`) fails the build on any recall regression or
+new false positive versus the committed baseline
+(`admina/redteam/baselines/baseline.json`).
+
+**Gate methodology.** Python detectors are **mandatory**: a detector the
+baseline declares but that did not run (e.g. an optional extra went missing)
+fails the gate rather than passing vacuously. The Rust engine is an **optional
+accelerator** — its absence is skipped. The PII row reports **type-level
+recall** — a micro-average over PII *types* (see `admina/redteam/metrics.py`),
+**not** the sample-level recall used for injection/loop — and the baseline
+**pins the PII measurement mode** (`nlp:<model>@<version>` vs regex-only),
+because the Python redactor's recall and false positives depend on whether spaCy
+NER is active. The gate compares only within the same pinned mode; if a mandatory
+(Python) detector's pinned mode is not reproduced, the gate **fails** with an
+actionable message (match the environment or regenerate the baseline) rather than
+silently skipping — so a real regression measured in the wrong mode can never
+pass. A python detector that ran but is absent from the baseline fails too.
+
+**First measured baseline** (Admina's own corpus — **not** a third-party PINT
+score; the corpus is small and EN/EU-focused, intended to grow). Injection/loop
+are sample-level recall; PII is type-level recall measured in `nlp:en_core_web_sm`
+mode (the mode pinned in the baseline):
+
+| Detector  | Python recall | Rust recall | False positives (py · rust) |
+|-----------|:---:|:---:|:---:|
+| injection | 57% (sample-level) | 35% | 0/27 · 0/27 |
+| pii       | 100% (type-level, nlp) | 66% (type-level) | 6/16 · 0/16 |
+| loop      | 82% (sample-level) | 91% | 0/11 · 0/11 |
+
+Notable measured gaps (run `python scripts/redteam.py --format md` for the full
+per-class matrix): the Rust firewall scores **0%** on base64 / homoglyph /
+leetspeak / ROT13 / hyphenation evasions that the Python engine catches (no
+`normalize_text()` pass — the fast path is the least thorough); the Rust PII
+scanner scores **0%** on IBAN / codice-fiscale / DNI (regex-only, fewer patterns);
+the Python loop-breaker misses counter-reset loops (last-5 window) that the Rust
+full-window engine catches. The Python PII false positives are spaCy NER
+mis-firing `PERSON`/`ORG` on non-English negative samples — which is also why
+the PII baseline pins the NER mode. These measured gaps are consistent with §1:
+the two engines are **not** behaviorally equivalent — Python is the
+higher-recall default, Rust the narrower-coverage opt-in.
+
+This replaces the previous "no accuracy benchmark suite" gap. Contributions
+extending the corpora (more languages, larger adversarial sets, `garak` /
+`PromptInject` adapters) remain welcome and prioritized.
 
 ---
 

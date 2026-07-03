@@ -1,0 +1,39 @@
+{
+  "injection": {
+    "python": {
+      "recall": 0.5675675675675675,
+      "fp": 0,
+      "fp_samples": 27
+    },
+    "rust": {
+      "recall": 0.35135135135135137,
+      "fp": 0,
+      "fp_samples": 27
+    }
+  },
+  "pii": {
+    "python": {
+      "type_recall": 1.0,
+      "fp": 6,
+      "fp_samples": 16,
+      "mode": "nlp:en_core_web_sm@3.8.0"
+    },
+    "rust": {
+      "type_recall": 0.6551724137931034,
+      "fp": 0,
+      "fp_samples": 16
+    }
+  },
+  "loop": {
+    "python": {
+      "recall": 0.8181818181818182,
+      "fp": 0,
+      "fp_samples": 11
+    },
+    "rust": {
+      "recall": 0.9090909090909091,
+      "fp": 0,
+      "fp_samples": 11
+    }
+  }
+}
