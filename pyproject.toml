@@ -176,6 +176,9 @@ admina = [
     "dashboard/static/*",
     "dashboard/static/vendor/*",
     "cli/templates/*",
+    "redteam/corpora/*.jsonl",
+    "redteam/corpora/SHA256SUMS",
+    "redteam/baselines/*.json",
 ]
 
 [project.scripts]
