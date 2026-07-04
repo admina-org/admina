@@ -136,3 +136,61 @@ def test_boundary_entity_not_emitted_before_complete() -> None:
     r = StreamRedactor(FakeEmailRedactor(), window_chars=32)
     early = r.feed("mail: alice@")
     assert all("alice@" not in d for d in early)
+
+
+class FakeTokenRedactor:
+    """Masks a single fixed token; the token has no partial match."""
+
+    TOKEN = "SECRET-TOKEN-ABCDEF-0123456789"  # length 30
+
+    def redact(self, text: str) -> dict:
+        n = text.count(self.TOKEN)
+        return {
+            "redacted_text": text.replace(self.TOKEN, "[TOKEN]"),
+            "count": n,
+            "entities": [{"type": "TOKEN"} for _ in range(n)],
+            "categories": ["TOKEN"] if n else [],
+        }
+
+
+def test_unicode_chunk_split_is_lossless_and_redacts() -> None:
+    # Accented text with an email, fed one code point at a time.
+    text = "señor josé écrit à bruno@mär.io ürgent"
+    r = StreamRedactor(FakeEmailRedactor(), window_chars=12)
+    out: list[str] = []
+    for ch in text:
+        out.extend(r.feed(ch))
+    tail, summary = r.finish()
+    result = "".join(out) + tail
+    assert "bruno@mär.io" not in result
+    assert "[EMAIL]" in result
+    # Non-PII characters (accents) survive intact.
+    assert "señor josé" in result
+    assert summary["pii_count"] == 1
+
+
+def test_entity_longer_than_window_can_slip() -> None:
+    # Documents the contract: window must exceed the longest entity.
+    tok = FakeTokenRedactor.TOKEN  # 30 chars
+    small = StreamRedactor(FakeTokenRedactor(), window_chars=8)
+    out: list[str] = []
+    out.extend(small.feed("x" * 8))  # emits the leading 'x' padding
+    for ch in tok:  # token arrives char-by-char
+        out.extend(small.feed(ch))
+    tail, _ = small.finish()
+    slipped = "".join(out) + tail
+    # With window(8) < entity(30), part of the token was emitted before the
+    # whole entity was visible → it leaks. This is the measured limitation.
+    assert tok in slipped
+
+    # A window above the entity length catches it fully.
+    big = StreamRedactor(FakeTokenRedactor(), window_chars=64)
+    out2: list[str] = []
+    out2.extend(big.feed("x" * 8))
+    for ch in tok:
+        out2.extend(big.feed(ch))
+    tail2, summary2 = big.finish()
+    caught = "".join(out2) + tail2
+    assert tok not in caught
+    assert "[TOKEN]" in caught
+    assert summary2["pii_count"] == 1
