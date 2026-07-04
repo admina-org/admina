@@ -116,3 +116,23 @@ def test_pii_count_zero_when_clean() -> None:
         r.feed(ch)
     _tail, summary = r.finish()
     assert summary["pii_count"] == 0
+
+
+def test_email_split_across_deltas_is_redacted() -> None:
+    # The canonical case from the spec: "john.doe@" + "example.com".
+    r = StreamRedactor(FakeEmailRedactor(), window_chars=32)
+    out: list[str] = []
+    out.extend(r.feed("please contact john.doe@"))
+    out.extend(r.feed("example.com for access"))
+    tail, summary = r.finish()
+    result = "".join(out) + tail
+    assert "john.doe@example.com" not in result
+    assert "[EMAIL]" in result
+    assert summary["pii_count"] == 1
+
+
+def test_boundary_entity_not_emitted_before_complete() -> None:
+    # The left half of the email must never leak in an early delta.
+    r = StreamRedactor(FakeEmailRedactor(), window_chars=32)
+    early = r.feed("mail: alice@")
+    assert all("alice@" not in d for d in early)
