@@ -75,3 +75,23 @@ def test_reassembled_clean_text_is_lossless() -> None:
     r = StreamRedactor(FakeEmailRedactor(), window_chars=8)
     got = _drain(r, list(text))  # one char per feed
     assert got == text
+
+
+def test_head_emitted_once_window_exceeded() -> None:
+    r = StreamRedactor(FakeEmailRedactor(), window_chars=4)
+    # 5 chars > window(4): the leading char(s) beyond the trailing window emit.
+    emitted = r.feed("abcde")
+    assert emitted == ["a"]  # last 4 raw chars ("bcde") stay pending
+    tail, _ = r.finish()
+    assert tail == "bcde"
+
+
+def test_lag_is_about_one_window() -> None:
+    r = StreamRedactor(FakeEmailRedactor(), window_chars=4)
+    out: list[str] = []
+    for ch in "hello world":  # 11 chars
+        out.extend(r.feed(ch))
+    # At most the last `window` chars remain unemitted before finish().
+    assert len("".join(out)) >= 11 - 4
+    tail, _ = r.finish()
+    assert "".join(out) + tail == "hello world"
