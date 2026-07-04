@@ -95,3 +95,24 @@ def test_lag_is_about_one_window() -> None:
     assert len("".join(out)) >= 11 - 4
     tail, _ = r.finish()
     assert "".join(out) + tail == "hello world"
+
+
+def test_pii_wholly_inside_stream_is_redacted_and_counted() -> None:
+    r = StreamRedactor(FakeEmailRedactor(), window_chars=8)
+    text = "reach me at bob@corp.io later today please"
+    out: list[str] = []
+    for ch in text:
+        out.extend(r.feed(ch))
+    tail, summary = r.finish()
+    result = "".join(out) + tail
+    assert "bob@corp.io" not in result
+    assert "[EMAIL]" in result
+    assert summary["pii_count"] == 1
+
+
+def test_pii_count_zero_when_clean() -> None:
+    r = StreamRedactor(FakeEmailRedactor(), window_chars=8)
+    for ch in "no personal data here at all":
+        r.feed(ch)
+    _tail, summary = r.finish()
+    assert summary["pii_count"] == 0
