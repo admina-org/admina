@@ -120,7 +120,11 @@ def test_pii_count_zero_when_clean() -> None:
 
 def test_email_split_across_deltas_is_redacted() -> None:
     # The canonical case from the spec: "john.doe@" + "example.com".
-    r = StreamRedactor(FakeEmailRedactor(), window_chars=32)
+    # window_chars=16 keeps the buffer just past the window once the second
+    # delta arrives, while the email still straddles the emit boundary, so
+    # feed() must hit the straddle guard (streaming.py ~line 69) and hold the
+    # whole buffer rather than emit a half-redacted head.
+    r = StreamRedactor(FakeEmailRedactor(), window_chars=16)
     out: list[str] = []
     out.extend(r.feed("please contact john.doe@"))
     out.extend(r.feed("example.com for access"))
@@ -132,10 +136,22 @@ def test_email_split_across_deltas_is_redacted() -> None:
 
 
 def test_boundary_entity_not_emitted_before_complete() -> None:
-    # The left half of the email must never leak in an early delta.
-    r = StreamRedactor(FakeEmailRedactor(), window_chars=32)
-    early = r.feed("mail: alice@")
+    # The left half of the email must never leak in an early delta. With
+    # window_chars=12, the buffer exceeds the window once the second delta
+    # completes the email, while the email still straddles the emit
+    # boundary — this must hit the straddle guard (streaming.py ~line 69),
+    # which holds the *entire* buffer back (returns []) rather than emitting
+    # the mismatched head.
+    r = StreamRedactor(FakeEmailRedactor(), window_chars=12)
+    early: list[str] = []
+    early.extend(r.feed("mail: alice@"))
+    early.extend(r.feed("example.com for access"))
+    assert early == []
     assert all("alice@" not in d for d in early)
+    tail, summary = r.finish()
+    assert "alice@example.com" not in tail
+    assert "[EMAIL]" in tail
+    assert summary["pii_count"] == 1
 
 
 class FakeTokenRedactor:
