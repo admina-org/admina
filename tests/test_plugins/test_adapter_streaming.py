@@ -20,7 +20,10 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from admina.plugins.builtin.adapters.openai import OpenAIAdapter
+from admina.plugins.builtin.adapters.vllm import VLLMAdapter
 
 
 def _openai_chunk(text: str | None) -> SimpleNamespace:
@@ -62,3 +65,27 @@ def test_openai_send_stream_yields_text_deltas() -> None:
 def test_openai_send_stream_skips_empty_content() -> None:
     # A trailing chunk with content=None (finish frame) must be dropped.
     assert _collect_openai(["a", None, "b"]) == ["a", "b"]
+
+
+def test_vllm_send_stream_requires_model() -> None:
+    adapter = VLLMAdapter(default_model=None)
+
+    async def _run() -> None:
+        async for _ in adapter.send_stream("hi"):
+            pass
+
+    with pytest.raises(ValueError):
+        asyncio.run(_run())
+
+
+def test_vllm_send_stream_delegates_when_model_present() -> None:
+    adapter = VLLMAdapter(default_model="meta-llama/Llama-3-8B")
+    adapter._client = _FakeOpenAIClient(["a", "b"])
+
+    async def _run() -> list[str]:
+        out: list[str] = []
+        async for d in adapter.send_stream("hi"):
+            out.append(d)
+        return out
+
+    assert asyncio.run(_run()) == ["a", "b"]

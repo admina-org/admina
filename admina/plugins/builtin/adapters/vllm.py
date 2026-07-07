@@ -80,6 +80,22 @@ class VLLMAdapter(OpenAIAdapter):
             )
         return await super().send(prompt, context=context, **kwargs)
 
+    async def send_stream(
+        self,
+        prompt: str,
+        context: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Stream from the vLLM server, requiring an explicit model id."""
+        model = kwargs.get("model") or self._default_model
+        if not model:
+            raise ValueError(
+                "VLLMAdapter needs a model: pass model=... or set ADMINA_VLLM_MODEL "
+                "(the model id served by your vLLM instance)"
+            )
+        async for delta in super().send_stream(prompt, context=context, **kwargs):
+            yield delta
+
     def supports_model(self, model_name: str) -> bool:
         """Return ``True`` for any model name (vLLM serves whatever is loaded)."""
         return True
