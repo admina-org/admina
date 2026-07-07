@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 
+from admina.plugins.builtin.adapters.anthropic import AnthropicAdapter
 from admina.plugins.builtin.adapters.ollama import OllamaAdapter
 from admina.plugins.builtin.adapters.openai import OpenAIAdapter
 from admina.plugins.builtin.adapters.vllm import VLLMAdapter
@@ -112,3 +113,52 @@ def test_ollama_send_stream_yields_message_content() -> None:
         return out
 
     assert asyncio.run(_run()) == ["Ci", "ao"]
+
+
+def _anthropic_event(evt_type: str, text: str | None = None) -> SimpleNamespace:
+    delta = SimpleNamespace(text=text) if text is not None else SimpleNamespace()
+    return SimpleNamespace(type=evt_type, delta=delta)
+
+
+class _FakeMessages:
+    def __init__(self, events: list[SimpleNamespace]) -> None:
+        self._events = events
+
+    def create(self, **kwargs: Any):
+        assert kwargs.get("stream") is True
+        return iter(self._events)
+
+
+class _FakeAnthropicClient:
+    def __init__(self, events: list[SimpleNamespace]) -> None:
+        self.messages = _FakeMessages(events)
+
+
+def test_anthropic_send_stream_yields_content_block_deltas() -> None:
+    events = [
+        _anthropic_event("message_start"),
+        _anthropic_event("content_block_delta", "Hel"),
+        _anthropic_event("content_block_delta", "lo"),
+        _anthropic_event("message_stop"),
+    ]
+    adapter = AnthropicAdapter(default_model="claude-3-5-sonnet-20241022")
+    adapter._client = _FakeAnthropicClient(events)
+
+    async def _run() -> list[str]:
+        out: list[str] = []
+        async for d in adapter.send_stream("hi"):
+            out.append(d)
+        return out
+
+    assert asyncio.run(_run()) == ["Hel", "lo"]
+
+
+def test_anthropic_send_stream_requires_model() -> None:
+    adapter = AnthropicAdapter(default_model=None)
+
+    async def _run() -> None:
+        async for _ in adapter.send_stream("hi"):
+            pass
+
+    with pytest.raises(ValueError):
+        asyncio.run(_run())
