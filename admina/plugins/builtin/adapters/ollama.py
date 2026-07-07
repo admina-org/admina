@@ -29,6 +29,7 @@ import time
 from typing import Any
 
 from admina.plugins.base import BaseModelAdapter
+from admina.plugins.builtin.adapters._streaming import aiter_sync
 
 logger = logging.getLogger("admina.plugins.adapters.ollama")
 
@@ -114,6 +115,29 @@ class OllamaAdapter(BaseModelAdapter):
                 "model": model,
             },
         }
+
+    async def send_stream(
+        self,
+        prompt: str,
+        context: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Stream text deltas from Ollama's chat endpoint."""
+        client = self._get_client()
+        model = kwargs.pop("model", self._default_model)
+
+        messages: list[dict[str, str]] = []
+        if context:
+            messages.append({"role": "system", "content": str(context)})
+        messages.append({"role": "user", "content": prompt})
+
+        def _make() -> Any:
+            return client.chat(model=model, messages=messages, stream=True, **kwargs)
+
+        async for chunk in aiter_sync(_make):
+            text = chunk.get("message", {}).get("content", "")
+            if text:
+                yield text
 
     def supports_model(self, model_name: str) -> bool:
         """Return ``True`` for any model name (Ollama pulls on demand)."""

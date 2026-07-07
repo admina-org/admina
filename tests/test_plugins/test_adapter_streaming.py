@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 
+from admina.plugins.builtin.adapters.ollama import OllamaAdapter
 from admina.plugins.builtin.adapters.openai import OpenAIAdapter
 from admina.plugins.builtin.adapters.vllm import VLLMAdapter
 
@@ -89,3 +90,25 @@ def test_vllm_send_stream_delegates_when_model_present() -> None:
         return out
 
     assert asyncio.run(_run()) == ["a", "b"]
+
+
+class _FakeOllamaClient:
+    def __init__(self, texts: list[str]) -> None:
+        self._texts = texts
+
+    def chat(self, **kwargs: Any):
+        assert kwargs.get("stream") is True
+        return iter([{"message": {"content": t}} for t in self._texts])
+
+
+def test_ollama_send_stream_yields_message_content() -> None:
+    adapter = OllamaAdapter(default_model="llama3.1:8b")
+    adapter._client = _FakeOllamaClient(["Ci", "ao"])
+
+    async def _run() -> list[str]:
+        out: list[str] = []
+        async for d in adapter.send_stream("hi"):
+            out.append(d)
+        return out
+
+    assert asyncio.run(_run()) == ["Ci", "ao"]
