@@ -373,13 +373,25 @@ def _spacy_regex_pii() -> PIIBridge:
 _PII_ENGINE_FACTORIES["spacy-regex"] = _spacy_regex_pii
 
 
+def _presidio_pii() -> PIIBridge:
+    from admina.engines.presidio import get_presidio_pii_engine
+
+    return get_presidio_pii_engine()
+
+
+_PII_ENGINE_FACTORIES["presidio"] = _presidio_pii
+
+
 def get_pii_engine(name: str | None = None) -> PIIBridge:
     """Get the configured PII engine.
 
-    Resolution order: explicit *name* arg > admina.yaml ``pii_engine`` >
-    ``spacy-regex``. An engine selected by name takes precedence over
-    Rust auto-detection (Rust accelerates only the ``spacy-regex`` path).
+    Resolution order: explicit *name* arg > ``ADMINA_PII_ENGINE`` env >
+    admina.yaml ``pii_engine`` > ``spacy-regex``. An engine selected by name
+    takes precedence over Rust auto-detection (Rust accelerates only the
+    ``spacy-regex`` path).
     """
+    if name is None:
+        name = os.environ.get("ADMINA_PII_ENGINE") or None
     if name is None:
         try:
             from admina.core.config import load_config
@@ -391,9 +403,7 @@ def get_pii_engine(name: str | None = None) -> PIIBridge:
     factory = _PII_ENGINE_FACTORIES.get(name)
     if factory is None:
         raise ValueError(
-            f"Unknown pii_engine {name!r}. Available: "
-            f"{sorted(_PII_ENGINE_FACTORIES)}. "
-            "(A Presidio-backed engine is planned for a later release.)"
+            f"Unknown pii_engine {name!r}. Available: {sorted(_PII_ENGINE_FACTORIES)}."
         )
     return factory()
 
