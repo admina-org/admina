@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from admina.core.event_bus import EventBus, EventType, GovernanceEvent
 from admina.sdk.governed_model import GovernedModel
 
 
@@ -99,3 +100,48 @@ def test_no_adapter_raises() -> None:
         raise AssertionError("expected RuntimeError")
     except RuntimeError as exc:
         assert "No model adapter configured" in str(exc)
+
+
+def test_stream_redacts_response_pii_across_deltas(monkeypatch) -> None:
+    monkeypatch.setenv("ADMINA_ENGINE", "python")
+    # Email deliberately split across two deltas.
+    adapter = StreamMock(["reply to john.doe@", "example.com now"])
+    model = GovernedModel("m", adapter=adapter, audit=False, firewall_enabled=False)
+    out = _collect(model, "hi")
+    result = "".join(out)
+    assert "john.doe@example.com" not in result
+    assert "[EMAIL]" in result
+    assert model.last_stream_result["pii_count"] == 1
+    assert model.last_stream_result["action"] == "REDACT"
+
+
+def test_stream_emits_call_and_response_events(monkeypatch) -> None:
+    monkeypatch.setenv("ADMINA_ENGINE", "python")
+    import admina.sdk.governed_model as gm
+
+    original = gm.bus
+    test_bus = EventBus()
+    gm.bus = test_bus
+    try:
+        events: list[GovernanceEvent] = []
+        test_bus.subscribe_all(events.append)
+        adapter = StreamMock(["clean output"])
+        model = GovernedModel("m", adapter=adapter, firewall_enabled=False, pii_redaction=False)
+        _collect(model, "hi")
+        kinds = [e.event_type for e in events]
+        assert EventType.MODEL_CALL in kinds
+        assert EventType.MODEL_RESPONSE in kinds
+        resp = next(e for e in events if e.event_type == EventType.MODEL_RESPONSE)
+        assert resp.action == "ALLOW"
+    finally:
+        gm.bus = original
+
+
+def test_stream_empty_output_is_clean(monkeypatch) -> None:
+    monkeypatch.setenv("ADMINA_ENGINE", "python")
+    adapter = StreamMock([])
+    model = GovernedModel("m", adapter=adapter, audit=False, firewall_enabled=False)
+    out = _collect(model, "hi")
+    assert out == []
+    assert model.last_stream_result["action"] == "ALLOW"
+    assert model.last_stream_result["pii_count"] == 0
