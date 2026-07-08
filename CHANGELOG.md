@@ -13,6 +13,21 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+### Added
+
+- **SDK streaming.** `GovernedModel.stream(prompt)` yields PII-redacted
+  response deltas as an async iterator, with the full governance outcome in
+  `GovernedModel.last_stream_result`. The pre-stream gate matches `ask()`:
+  a blocked prompt yields no deltas and reports `action="BLOCK"` (no
+  exception).
+- **`StreamRedactor`** (`admina.sdk.StreamRedactor`) — a windowed
+  recomposition buffer that redacts PII spanning streamed-delta boundaries.
+  `window_chars` must exceed the longest expected entity.
+- **`BaseModelAdapter.send_stream()`** — an async-iterator streaming method
+  on the adapter contract. Real streaming for the OpenAI, Ollama, vLLM, and
+  Anthropic adapters; the Mistral, Gemini, and Bedrock adapters use the base
+  single-chunk fallback pending a follow-on.
+
 ## [0.10.1] — 2026-06-17
 
 Security patch release. Updates two dependencies flagged by upstream
