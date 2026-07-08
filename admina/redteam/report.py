@@ -132,15 +132,18 @@ def to_markdown(scorecard: dict) -> str:
     lines = [
         f"> {RUST_CAVEAT}",
         "",
-        "| Detector | Class | Python | Rust |",
-        "|---|---|:---:|:---:|",
+        "| Detector | Class | Python | Rust | Presidio |",
+        "|---|---|:---:|:---:|:---:|",
     ]
     for det, by_engine in scorecard["detectors"].items():
         tags = sorted({t for eng in by_engine.values() for t in eng["by_tag"]})
         for tag in tags:
             py = by_engine.get("python", {}).get("by_tag", {}).get(tag)
             rs = by_engine.get("rust", {}).get("by_tag", {}).get(tag)
-            lines.append(f"| {det} | {tag} | {_cell_recall(py)} | {_cell_recall(rs)} |")
+            pr = by_engine.get("presidio", {}).get("by_tag", {}).get(tag)
+            lines.append(
+                f"| {det} | {tag} | {_cell_recall(py)} | {_cell_recall(rs)} | {_cell_recall(pr)} |"
+            )
     footnotes = []
     if "pii" in scorecard["detectors"]:
         footnotes.append(

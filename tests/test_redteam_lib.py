@@ -509,3 +509,13 @@ def test_pii_adapter_presidio_signature_and_predict():
     assert sig.startswith("presidio:") and "/" in sig  # version + active langs pinned
     out = adapter.predict("presidio", {"text": "email me at a@b.com"})
     assert "EMAIL" in out["detected_types"]
+
+
+def test_to_markdown_includes_presidio_column():
+    results = {"pii": {"python": _fake_eval_pii(), "presidio": _fake_eval_pii()}}
+    card = report.build_scorecard(
+        results, rust_version=None, env={"pii": {"presidio": "presidio:2.2.355/en+it"}}
+    )
+    md = report.to_markdown(card)
+    assert "Presidio" in md  # new column header
+    assert "presidio:2.2.355/en+it" in md  # measurement mode surfaced in the footnote
