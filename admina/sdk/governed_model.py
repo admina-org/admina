@@ -29,6 +29,7 @@ from admina.core.event_bus import EventType, GovernanceEvent, bus
 from admina.plugins.base import BaseModelAdapter
 from admina.sdk._compat import run_sync
 from admina.sdk.retry import RetryPolicy, run_with_retry
+from admina.sdk.streaming import StreamRedactor
 
 __all__ = ["GovernedModel", "GovernedResponse", "BaseModelAdapter"]
 
@@ -129,6 +130,7 @@ class GovernedModel:
         self._pii_redactor: Any = None
         self._firewall: Any = None
         self._loop_breaker: Any = None
+        self.last_stream_result: dict[str, Any] | None = None
 
     def _get_pii_redactor(self) -> Any:
         """Return the PII redactor, creating it lazily."""
@@ -311,6 +313,153 @@ class GovernedModel:
             metadata=adapter_metadata,
             governance=governance,
         )
+
+    async def stream(self, prompt: str, **kwargs: Any):
+        """Stream a governed response as redacted text deltas.
+
+        Runs the same pre-stream pipeline as :meth:`ask` (loop → firewall →
+        PII) over the prompt, then pipes adapter deltas through a
+        :class:`~admina.sdk.streaming.StreamRedactor` so PII spanning a
+        delta boundary is still caught. On a blocked prompt the iterator
+        yields nothing and ``last_stream_result["action"] == "BLOCK"`` —
+        ``stream`` never raises for governance decisions (mirrors ``ask``).
+
+        The full outcome lands in :attr:`last_stream_result` after the
+        iterator is exhausted.
+
+        Args:
+            prompt: The user prompt.
+            **kwargs: Forwarded to the adapter. ``context`` (system prompt),
+                ``session_id`` (loop detection), and ``stream_window_chars``
+                (recomposition window, default 64) are consumed here.
+
+        Yields:
+            PII-redacted text deltas.
+
+        Raises:
+            RuntimeError: If no adapter is configured.
+        """
+        if self._adapter is None:
+            raise RuntimeError(
+                "No model adapter configured. Pass an adapter to GovernedModel() "
+                "or resolve one via PluginRegistry."
+            )
+
+        from admina.domains.governance import run_pipeline
+
+        context = kwargs.pop("context", None)
+        window = kwargs.pop("stream_window_chars", 64)
+        explicit_session = kwargs.pop("session_id", None)
+        loop_on = self._loop_detection and explicit_session is not None
+        sid = explicit_session or self._session_id
+
+        if self._audit:
+            await bus.emit(
+                GovernanceEvent(
+                    event_type=EventType.MODEL_CALL,
+                    session_id=sid,
+                    domain="ai-infra",
+                    metadata={"model": self.model_name, "adapter": self._adapter.name},
+                )
+            )
+
+        pre = await run_pipeline(
+            body={"params": {"content": prompt}},
+            content_str=prompt,
+            session_id=sid,
+            agent_id=self.model_name,
+            request_id=str(uuid.uuid4()),
+            params={"content": prompt},
+            firewall=self._get_firewall(),
+            pii_redactor=self._get_pii_redactor(),
+            loop_breaker=self._get_loop_breaker(),
+            governance_guards=self._guards,
+            injection_enabled=self._firewall_enabled,
+            pii_enabled=self._pii_redaction,
+            loop_enabled=loop_on,
+            mode=self._mode,
+        )
+
+        pre_action = pre.gov_response.action
+        pii_prompt_count = pre.checks.get("pii_redaction", {}).get("count", 0)
+        start = time.monotonic()
+
+        if pre_action in ("BLOCK", "CIRCUIT_BREAK"):
+            self.last_stream_result = {
+                "action": "BLOCK",
+                "pii_count": pii_prompt_count,
+                "model": self.model_name,
+                "input_tokens": None,
+                "output_tokens": None,
+                "finish_reason": "content_filter",
+                "time_to_first_token_ms": None,
+                "duration_ms": (time.monotonic() - start) * 1000,
+            }
+            if self._audit:
+                await bus.emit(
+                    GovernanceEvent(
+                        event_type=EventType.MODEL_RESPONSE,
+                        session_id=sid,
+                        domain="ai-infra",
+                        action="BLOCK",
+                        metadata={"model": self.model_name, "pii_prompt_count": pii_prompt_count},
+                    )
+                )
+            return
+
+        redacted_prompt = pre.redacted_body.get("params", {}).get("content", prompt)
+        kwargs.setdefault("model", self.model_name)
+
+        redactor = (
+            StreamRedactor(self._get_pii_redactor(), window_chars=window)
+            if self._pii_redaction
+            else None
+        )
+        ttft_ms: float | None = None
+        pii_response_count = 0
+
+        async for raw in self._adapter.send_stream(redacted_prompt, context=context, **kwargs):
+            if ttft_ms is None:
+                ttft_ms = (time.monotonic() - start) * 1000
+            if redactor is None:
+                if raw:
+                    yield raw
+            else:
+                for safe in redactor.feed(raw):
+                    yield safe
+
+        if redactor is not None:
+            tail, summary = redactor.finish()
+            if tail:
+                yield tail
+            pii_response_count = summary["pii_count"]
+
+        action = "REDACT" if (pii_prompt_count + pii_response_count) > 0 else "ALLOW"
+        self.last_stream_result = {
+            "action": action,
+            "pii_count": pii_prompt_count + pii_response_count,
+            "model": self.model_name,
+            "input_tokens": None,
+            "output_tokens": None,
+            "finish_reason": "stop",
+            "time_to_first_token_ms": ttft_ms,
+            "duration_ms": (time.monotonic() - start) * 1000,
+        }
+
+        if self._audit:
+            await bus.emit(
+                GovernanceEvent(
+                    event_type=EventType.MODEL_RESPONSE,
+                    session_id=sid,
+                    domain="ai-infra",
+                    action=action,
+                    metadata={
+                        "model": self.model_name,
+                        "pii_prompt_count": pii_prompt_count,
+                        "pii_response_count": pii_response_count,
+                    },
+                )
+            )
 
     def ask_sync(self, prompt: str, **kwargs: Any) -> GovernedResponse:
         """Synchronous convenience wrapper around ask().
