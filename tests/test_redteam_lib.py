@@ -519,3 +519,14 @@ def test_to_markdown_includes_presidio_column():
     md = report.to_markdown(card)
     assert "Presidio" in md  # new column header
     assert "presidio:2.2.355/en+it" in md  # measurement mode surfaced in the footnote
+
+
+def test_committed_baseline_declares_presidio_pii_entry():
+    from pathlib import Path
+
+    path = Path(redteam.__file__).parent / "baselines" / "baseline.json"
+    base = json.loads(path.read_text(encoding="utf-8"))
+    entry = base["pii"]["presidio"]
+    assert "type_recall" in entry
+    assert "fp" in entry and "fp_samples" in entry
+    assert entry["mode"].startswith("presidio:")
