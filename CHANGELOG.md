@@ -27,6 +27,14 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   on the adapter contract. Real streaming for the OpenAI, Ollama, vLLM, and
   Anthropic adapters; the Mistral, Gemini, and Bedrock adapters use the base
   single-chunk fallback pending a follow-on.
+- **Presidio PII engine.** Microsoft Presidio is selectable as the PII engine
+  via `ADMINA_PII_ENGINE=presidio` or `pii_engine: presidio` in `admina.yaml`,
+  behind the new `[presidio]` extra. Presidio performs detection only; Admina
+  keeps its own masking, so the output format is identical to the default
+  `spacy-regex` engine (per-category masks, e.g. `[EMAIL]`, `[PERSON]`).
+  Languages EN + IT. The default engine is unchanged (`spacy-regex`). The
+  redteam efficacy suite measures Presidio as a third PII column with
+  version/language mode-pinning.
 
 ## [0.10.1] — 2026-06-17
 
