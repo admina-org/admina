@@ -122,6 +122,17 @@ class Settings(BaseSettings):
     PII_REDACTION_ENABLED: bool = True
     MAX_REQUEST_TOKENS: int = 100000
 
+    # ── OpenAI-compatible gateway (A3) ───────────────────────────
+    # Upstream OpenAI-compatible API the gateway forwards to (Ollama,
+    # vLLM, OpenAI, …). Must include the API base path (typically /v1).
+    ADMINA_GATEWAY_UPSTREAM: str = "http://localhost:11434/v1"
+    # Content returned to the caller when governance blocks a request,
+    # shaped as an OpenAI completion with finish_reason="content_filter".
+    ADMINA_GATEWAY_BLOCK_MESSAGE: str = "This request was blocked by the Admina governance policy."
+    # Optional comma-separated allow-list applied to GET /v1/models.
+    # Empty = passthrough of the upstream's full model list.
+    ADMINA_GATEWAY_MODELS_ALLOWLIST: str = ""
+
     @field_validator("GOVERNANCE_MODE")
     @classmethod
     def validate_governance_mode(cls, v: str) -> str:
