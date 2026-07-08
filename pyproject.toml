@@ -136,8 +136,12 @@ mistral = ["mistralai>=1.0,<3"]
 gemini = ["google-genai>=1.0,<3"]
 bedrock = ["boto3>=1.34,<2"]
 adapters = ["admina-framework[openai,ollama,anthropic,mistral,gemini,bedrock]"]
-# NOTE: [presidio] is added to [all] when the [presidio] extra lands.
-all = ["admina-framework[proxy,nlp,telemetry,adapters]"]
+# Microsoft Presidio as a selectable PII engine. Presidio does detection only;
+# Admina keeps its own masking, so the output format matches the default
+# spaCy+regex engine. The NER models are downloaded separately, like [nlp]:
+#   python -m spacy download en_core_web_sm it_core_news_sm
+presidio = ["presidio-analyzer>=2.2,<3"]
+all = ["admina-framework[proxy,nlp,telemetry,adapters,presidio]"]
 
 [dependency-groups]
 dev = [
