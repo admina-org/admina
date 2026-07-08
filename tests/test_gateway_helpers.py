@@ -80,3 +80,27 @@ def test_parse_then_delta_content_matches_json():
     payload = {"choices": [{"delta": {"content": "abc"}, "finish_reason": None}]}
     parsed = _parse_sse_data("data: " + json.dumps(payload))
     assert _delta_content(parsed) == "abc"
+
+
+def test_synthetic_completion_shape():
+    from admina.proxy.api.gateway import _synthetic_completion
+
+    body = _synthetic_completion("llama3", "blocked!")
+    assert body["object"] == "chat.completion"
+    assert body["model"] == "llama3"
+    choice = body["choices"][0]
+    assert choice["finish_reason"] == "content_filter"
+    assert choice["message"] == {"role": "assistant", "content": "blocked!"}
+    assert body["id"].startswith("chatcmpl-admina-")
+
+
+def test_synthetic_stream_shape():
+    from admina.proxy.api.gateway import _parse_sse_data, _synthetic_stream
+
+    lines = _synthetic_stream("llama3", "blocked!")
+    assert lines[-1] == "data: [DONE]\n\n"
+    first = _parse_sse_data(lines[0].strip())
+    assert first["object"] == "chat.completion.chunk"
+    choice = first["choices"][0]
+    assert choice["delta"] == {"role": "assistant", "content": "blocked!"}
+    assert choice["finish_reason"] == "content_filter"

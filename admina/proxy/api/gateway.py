@@ -28,6 +28,8 @@ Routes (prefix /v1):
 from __future__ import annotations
 
 import json
+import time
+import uuid
 
 
 def _extract_prompt_text(messages: list) -> str:
@@ -90,3 +92,45 @@ def _finish_reason(chunk: dict) -> str | None:
         return chunk["choices"][0].get("finish_reason")
     except (KeyError, IndexError, TypeError):
         return None
+
+
+def _synthetic_completion(model: str, message: str) -> dict:
+    """A non-streaming OpenAI completion carrying the governance block.
+
+    Shaped so OpenAI-compatible UIs render it as a normal (if refused)
+    response instead of surfacing a raw HTTP error.
+    """
+    return {
+        "id": f"chatcmpl-admina-{uuid.uuid4().hex[:12]}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": message},
+                "finish_reason": "content_filter",
+            }
+        ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
+def _synthetic_stream(model: str, message: str) -> list[str]:
+    """SSE lines for a blocked streaming request: one content_filter chunk
+    then ``data: [DONE]`` — never a completion object on a streaming
+    request (that would break SSE parsing on the client)."""
+    chunk = {
+        "id": f"chatcmpl-admina-{uuid.uuid4().hex[:12]}",
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"role": "assistant", "content": message},
+                "finish_reason": "content_filter",
+            }
+        ],
+    }
+    return [_sse_format(chunk), "data: [DONE]\n\n"]
