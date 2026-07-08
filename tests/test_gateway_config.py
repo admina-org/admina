@@ -29,3 +29,9 @@ def test_gateway_settings_defaults():
 def test_gateway_upstream_overridable(monkeypatch):
     monkeypatch.setenv("ADMINA_GATEWAY_UPSTREAM", "http://vllm:8000/v1")
     assert Settings().ADMINA_GATEWAY_UPSTREAM == "http://vllm:8000/v1"
+
+
+def test_gateway_event_type_exists():
+    from admina.core.types import EventType
+
+    assert EventType.GATEWAY_REQUEST.value == "gateway_request"
