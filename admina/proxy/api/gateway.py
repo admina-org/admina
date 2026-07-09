@@ -27,6 +27,7 @@ Routes (prefix /v1):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -38,7 +39,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from admina.domains.governance import redact_response_result, run_pipeline
+from admina.core.types import EventType
+from admina.domains.governance import redact_response_result, run_pipeline, safe_serialize
 
 
 def _extract_prompt_text(messages: list) -> str:
@@ -222,6 +224,39 @@ async def _governed_sse_stream(lines, redactor, model: str) -> AsyncIterator[str
     yield "data: [DONE]\n\n"
 
 
+async def _record_forensic(
+    forensic_box: Any,
+    *,
+    event_id: str,
+    agent_id: str,
+    session_id: str,
+    action: str,
+    risk_level: str,
+    pre: Any,
+) -> None:
+    """Record the gateway request to the forensic log — the fifth surface
+    on the canonical pipeline. Runs off the event loop like /mcp does."""
+    if forensic_box is None:
+        return
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        None,
+        lambda: forensic_box.record(
+            {
+                "event_id": event_id,
+                "event_type": EventType.GATEWAY_REQUEST,
+                "agent_id": agent_id,
+                "session_id": session_id,
+                "method": "chat.completions",
+                "action": action,
+                "risk_level": risk_level,
+                "governance_latency_ms": round(pre.latency_ms, 2),
+                "checks": {k: safe_serialize(v) for k, v in pre.checks.items()},
+            }
+        ),
+    )
+
+
 def create_gateway_endpoints(
     *,
     get_state: Any,
@@ -288,6 +323,16 @@ def create_gateway_endpoints(
             mode=cfg.GOVERNANCE_MODE,
         )
         action = pre.gov_response.action  # uppercase: ALLOW/BLOCK/CIRCUIT_BREAK
+
+        await _record_forensic(
+            state.forensic_box,
+            event_id=event_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            action=action,
+            risk_level=pre.gov_response.risk_level,
+            pre=pre,
+        )
 
         block_message = cfg.ADMINA_GATEWAY_BLOCK_MESSAGE
         if action in ("BLOCK", "CIRCUIT_BREAK"):

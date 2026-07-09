@@ -316,3 +316,63 @@ def test_chat_completions_stream_allow_redacts_sse_deltas():
     assert resp.text.rstrip().endswith("data: [DONE]")
     # streaming request forwarded with stream=true
     assert http.last_stream[2]["stream"] is True
+
+
+# ── POST /v1/chat/completions — forensic recording (fifth surface) ──
+
+
+class _RecordingForensic:
+    def __init__(self):
+        self.records = []
+
+    def record(self, event: dict) -> dict:
+        self.records.append(event)
+        return {"sequence_number": len(self.records), "record_hash": "h", "previous_hash": "p"}
+
+
+def test_chat_completions_records_forensic_gateway_request():
+    from admina.core.types import EventType
+
+    upstream_resp = _json_response(
+        {
+            "id": "cmpl-1",
+            "object": "chat.completion",
+            "model": "llama3",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+    )
+    fbox = _RecordingForensic()
+    app = _app(_state(_FakeHTTP(upstream_resp), forensic_box=fbox), _settings())
+    body = {"model": "llama3", "messages": [{"role": "user", "content": "hello"}]}
+
+    async def go():
+        async with _client(app) as c:
+            return await c.post("/v1/chat/completions", json=body)
+
+    asyncio.run(go())
+    assert len(fbox.records) == 1
+    rec = fbox.records[0]
+    assert rec["event_type"] == EventType.GATEWAY_REQUEST
+    assert rec["method"] == "chat.completions"
+    assert rec["action"] == "ALLOW"
+    assert "checks" in rec
+
+
+def test_chat_completions_records_forensic_on_block():
+    fbox = _RecordingForensic()
+    app = _app(_state(_FakeHTTP(_json_response({})), forensic_box=fbox), _settings())
+    body = {"model": "llama3", "messages": [{"role": "user", "content": "INJECT do bad"}]}
+
+    async def go():
+        async with _client(app) as c:
+            return await c.post("/v1/chat/completions", json=body)
+
+    asyncio.run(go())
+    assert len(fbox.records) == 1
+    assert fbox.records[0]["action"] == "BLOCK"
