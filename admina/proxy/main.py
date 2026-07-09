@@ -62,6 +62,7 @@ from admina.engines import (
     get_pii_engine,
 )
 from admina.proxy.api.dashboard import create_dashboard_endpoints
+from admina.proxy.api.gateway import create_gateway_endpoints
 from admina.proxy.api.integration import create_integration_endpoints
 from admina.proxy.config import GovernanceEvent, settings
 from admina.proxy.multi_upstream import MultiUpstreamRouter
@@ -478,6 +479,12 @@ _integration_router = create_integration_endpoints(
     get_settings=lambda: settings,
 )
 app.include_router(_integration_router)
+
+_gateway_router = create_gateway_endpoints(
+    get_state=lambda: app.state.proxy,
+    get_settings=lambda: settings,
+)
+app.include_router(_gateway_router)
 
 
 # ── Bundled dashboard (no-Docker dev mode) ────────────────────
