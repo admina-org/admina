@@ -28,14 +28,17 @@ Routes (prefix /v1):
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
+
+from admina.domains.governance import redact_response_result, run_pipeline
 
 
 def _extract_prompt_text(messages: list) -> str:
@@ -249,6 +252,56 @@ def create_gateway_endpoints(
         allow = [m.strip() for m in cfg.ADMINA_GATEWAY_MODELS_ALLOWLIST.split(",") if m.strip()]
         if allow and isinstance(data.get("data"), list):
             data["data"] = [m for m in data["data"] if m.get("id") in allow]
+        return JSONResponse(content=data, status_code=resp.status_code)
+
+    @router.post("/chat/completions", summary="Governed OpenAI chat completions")
+    async def chat_completions(request: Request):
+        state = get_state()
+        cfg = get_settings()
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+        messages = body.get("messages") or []
+        session_id = re.sub(r"[\r\n]", "", request.headers.get("X-Session-Id", "default"))[:128]
+        agent_id = re.sub(r"[\r\n]", "", request.headers.get("X-Agent-Id", "gateway"))[:128]
+        prompt_text = _extract_prompt_text(messages)
+        event_id = uuid.uuid4().hex
+
+        pre = await run_pipeline(
+            body={"params": {"messages": messages}},
+            content_str=prompt_text,
+            session_id=session_id,
+            agent_id=agent_id,
+            request_id=event_id,
+            params={"messages": messages},
+            firewall=state.firewall,
+            pii_redactor=state.pii_redactor,
+            loop_breaker=state.loop_breaker,
+            governance_guards=state.governance_guards,
+            injection_enabled=cfg.INJECTION_FAST_PATH_ENABLED,
+            pii_enabled=cfg.PII_REDACTION_ENABLED,
+            loop_enabled=False,
+            mode=cfg.GOVERNANCE_MODE,
+        )
+
+        upstream = cfg.ADMINA_GATEWAY_UPSTREAM.rstrip("/")
+        url = f"{upstream}/chat/completions"
+        headers = {"X-Admina-Event-Id": event_id}
+
+        pii_count = pre.checks.get("pii_redaction", {}).get("count", 0)
+        fwd_messages = pre.redacted_body["params"]["messages"] if pii_count > 0 else messages
+        forward_body = {**body, "messages": fwd_messages}
+
+        # non-streaming passthrough
+        try:
+            resp = await state.http_client.post(url, json=forward_body, headers=headers)
+        except httpx.ConnectError:
+            raise HTTPException(status_code=502, detail="Gateway upstream unreachable")
+        data = resp.json()
+        if cfg.PII_REDACTION_ENABLED and isinstance(data.get("choices"), list):
+            data["choices"], _ = redact_response_result(data["choices"], state.pii_redactor)
         return JSONResponse(content=data, status_code=resp.status_code)
 
     return router

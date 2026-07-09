@@ -148,3 +148,65 @@ def test_models_allowlist_filters():
 
     resp = asyncio.run(go())
     assert [m["id"] for m in resp.json()["data"]] == ["llama3"]
+
+
+# ── POST /v1/chat/completions — non-streaming ALLOW ──────────
+
+
+def test_chat_completions_nonstream_allow_forwards_redacted_prompt():
+    upstream_resp = _json_response(
+        {
+            "id": "cmpl-1",
+            "object": "chat.completion",
+            "model": "llama3",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "hi"},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+    )
+    http = _FakeHTTP(upstream_resp)
+    app = _app(_state(http), _settings())
+
+    body = {"model": "llama3", "messages": [{"role": "user", "content": "reach me at a@b.com"}]}
+
+    async def go():
+        async with _client(app) as c:
+            return await c.post("/v1/chat/completions", json=body)
+
+    resp = asyncio.run(go())
+    assert resp.status_code == 200
+    # upstream URL + PII-redacted prompt forwarded
+    assert http.last_post[0] == "http://upstream/v1/chat/completions"
+    forwarded = http.last_post[1]["json"]["messages"][0]["content"]
+    assert "a@b.com" not in forwarded and "[EMAIL]" in forwarded
+
+
+def test_chat_completions_nonstream_allow_redacts_response_pii():
+    upstream_resp = _json_response(
+        {
+            "id": "cmpl-1",
+            "object": "chat.completion",
+            "model": "llama3",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "write to a@b.com"},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+    )
+    app = _app(_state(_FakeHTTP(upstream_resp)), _settings())
+    body = {"model": "llama3", "messages": [{"role": "user", "content": "hello"}]}
+
+    async def go():
+        async with _client(app) as c:
+            return await c.post("/v1/chat/completions", json=body)
+
+    resp = asyncio.run(go())
+    content = resp.json()["choices"][0]["message"]["content"]
+    assert "a@b.com" not in content and "[EMAIL]" in content
