@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from admina.proxy.api.gateway import (
@@ -104,3 +105,105 @@ def test_synthetic_stream_shape():
     choice = first["choices"][0]
     assert choice["delta"] == {"role": "assistant", "content": "blocked!"}
     assert choice["finish_reason"] == "content_filter"
+
+
+class _FakeRedactor:
+    """Windowed fake: holds the last char as its window tail so tests can
+    prove cross-chunk reconstruction and the finish() flush."""
+
+    def __init__(self):
+        self._tail = ""
+
+    def feed(self, delta: str) -> list[str]:
+        buf = self._tail + delta
+        self._tail = buf[-1:]
+        safe = buf[:-1]
+        return [safe] if safe else []
+
+    def finish(self):
+        tail, self._tail = self._tail, ""
+        return tail, {"pii_count": 0}
+
+
+async def _aiter(seq):
+    for item in seq:
+        yield item
+
+
+async def _collect(gen):
+    return [chunk async for chunk in gen]
+
+
+def _reassemble(sse_chunks):
+    from admina.proxy.api.gateway import _delta_content, _parse_sse_data
+
+    text = ""
+    for raw in sse_chunks:
+        parsed = _parse_sse_data(raw.strip())
+        if parsed:
+            text += _delta_content(parsed)
+    return text
+
+
+def test_governed_sse_reassembles_across_chunks_and_terminates():
+    from admina.proxy.api.gateway import _governed_sse_stream, _sse_format
+
+    upstream = [
+        _sse_format({"choices": [{"delta": {"role": "assistant"}, "finish_reason": None}]}),
+        _sse_format({"choices": [{"delta": {"content": "Hel"}, "finish_reason": None}]}),
+        _sse_format({"choices": [{"delta": {"content": "lo"}, "finish_reason": None}]}),
+        _sse_format({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        "data: [DONE]\n\n",
+    ]
+    out = asyncio.run(_collect(_governed_sse_stream(_aiter(upstream), _FakeRedactor(), "llama3")))
+    assert out[-1] == "data: [DONE]\n\n"
+    assert _reassemble(out) == "Hello"
+
+
+def test_governed_sse_preserves_finish_reason():
+    from admina.proxy.api.gateway import (
+        _finish_reason,
+        _governed_sse_stream,
+        _parse_sse_data,
+        _sse_format,
+    )
+
+    upstream = [
+        _sse_format({"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]}),
+        _sse_format({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        "data: [DONE]\n\n",
+    ]
+    out = asyncio.run(_collect(_governed_sse_stream(_aiter(upstream), _FakeRedactor(), "llama3")))
+    reasons = [
+        _finish_reason(_parse_sse_data(r.strip())) for r in out if _parse_sse_data(r.strip())
+    ]
+    assert "stop" in reasons
+
+
+def test_governed_sse_empty_stream_just_terminates():
+    from admina.proxy.api.gateway import _governed_sse_stream
+
+    out = asyncio.run(_collect(_governed_sse_stream(_aiter([]), _FakeRedactor(), "llama3")))
+    assert out == ["data: [DONE]\n\n"]
+
+
+def test_governed_sse_no_finish_chunk_still_flushes_tail():
+    from admina.proxy.api.gateway import _governed_sse_stream, _sse_format
+
+    # Upstream ends without a finish_reason chunk; the held tail must still flush.
+    upstream = [
+        _sse_format({"choices": [{"delta": {"content": "Hello"}, "finish_reason": None}]}),
+        "data: [DONE]\n\n",
+    ]
+    out = asyncio.run(_collect(_governed_sse_stream(_aiter(upstream), _FakeRedactor(), "llama3")))
+    assert out[-1] == "data: [DONE]\n\n"
+    assert _reassemble(out) == "Hello"
+
+
+def test_passthrough_redactor_echoes():
+    from admina.proxy.api.gateway import _PassthroughRedactor
+
+    r = _PassthroughRedactor()
+    assert r.feed("abc") == ["abc"]
+    assert r.feed("") == []
+    assert r.finish() == ("", {"pii_count": 0})

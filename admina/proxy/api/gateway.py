@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from collections.abc import AsyncIterator
 
 
 def _extract_prompt_text(messages: list) -> str:
@@ -134,3 +135,80 @@ def _synthetic_stream(model: str, message: str) -> list[str]:
         ],
     }
     return [_sse_format(chunk), "data: [DONE]\n\n"]
+
+
+def _content_chunk(template: dict, content: str, model: str) -> dict:
+    """A content-bearing chat.completion.chunk cloned from *template*'s
+    identity fields (id/created/model) with a fresh redacted delta."""
+    return {
+        "id": template.get("id", ""),
+        "object": "chat.completion.chunk",
+        "created": template.get("created", int(time.time())),
+        "model": template.get("model", model),
+        "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
+    }
+
+
+def _finish_chunk(template: dict, reason: str, model: str) -> dict:
+    """A terminal chat.completion.chunk (empty delta) preserving the
+    upstream finish_reason so clients close the turn correctly."""
+    return {
+        "id": template.get("id", ""),
+        "object": "chat.completion.chunk",
+        "created": template.get("created", int(time.time())),
+        "model": template.get("model", model),
+        "choices": [{"index": 0, "delta": {}, "finish_reason": reason}],
+    }
+
+
+class _PassthroughRedactor:
+    """Drop-in for StreamRedactor used when PII redaction is disabled:
+    echoes each delta immediately, holds nothing, redacts nothing."""
+
+    def feed(self, delta: str) -> list[str]:
+        return [delta] if delta else []
+
+    def finish(self) -> tuple[str, dict]:
+        return "", {"pii_count": 0}
+
+
+async def _aiter_list(items) -> AsyncIterator[str]:
+    """Adapt a synchronous list of SSE lines to an async iterator."""
+    for item in items:
+        yield item
+
+
+async def _governed_sse_stream(lines, redactor, model: str) -> AsyncIterator[str]:
+    """Re-emit upstream SSE as governed SSE.
+
+    Content deltas are recomposed and redacted through *redactor* (feed);
+    at the upstream's finish chunk the window is flushed (finish) and the
+    trailing redacted tail is emitted before the terminal finish marker.
+    The stream always ends with ``data: [DONE]``. Role-only and empty
+    deltas are dropped; identity fields (id/created/model) are preserved.
+    """
+    flushed = False
+    async for raw in lines:
+        stripped = (raw or "").strip()
+        if not stripped or stripped == "data: [DONE]":
+            continue
+        chunk = _parse_sse_data(stripped)
+        if chunk is None:
+            continue
+        content = _delta_content(chunk)
+        if content:
+            for safe in redactor.feed(content):
+                if safe:
+                    yield _sse_format(_content_chunk(chunk, safe, model))
+        reason = _finish_reason(chunk)
+        if reason is not None and not flushed:
+            tail, _summary = redactor.finish()
+            flushed = True
+            if tail:
+                yield _sse_format(_content_chunk(chunk, tail, model))
+            yield _sse_format(_finish_chunk(chunk, reason, model))
+    if not flushed:
+        tail, _summary = redactor.finish()
+        if tail:
+            yield _sse_format(_content_chunk({}, tail, model))
+    yield "data: [DONE]\n\n"
