@@ -31,6 +31,11 @@ import json
 import time
 import uuid
 from collections.abc import AsyncIterator
+from typing import Any
+
+import httpx
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 
 
 def _extract_prompt_text(messages: list) -> str:
@@ -212,3 +217,38 @@ async def _governed_sse_stream(lines, redactor, model: str) -> AsyncIterator[str
         if tail:
             yield _sse_format(_content_chunk({}, tail, model))
     yield "data: [DONE]\n\n"
+
+
+def create_gateway_endpoints(
+    *,
+    get_state: Any,
+    get_settings: Any,
+) -> APIRouter:
+    """Create the OpenAI-compatible gateway router (prefix ``/v1``).
+
+    A fresh router is created on each call for test isolation, mirroring
+    :func:`admina.proxy.api.integration.create_integration_endpoints`.
+
+    Args:
+        get_state: Callable returning the ProxyState (firewall, pii_redactor,
+            loop_breaker, governance_guards, forensic_box, http_client).
+        get_settings: Callable returning the settings object.
+    """
+    router = APIRouter(prefix="/v1", tags=["gateway"])
+
+    @router.get("/models", summary="List models (passthrough with optional allow-list)")
+    async def list_models() -> JSONResponse:
+        state = get_state()
+        cfg = get_settings()
+        url = f"{cfg.ADMINA_GATEWAY_UPSTREAM.rstrip('/')}/models"
+        try:
+            resp = await state.http_client.get(url)
+        except httpx.ConnectError:
+            raise HTTPException(status_code=502, detail="Gateway upstream unreachable")
+        data = resp.json()
+        allow = [m.strip() for m in cfg.ADMINA_GATEWAY_MODELS_ALLOWLIST.split(",") if m.strip()]
+        if allow and isinstance(data.get("data"), list):
+            data["data"] = [m for m in data["data"] if m.get("id") in allow]
+        return JSONResponse(content=data, status_code=resp.status_code)
+
+    return router
