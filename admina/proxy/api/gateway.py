@@ -306,6 +306,26 @@ def create_gateway_endpoints(
         fwd_messages = pre.redacted_body["params"]["messages"] if pii_count > 0 else messages
         forward_body = {**body, "messages": fwd_messages}
 
+        if stream:
+            forward_body["stream"] = True
+
+            async def _proxy() -> AsyncIterator[str]:
+                if cfg.PII_REDACTION_ENABLED:
+                    from admina.sdk.streaming import StreamRedactor
+
+                    redactor = StreamRedactor(state.pii_redactor)
+                else:
+                    redactor = _PassthroughRedactor()
+                async with state.http_client.stream(
+                    "POST", url, json=forward_body, headers=headers
+                ) as upstream_resp:
+                    async for sse in _governed_sse_stream(
+                        upstream_resp.aiter_lines(), redactor, model
+                    ):
+                        yield sse
+
+            return StreamingResponse(_proxy(), media_type="text/event-stream")
+
         # non-streaming passthrough
         try:
             resp = await state.http_client.post(url, json=forward_body, headers=headers)

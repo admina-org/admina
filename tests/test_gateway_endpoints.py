@@ -253,3 +253,66 @@ def test_chat_completions_stream_block_returns_synthetic_sse():
     assert resp.text.rstrip().endswith("data: [DONE]")
     assert "content_filter" in resp.text
     assert http.last_post is None
+
+
+# ── POST /v1/chat/completions — streaming ALLOW ───────────────
+
+
+class _FakeStreamCM:
+    def __init__(self, lines):
+        self._lines = lines
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+
+class _FakeStreamHTTP:
+    """http_client whose .stream() replays preset upstream SSE lines."""
+
+    def __init__(self, lines):
+        self._lines = lines
+        self.last_stream = None
+
+    def stream(self, method, url, json=None, headers=None):
+        self.last_stream = (method, url, json, headers)
+        return _FakeStreamCM(self._lines)
+
+
+def test_chat_completions_stream_allow_redacts_sse_deltas():
+    from admina.proxy.api.gateway import _sse_format
+
+    upstream_lines = [
+        _sse_format({"choices": [{"delta": {"role": "assistant"}, "finish_reason": None}]}),
+        _sse_format({"choices": [{"delta": {"content": "mail a@"}, "finish_reason": None}]}),
+        _sse_format({"choices": [{"delta": {"content": "b.com now"}, "finish_reason": None}]}),
+        _sse_format({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        "data: [DONE]\n\n",
+    ]
+    http = _FakeStreamHTTP(upstream_lines)
+    app = _app(_state(http), _settings())
+    body = {
+        "model": "llama3",
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+
+    async def go():
+        async with _client(app) as c:
+            return await c.post("/v1/chat/completions", json=body)
+
+    resp = asyncio.run(go())
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    # PII that straddles the "mail a@" / "b.com" chunk boundary is caught.
+    assert "a@b.com" not in resp.text
+    assert "[EMAIL]" in resp.text
+    assert resp.text.rstrip().endswith("data: [DONE]")
+    # streaming request forwarded with stream=true
+    assert http.last_stream[2]["stream"] is True
