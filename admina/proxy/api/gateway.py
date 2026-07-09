@@ -36,7 +36,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from admina.domains.governance import redact_response_result, run_pipeline
 
@@ -264,6 +264,8 @@ def create_gateway_endpoints(
             raise HTTPException(status_code=400, detail="Invalid JSON body")
 
         messages = body.get("messages") or []
+        model = body.get("model", "unknown")
+        stream = bool(body.get("stream", False))
         session_id = re.sub(r"[\r\n]", "", request.headers.get("X-Session-Id", "default"))[:128]
         agent_id = re.sub(r"[\r\n]", "", request.headers.get("X-Agent-Id", "gateway"))[:128]
         prompt_text = _extract_prompt_text(messages)
@@ -285,6 +287,16 @@ def create_gateway_endpoints(
             loop_enabled=False,
             mode=cfg.GOVERNANCE_MODE,
         )
+        action = pre.gov_response.action  # uppercase: ALLOW/BLOCK/CIRCUIT_BREAK
+
+        block_message = cfg.ADMINA_GATEWAY_BLOCK_MESSAGE
+        if action in ("BLOCK", "CIRCUIT_BREAK"):
+            if stream:
+                return StreamingResponse(
+                    _aiter_list(_synthetic_stream(model, block_message)),
+                    media_type="text/event-stream",
+                )
+            return JSONResponse(content=_synthetic_completion(model, block_message))
 
         upstream = cfg.ADMINA_GATEWAY_UPSTREAM.rstrip("/")
         url = f"{upstream}/chat/completions"
