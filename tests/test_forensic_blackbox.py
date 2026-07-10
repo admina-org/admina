@@ -498,3 +498,82 @@ class TestSignedChainStateFilesystem:
         box2 = ForensicBlackBox(filesystem_dir=str(tmp_path))
         assert box2.record_count == 1
         assert box2.chain_head == box1.chain_head
+
+
+class TestSignedChainStateS3:
+    class _FullFakeS3:
+        def __init__(self):
+            self._store: dict[str, bytes] = {}
+
+        def head_bucket(self, **kwargs):
+            return {}
+
+        def put_object(self, **kwargs):
+            self._store[kwargs["Key"]] = kwargs["Body"]
+            return {}
+
+        def get_object(self, **kwargs):
+            key = kwargs["Key"]
+            if key not in self._store:
+                raise KeyError(f"no object: {key}")
+            import io
+
+            return {"Body": io.BytesIO(self._store[key])}
+
+        def list_objects_v2(self, **kwargs):
+            return {
+                "Contents": [{"Key": k} for k in self._store],
+                "IsTruncated": False,
+            }
+
+    def test_s3_signing_writes_sidecar_object(self):
+        from admina.domains.compliance.forensic import _CHAIN_STATE_SIG_KEY
+
+        s3 = self._FullFakeS3()
+        box = ForensicBlackBox(boto3_client=s3, bucket="b", state_signing_key="k")
+        box.record({"i": 1})
+        assert _CHAIN_STATE_SIG_KEY in s3._store
+
+    def test_s3_valid_signature_is_trusted(self):
+        from admina.domains.compliance.forensic import (
+            _CHAIN_STATE_KEY,
+            _CHAIN_STATE_SIG_KEY,
+        )
+
+        s3 = self._FullFakeS3()
+        box1 = ForensicBlackBox(boto3_client=s3, bucket="b", state_signing_key="k")
+        box1.record({"i": 1})
+        box1.record({"i": 2})
+        head, count = box1.chain_head, box1.record_count
+        # Delete record objects, keep the signed state → only the trusted path
+        # can recover head/count.
+        for k in list(s3._store):
+            if k not in (_CHAIN_STATE_KEY, _CHAIN_STATE_SIG_KEY):
+                del s3._store[k]
+        box2 = ForensicBlackBox(boto3_client=s3, bucket="b", state_signing_key="k")
+        assert box2.record_count == count
+        assert box2.chain_head == head
+
+    def test_s3_invalid_signature_reconstructs(self):
+        from admina.domains.compliance.forensic import _CHAIN_STATE_KEY
+
+        s3 = self._FullFakeS3()
+        box1 = ForensicBlackBox(boto3_client=s3, bucket="b", state_signing_key="k")
+        box1.record({"i": 1})
+        box1.record({"i": 2})
+        head, count = box1.chain_head, box1.record_count
+        # Forge the state object; records intact; sidecar no longer matches.
+        s3._store[_CHAIN_STATE_KEY] = json.dumps(
+            {"chain_head": "0" * 64, "record_count": 99}
+        ).encode("utf-8")
+        box2 = ForensicBlackBox(boto3_client=s3, bucket="b", state_signing_key="k")
+        assert box2.record_count == count  # reconstructed, not 99
+        assert box2.chain_head == head
+
+    def test_s3_no_key_writes_no_sidecar(self):
+        from admina.domains.compliance.forensic import _CHAIN_STATE_SIG_KEY
+
+        s3 = self._FullFakeS3()
+        box = ForensicBlackBox(boto3_client=s3, bucket="b")
+        box.record({"i": 1})
+        assert _CHAIN_STATE_SIG_KEY not in s3._store
