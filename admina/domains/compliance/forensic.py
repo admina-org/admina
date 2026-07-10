@@ -188,7 +188,29 @@ class ForensicBlackBox(BaseForensicStore):
             state_path = self.filesystem_dir / _CHAIN_STATE_KEY
             if state_path.exists():
                 try:
-                    state = json.loads(state_path.read_text(encoding="utf-8"))
+                    payload = state_path.read_bytes()
+                except OSError:
+                    logger.error(
+                        "Cannot read forensic chain state at %s — reconstructing from records",
+                        state_path,
+                    )
+                    self._reconstruct_chain_state_from_records()
+                    return
+                if self._state_signing_key:
+                    sig_path = self.filesystem_dir / _CHAIN_STATE_SIG_KEY
+                    signature = (
+                        sig_path.read_text(encoding="utf-8").strip() if sig_path.exists() else None
+                    )
+                    if not self._state_sig_is_valid(payload, signature):
+                        logger.critical(
+                            "Forensic chain state signature INVALID or MISSING at %s "
+                            "— possible tampering; reconstructing from records",
+                            state_path,
+                        )
+                        self._reconstruct_chain_state_from_records()
+                        return
+                try:
+                    state = json.loads(payload)
                     self.chain_head = state.get("chain_head", "GENESIS")
                     self.record_count = state.get("record_count", 0)
                     logger.info(
@@ -196,7 +218,7 @@ class ForensicBlackBox(BaseForensicStore):
                         self.record_count,
                         self.chain_head[:16],
                     )
-                except (OSError, json.JSONDecodeError):
+                except json.JSONDecodeError:
                     logger.error(
                         "Corrupt forensic chain state at %s — reconstructing from records",
                         state_path,
