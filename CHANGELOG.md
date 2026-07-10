@@ -15,6 +15,16 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ### Added
 
+- Forensic chain-state file (`_chain_state.json`) can be signed with
+  HMAC-SHA256. Set `ADMINA_FORENSIC_STATE_KEY` (or pass `state_signing_key=`)
+  to enable: on restore a valid signature is trusted (fast path); a missing or
+  invalid signature is treated as untrusted — a CRITICAL event is logged and
+  the chain state is reconstructed from the immutable records instead of the
+  (potentially rewritten) state file. With no key set the state file is
+  unsigned: baseline truncation protection via record reconstruction is
+  retained, and signing is recommended in production. Applies to
+  `ForensicBlackBox` (filesystem + S3 backends) and the `FilesystemForensicStore`
+  plugin; the signature is stored in a `_chain_state.json.sig` sidecar.
 - **SDK streaming.** `GovernedModel.stream(prompt)` yields PII-redacted
   response deltas as an async iterator, with the full governance outcome in
   `GovernedModel.last_stream_result`. The pre-stream gate matches `ask()`:
