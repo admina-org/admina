@@ -20,12 +20,14 @@ event emission on every call.
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
 from admina.core.event_bus import EventType, GovernanceEvent, bus
+from admina.domains.governance import normalize_guard_fail_mode
 from admina.plugins.base import BaseModelAdapter
 from admina.sdk._compat import run_sync
 from admina.sdk.retry import RetryPolicy, run_with_retry
@@ -125,6 +127,7 @@ class GovernedModel:
         self._loop_detection = loop_detection
         self._guards = governance_guards or []
         self._mode = mode
+        self._guard_fail_mode = normalize_guard_fail_mode(os.environ.get("ADMINA_GUARD_FAIL_MODE"))
         self._retry = retry
         self._session_id = str(uuid.uuid4())
         self._pii_redactor: Any = None
@@ -216,6 +219,7 @@ class GovernedModel:
             pii_enabled=self._pii_redaction,
             loop_enabled=loop_on,
             mode=self._mode,
+            guard_fail_mode=self._guard_fail_mode,
         )
 
         pre_action = pre.gov_response.action  # uppercase: ALLOW/BLOCK/CIRCUIT_BREAK

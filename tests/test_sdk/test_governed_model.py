@@ -504,3 +504,57 @@ def test_governed_model_retry_none_propagates_after_one_attempt():
     with pytest.raises(RetryableUpstreamError):
         asyncio.run(gm.ask("hello"))
     assert _AlwaysTransient.calls == 1
+
+
+class _RaisingGuard:
+    name = "raiser"
+
+    async def inspect_request(self, payload):
+        raise RuntimeError("sdk guard boom")
+
+
+class TestGuardFailMode:
+    """B3: GovernedModel honors ADMINA_GUARD_FAIL_MODE on the request side."""
+
+    def test_open_mode_swallows_guard_error(self, monkeypatch):
+        monkeypatch.setenv("ADMINA_GUARD_FAIL_MODE", "open")
+        adapter = MockAdapter(response_text="ok")
+        model = GovernedModel(
+            "m",
+            adapter=adapter,
+            pii_redaction=False,
+            firewall_enabled=False,
+            governance_guards=[_RaisingGuard()],
+        )
+        result = asyncio.run(model.ask("hello"))
+        assert result.action == "ALLOW"
+        assert result.text == "ok"
+        assert adapter.call_count == 1
+
+    def test_closed_mode_blocks_on_guard_error(self, monkeypatch):
+        monkeypatch.setenv("ADMINA_GUARD_FAIL_MODE", "closed")
+        adapter = MockAdapter(response_text="ok")
+        model = GovernedModel(
+            "m",
+            adapter=adapter,
+            pii_redaction=False,
+            firewall_enabled=False,
+            governance_guards=[_RaisingGuard()],
+        )
+        result = asyncio.run(model.ask("hello"))
+        assert result.action == "BLOCK"
+        assert result.text == ""
+        assert adapter.call_count == 0
+
+    def test_default_is_open(self, monkeypatch):
+        monkeypatch.delenv("ADMINA_GUARD_FAIL_MODE", raising=False)
+        adapter = MockAdapter(response_text="ok")
+        model = GovernedModel(
+            "m",
+            adapter=adapter,
+            pii_redaction=False,
+            firewall_enabled=False,
+            governance_guards=[_RaisingGuard()],
+        )
+        result = asyncio.run(model.ask("hello"))
+        assert result.action == "ALLOW"
