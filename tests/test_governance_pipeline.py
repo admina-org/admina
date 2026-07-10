@@ -293,6 +293,35 @@ async def test_multiple_guards_first_block_wins():
     assert "guard_second" not in result.checks
 
 
+class TestGuardFailMode:
+    """B3: ADMINA_GUARD_FAIL_MODE controls request-side guard-exception handling."""
+
+    @pytest.mark.anyio
+    async def test_open_mode_skips_failing_guard(self):
+        # Default open: a raising guard is recorded as ERROR and skipped.
+        result = await run_pipeline(
+            **_base_kwargs(governance_guards=[FailingGuard()], guard_fail_mode="open")
+        )
+        assert result.action.value == "allow"
+        assert result.checks["guard_failing"]["action"] == "ERROR"
+
+    @pytest.mark.anyio
+    async def test_closed_mode_blocks_on_failing_guard(self):
+        result = await run_pipeline(
+            **_base_kwargs(governance_guards=[FailingGuard()], guard_fail_mode="closed")
+        )
+        assert result.action.value == "block"
+        assert result.risk_level.value == "high"
+        # ERROR is still recorded — the audit trail is unchanged.
+        assert result.checks["guard_failing"]["action"] == "ERROR"
+
+    @pytest.mark.anyio
+    async def test_closed_mode_default_open_unchanged(self):
+        # No guard_fail_mode passed -> default "open" -> no block.
+        result = await run_pipeline(**_base_kwargs(governance_guards=[FailingGuard()]))
+        assert result.action.value == "allow"
+
+
 class TestGovernanceMode:
     """The pipeline supports enforce / observe / dry-run modes."""
 
