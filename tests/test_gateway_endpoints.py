@@ -90,6 +90,7 @@ def _settings(**over):
         INJECTION_FAST_PATH_ENABLED=True,
         PII_REDACTION_ENABLED=True,
         GOVERNANCE_MODE="enforce",
+        GUARD_FAIL_MODE="open",
     )
     base.update(over)
     return SimpleNamespace(**base)

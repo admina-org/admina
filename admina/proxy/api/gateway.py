@@ -321,6 +321,7 @@ def create_gateway_endpoints(
             pii_enabled=cfg.PII_REDACTION_ENABLED,
             loop_enabled=False,
             mode=cfg.GOVERNANCE_MODE,
+            guard_fail_mode=cfg.GUARD_FAIL_MODE,
         )
         action = pre.gov_response.action  # uppercase: ALLOW/BLOCK/CIRCUIT_BREAK
 
