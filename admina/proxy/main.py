@@ -1478,10 +1478,44 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                         exc,
                         exc_info=True,
                     )
-                    # follow-up: optional fail-closed mode
                     # Response guard errors are not collected into pipeline_result.checks
                     # (that result is already built before this path runs); the ERROR log
                     # with exc_info is the audit trail for response-side contract failures.
+                    if settings.GUARD_FAIL_MODE == "closed":
+                        # Fail-closed: a crashing response guard blocks the response.
+                        # The request-side forensic record was written before the
+                        # upstream call, so it cannot carry this response-side error —
+                        # write an explicit ERROR record here for the audit trail.
+                        if state.forensic_box:
+                            error_record = {
+                                "event_id": event_id,
+                                "event_type": EventType.MCP_RESPONSE,
+                                "agent_id": agent_id,
+                                "session_id": session_id,
+                                "method": method,
+                                "action": GovernanceAction.BLOCK,
+                                "risk_level": risk_level,
+                                "checks": {
+                                    f"guard_{guard.name}": {
+                                        "action": "ERROR",
+                                        "error": str(exc),
+                                    }
+                                },
+                            }
+                            _loop = asyncio.get_running_loop()
+                            await _loop.run_in_executor(
+                                None, state.forensic_box.record, error_record
+                            )
+                        state.inc_metric("requests_blocked")
+                        logger.warning(
+                            "Guard %r response error blocked response for event %s (fail-closed)",
+                            guard.name,
+                            event_id,
+                        )
+                        return JSONResponse(
+                            status_code=403,
+                            content=mcp_transport.format_block_response(gov_response, body),
+                        )
 
         total_latency = (time.perf_counter() - start_time) * 1000
         state.update_avg_latency(total_latency)

@@ -169,3 +169,37 @@ class TestRequestSideFailMode:
         _inject_state(monkeypatch, guards=[_RaisingRequestGuard()], fail_mode="closed")
         resp = _post_mcp()
         assert resp.status_code == 403
+
+
+class TestResponseSideFailMode:
+    def test_open_mode_response_guard_error_allows(self, monkeypatch):
+        fbox = _FakeForensicBox()
+        _inject_state(
+            monkeypatch,
+            guards=[_RaisingResponseGuard()],
+            fail_mode="open",
+            forensic_box=fbox,
+        )
+        from admina.core.types import EventType
+
+        resp = _post_mcp()
+        assert resp.status_code == 200
+        # No response-side ERROR record is written in open mode.
+        assert not any(r["event_type"] == EventType.MCP_RESPONSE for r in fbox.records)
+
+    def test_closed_mode_response_guard_error_blocks_and_records(self, monkeypatch):
+        fbox = _FakeForensicBox()
+        _inject_state(
+            monkeypatch,
+            guards=[_RaisingResponseGuard()],
+            fail_mode="closed",
+            forensic_box=fbox,
+        )
+        from admina.core.types import EventType
+
+        resp = _post_mcp()
+        assert resp.status_code == 403
+        resp_records = [r for r in fbox.records if r["event_type"] == EventType.MCP_RESPONSE]
+        assert len(resp_records) == 1
+        assert resp_records[0]["checks"]["guard_resp-raiser"]["action"] == "ERROR"
+        assert "response guard boom" in resp_records[0]["checks"]["guard_resp-raiser"]["error"]
