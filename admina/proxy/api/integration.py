@@ -68,7 +68,7 @@ def create_integration_endpoints(
         Expects JSON body with at least ``content`` (str).  Optional:
         ``session_id``, ``method``.
 
-        Returns ``action`` (ALLOW / BLOCK / MODIFY), ``risk_level``,
+        Returns ``action`` (ALLOW / BLOCK / REDACT), ``risk_level``,
         and per-domain ``checks``.
         """
         from admina.domains.governance import run_pipeline
@@ -104,11 +104,11 @@ def create_integration_endpoints(
         gov = result.gov_response  # action/risk_level are already UPPERCASE
         pii_count = result.checks.get("pii_redaction", {}).get("count", 0)
 
-        # External REST contract: MODIFY signals content was redacted on an
+        # External REST contract: REDACT signals content was redacted on an
         # otherwise-ALLOW request.  This vocab is consumed by n8n / CheshireCat
-        # / OpenClaw — do not rename to REDACT.
+        # / OpenClaw and mirrors the internal GovernanceAction.REDACT value.
         if gov.action == "ALLOW" and pii_count > 0:
-            action = "MODIFY"
+            action = "REDACT"
         elif gov.action == "CIRCUIT_BREAK":
             # external REST vocab: a loop is reported as BLOCK (consumers
             # never received CIRCUIT_BREAK from this endpoint historically)
@@ -126,7 +126,7 @@ def create_integration_endpoints(
             "action": action,
             "risk_level": gov.risk_level,
             "checks": result.checks,
-            "redacted_content": redacted_content if action == "MODIFY" else None,
+            "redacted_content": redacted_content if action == "REDACT" else None,
             "latency_ms": round(result.latency_ms, 2),
         }
 

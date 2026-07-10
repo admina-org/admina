@@ -283,7 +283,7 @@ class TestCheshireCatGovernanceFlow:
                     },
                 )
                 data = r.json()
-                assert data["action"] == "MODIFY"
+                assert data["action"] == "REDACT"
                 assert "alice@company.com" not in data["redacted_content"]
                 assert "[EMAIL_REDACTED]" in data["redacted_content"]
 

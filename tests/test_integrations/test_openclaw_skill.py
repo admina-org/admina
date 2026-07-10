@@ -331,7 +331,7 @@ class TestOpenClawValidateExecuteAudit:
                     },
                 )
                 val_data = val.json()
-                assert val_data["action"] == "MODIFY"
+                assert val_data["action"] == "REDACT"
                 assert val_data["redacted_content"] is not None
                 assert "john@example.com" not in val_data["redacted_content"]
                 assert "[EMAIL_REDACTED]" in val_data["redacted_content"]

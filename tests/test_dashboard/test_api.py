@@ -591,7 +591,7 @@ class TestValidateEndpoint:
         data = r.json()
         assert data["action"] == "BLOCK"
 
-    def test_validate_modify_pii(self) -> None:
+    def test_validate_redact_pii(self) -> None:
         app = _build_test_app()
 
         async def go():
@@ -603,7 +603,7 @@ class TestValidateEndpoint:
 
         r = _run(go())
         data = r.json()
-        assert data["action"] == "MODIFY"
+        assert data["action"] == "REDACT"
         assert data["redacted_content"] is not None
 
     def test_validate_empty_content_400(self) -> None:
