@@ -193,6 +193,11 @@ class TestCheshireCatPluginPackage:
         assert "def before_cat_sends_message(" in source
         assert "def before_cat_recalls_memories(" in source
 
+    def test_hook_file_uses_redact_action(self) -> None:
+        source = (self.PLUGIN_DIR / "admina_governance.py").read_text()
+        assert '"REDACT"' in source, "plugin must branch on the REDACT action"
+        assert '"MODIFY"' not in source, "plugin must not reference the old MODIFY action"
+
     def test_admina_yaml_exists(self) -> None:
         assert (self.PLUGIN_DIR / "admina.yaml").is_file()
 

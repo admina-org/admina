@@ -52,7 +52,7 @@ User Message
 [agent_fast_reply]  ──> Admina /api/v1/validate
     |                        |
     |  BLOCK? ──> Return governance notice
-    |  MODIFY? ──> Replace PII in working memory
+    |  REDACT? ──> Replace PII in working memory
     |  ALLOW? ──> Continue
     |
     v
