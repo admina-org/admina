@@ -35,6 +35,17 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   Languages EN + IT. The default engine is unchanged (`spacy-regex`). The
   redteam efficacy suite measures Presidio as a third PII column with
   version/language mode-pinning.
+- **OpenAI-compatible governance gateway** — a new `/v1` HTTP surface on
+  the proxy (`POST /v1/chat/completions`, streaming and non-streaming, plus
+  `GET /v1/models`). Requests are forwarded to a configurable upstream
+  (`ADMINA_GATEWAY_UPSTREAM`) over httpx while the canonical governance
+  pipeline runs inline: prompts are firewall-checked and PII-redacted before
+  they reach the upstream, streamed responses are redacted through a
+  windowed recomposition buffer, and a blocked request returns a synthetic
+  completion (or SSE stream) with `finish_reason: "content_filter"` instead
+  of a raw HTTP error. Every request is written to the forensic log. This is
+  the proxy's first SSE surface. Protected by the existing credential check
+  (`Authorization: Bearer` / `X-API-Key`).
 
 ## [0.10.1] — 2026-06-17
 
