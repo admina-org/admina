@@ -25,18 +25,28 @@ Patch releases only. No new features.
 
 ---
 
-## 0.10.0 — Adapter coverage and SDK ergonomics
+## 0.10.0 — Adapter coverage and pipeline unification
 
-Broader model and engine support; SDK usability improvements.
+Broader provider support and a single governance pipeline across every
+surface.
 
-- Model adapters: Anthropic, Mistral, AWS Bedrock, Google Gemini, native
-  vLLM (beyond the current Ollama-based bridge)
-- PII engine: Microsoft Presidio as a first-class alternative to spaCy +
-  regex
-- SDK: streaming-first API on `GovernedModel` (async iterator with
-  inline governance on each chunk)
-- SDK: configurable retry / backoff policies on all governed primitives
-- Dashboard: WebSocket authentication with API-key scoping
+- Five model adapters — Anthropic, Mistral, AWS Bedrock, Google Gemini,
+  and a native vLLM adapter — each lazy-importing its provider SDK through
+  a per-provider packaging extra.
+- Configurable retry / backoff on the governed primitives
+  (`GovernedModel`, `GovernedAgent`, `GovernedData`), opt-in via a
+  `RetryPolicy` with no new runtime dependency.
+- Uniform engine selection (`ADMINA_ENGINE=auto|python|rust`) across proxy,
+  SDK, and integrations, with engines acquired through a single
+  `admina.engines` package.
+- One canonical governance pipeline (loop → firewall → PII → guards) shared
+  by `POST /mcp`, `POST /api/v1/validate`, and the SDK primitives;
+  `GovernedModel.ask()` runs full governance by default.
+- Dashboard live-feed WebSocket authentication with session-cookie
+  verification and an Origin allow-list.
+- Security and forensic hardening: fail-closed default when no API key is
+  configured, hash-chain state reconstruction from persisted records, and
+  serialized forensic writes.
 
 ---
 
