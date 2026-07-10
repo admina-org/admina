@@ -40,6 +40,20 @@ logger = logging.getLogger("admina.proxy")
 _MAX_SCAN_DEPTH = 6
 
 
+def normalize_guard_fail_mode(value: str | None) -> str:
+    """Normalize the guard fail-mode setting to ``"open"`` or ``"closed"``.
+
+    ``"open"`` (default): a guard that raises its contract is skipped and
+    recorded as an ``ERROR`` check; the pipeline continues. ``"closed"``:
+    a guard exception yields ``action=BLOCK``. ``None`` and the empty string
+    resolve to ``"open"``. Any other value raises ``ValueError``.
+    """
+    normalized = (value or "open").strip().lower()
+    if normalized not in ("open", "closed"):
+        raise ValueError(f"guard fail mode must be 'open' or 'closed' (got {value!r})")
+    return normalized
+
+
 @dataclass
 class GovernanceResult:
     """Result of running the full governance pipeline on a request."""
