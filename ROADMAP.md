@@ -50,17 +50,38 @@ surface.
 
 ---
 
-## 0.11.0 — Observability and performance
+## 0.11.0 — Streaming governance and an OpenAI-compatible gateway
 
-Production observability beyond the current OTEL + Grafana baseline.
+Governance on streamed responses and behind an OpenAI-compatible HTTP
+surface, an additional PII engine, and the closure of deferred hardening
+items.
 
-- Native Prometheus metrics endpoint with SLO panel
-- Structured error taxonomy: stable error codes across proxy, SDK, and
-  REST API
-- Shared async pool for data connectors; decision cache for the
-  injection firewall fast path
-- Benchmark regression gate in CI (fail on >10% regression vs baseline)
-- Request-level tracing correlation across SDK, proxy, and upstream LLM
+- SDK streaming on `GovernedModel`: an async iterator that applies inline
+  governance to each chunk through a windowed recomposition buffer, so a
+  PII entity split across chunk boundaries is still redacted. Streaming
+  metadata is shaped to map onto the OpenTelemetry GenAI conventions so
+  0.12 can emit it unchanged.
+- Microsoft Presidio as a selectable first-class PII engine
+  (`ADMINA_PII_ENGINE=presidio`), analyzer-only so the redaction mask
+  format is identical across engines. The default engine is unchanged
+  (`spacy-regex`).
+- An OpenAI-compatible HTTP gateway (`POST /v1/chat/completions`,
+  `GET /v1/models`) as an additional governed surface, streaming and
+  non-streaming, protected by the existing credential check.
+- Breaking change: `/api/v1/validate` returns `action="REDACT"` in place
+  of the former `"MODIFY"`, a clean rename with no compatibility shim.
+  Permitted under the pre-1.0 posture: the public API may still evolve
+  before the 1.0 stability commitment.
+- Signed forensic state file: an optional HMAC over `_chain_state.json`
+  (`ADMINA_FORENSIC_STATE_KEY`); an unsigned or tampered state falls back
+  to reconstruction from the persisted records.
+- Configurable guard fail mode (`ADMINA_GUARD_FAIL_MODE=open|closed`,
+  default `open`): under `closed`, an exception inside a guard yields
+  `action="BLOCK"`.
+- Detection-efficacy red-team suite (already on `main`): measures
+  firewall, PII, and loop-breaker recall against committed corpora with
+  baseline pinning and a comparison gate that refuses to compare metrics
+  across engine modes.
 
 ---
 
