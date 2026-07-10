@@ -1350,6 +1350,11 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                     "risk_level": risk_level,
                     "governance_latency_ms": round(governance_latency, 2),
                     "checks": {k: safe_serialize(v) for k, v in pipeline_result.checks.items()},
+                    "would_action": (
+                        safe_serialize(pipeline_result.would_action)
+                        if pipeline_result.would_action is not None
+                        else None
+                    ),
                 }
             ),
         )
