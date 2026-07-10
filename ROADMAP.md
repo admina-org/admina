@@ -162,7 +162,7 @@ Running Admina as stateless, horizontally-scaled infrastructure.
 Reserved for breaking changes that cannot be delivered under 1.x.
 No breaking changes are planned. Candidate drivers:
 
-- Plugin ABI v2 if adoption reveals design limitations that cannot be
+- Plugin ABI v2 if real-world use reveals design limitations that cannot be
   extended under v1
 - Streaming-first pipeline rearchitecture if chunk-level governance
   becomes the dominant workload
