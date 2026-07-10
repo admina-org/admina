@@ -354,20 +354,35 @@ def create_gateway_endpoints(
         if stream:
             forward_body["stream"] = True
 
-            async def _proxy() -> AsyncIterator[str]:
-                if cfg.PII_REDACTION_ENABLED:
-                    from admina.sdk.streaming import StreamRedactor
+            if cfg.PII_REDACTION_ENABLED:
+                from admina.sdk.streaming import StreamRedactor
 
-                    redactor = StreamRedactor(state.pii_redactor)
-                else:
-                    redactor = _PassthroughRedactor()
-                async with state.http_client.stream(
-                    "POST", url, json=forward_body, headers=headers
-                ) as upstream_resp:
+                redactor = StreamRedactor(state.pii_redactor)
+            else:
+                redactor = _PassthroughRedactor()
+
+            # Open the upstream connection eagerly, before the
+            # StreamingResponse is constructed. Once the response is
+            # returned, Starlette sends the HTTP status line before pulling
+            # the first chunk from the body generator — so a ConnectError
+            # raised from *inside* the generator can no longer become a
+            # clean 502 (the 200 has already gone out). Entering the
+            # context manager here, synchronously, keeps the connect-time
+            # failure catchable, mirroring the non-streaming path below.
+            stream_cm = state.http_client.stream("POST", url, json=forward_body, headers=headers)
+            try:
+                upstream_resp = await stream_cm.__aenter__()
+            except httpx.ConnectError:
+                raise HTTPException(status_code=502, detail="Gateway upstream unreachable")
+
+            async def _proxy() -> AsyncIterator[str]:
+                try:
                     async for sse in _governed_sse_stream(
                         upstream_resp.aiter_lines(), redactor, model
                     ):
                         yield sse
+                finally:
+                    await stream_cm.__aexit__(None, None, None)
 
             return StreamingResponse(_proxy(), media_type="text/event-stream")
 

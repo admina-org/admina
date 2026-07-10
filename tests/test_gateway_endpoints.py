@@ -212,6 +212,26 @@ def test_chat_completions_nonstream_allow_redacts_response_pii():
     assert "a@b.com" not in content and "[EMAIL]" in content
 
 
+class _FakeHTTPConnectError:
+    """http_client whose .post() raises ConnectError — upstream unreachable."""
+
+    async def post(self, url, **kw):
+        raise httpx.ConnectError("connection refused")
+
+
+def test_chat_completions_nonstream_allow_upstream_unreachable_returns_502():
+    app = _app(_state(_FakeHTTPConnectError()), _settings())
+    body = {"model": "llama3", "messages": [{"role": "user", "content": "hello"}]}
+
+    async def go():
+        async with _client(app) as c:
+            return await c.post("/v1/chat/completions", json=body)
+
+    resp = asyncio.run(go())
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "Gateway upstream unreachable"
+
+
 # ── POST /v1/chat/completions — BLOCK ─────────────────────────
 
 
@@ -283,6 +303,48 @@ class _FakeStreamHTTP:
     def stream(self, method, url, json=None, headers=None):
         self.last_stream = (method, url, json, headers)
         return _FakeStreamCM(self._lines)
+
+
+class _FakeStreamCMConnectError:
+    """Async context manager whose __aenter__ raises ConnectError — mirrors
+    what httpx.AsyncClient.stream() does when the upstream is unreachable
+    (the connection is attempted at __aenter__ time, not at first read)."""
+
+    async def __aenter__(self):
+        raise httpx.ConnectError("connection refused")
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeStreamHTTPUnreachable:
+    """http_client whose .stream() fails to connect on __aenter__."""
+
+    def __init__(self):
+        self.last_stream = None
+
+    def stream(self, method, url, json=None, headers=None):
+        self.last_stream = (method, url, json, headers)
+        return _FakeStreamCMConnectError()
+
+
+def test_chat_completions_stream_allow_upstream_unreachable_returns_502():
+    http = _FakeStreamHTTPUnreachable()
+    app = _app(_state(http), _settings())
+    body = {
+        "model": "llama3",
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+
+    async def go():
+        async with _client(app) as c:
+            return await c.post("/v1/chat/completions", json=body)
+
+    resp = asyncio.run(go())
+    assert resp.status_code == 502
+    assert resp.json()["detail"] == "Gateway upstream unreachable"
+    assert http.last_stream is not None  # the connection attempt did happen
 
 
 def test_chat_completions_stream_allow_redacts_sse_deltas():
