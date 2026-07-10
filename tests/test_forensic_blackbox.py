@@ -425,3 +425,15 @@ def test_forensic_concurrent_records_do_not_fork(tmp_path):
     res = asyncio.run(fb.verify_chain())
     assert res["valid"] is True
     assert res["records"] == 20  # 20 distinct sequence numbers, no fork/dup
+
+
+class TestSignedChainStateFilesystem:
+    def test_signing_key_writes_sidecar(self, tmp_path):
+        box = ForensicBlackBox(filesystem_dir=str(tmp_path), state_signing_key="k")
+        box.record({"i": 1})
+        assert (tmp_path / "_chain_state.json.sig").exists()
+
+    def test_no_key_writes_no_sidecar(self, tmp_path):
+        box = ForensicBlackBox(filesystem_dir=str(tmp_path))
+        box.record({"i": 1})
+        assert not (tmp_path / "_chain_state.json.sig").exists()

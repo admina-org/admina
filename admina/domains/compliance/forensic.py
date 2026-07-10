@@ -18,8 +18,10 @@ Hash-chain integrity, immutable audit trail.
 """
 
 import hashlib
+import hmac
 import json
 import logging
+import os
 import threading
 import time
 from datetime import UTC, datetime
@@ -31,6 +33,8 @@ logger = logging.getLogger("admina.forensic_blackbox")
 
 # Key used to persist the chain state in the object store.
 _CHAIN_STATE_KEY = "_chain_state.json"
+# Sidecar holding the HMAC-SHA256 signature of the chain-state payload.
+_CHAIN_STATE_SIG_KEY = "_chain_state.json.sig"
 
 
 class ForensicBlackBox(BaseForensicStore):
@@ -63,6 +67,8 @@ class ForensicBlackBox(BaseForensicStore):
         # Retry policy for transient S3 errors
         s3_max_retries: int = 5,
         s3_base_delay_s: float = 0.2,
+        # Optional HMAC key for the chain-state file (else ADMINA_FORENSIC_STATE_KEY)
+        state_signing_key: str | None = None,
     ):
         self.boto3_client = boto3_client
         self.bucket = bucket
@@ -75,6 +81,7 @@ class ForensicBlackBox(BaseForensicStore):
         self.chain_head: str = "GENESIS"
         self.record_count: int = 0
         self._write_lock = threading.Lock()
+        self._state_signing_key = state_signing_key or os.environ.get("ADMINA_FORENSIC_STATE_KEY")
         if self.filesystem_dir is not None:
             self.filesystem_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_bucket()
@@ -226,12 +233,32 @@ class ForensicBlackBox(BaseForensicStore):
         if self.filesystem_dir is not None:
             try:
                 (self.filesystem_dir / _CHAIN_STATE_KEY).write_bytes(payload)
+                sig = self._sign_state_payload(payload)
+                if sig is not None:
+                    (self.filesystem_dir / _CHAIN_STATE_SIG_KEY).write_text(sig, encoding="utf-8")
             except OSError as e:
                 logger.warning("Failed to persist chain state (filesystem): %s", e)
 
     def _compute_hash(self, data: str) -> str:
         """SHA-256 hash for chain integrity."""
         return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+    def _sign_state_payload(self, payload: bytes) -> str | None:
+        """HMAC-SHA256 hex digest of *payload*, or None when no signing key
+        is configured (``ADMINA_FORENSIC_STATE_KEY`` unset)."""
+        if not self._state_signing_key:
+            return None
+        return hmac.new(
+            self._state_signing_key.encode("utf-8"), payload, hashlib.sha256
+        ).hexdigest()
+
+    def _state_sig_is_valid(self, payload: bytes, signature: str | None) -> bool:
+        """True iff a signing key is set and *signature* matches *payload*
+        (constant-time)."""
+        expected = self._sign_state_payload(payload)
+        if expected is None or not signature:
+            return False
+        return hmac.compare_digest(signature, expected)
 
     def record(self, event: dict) -> dict:
         """
