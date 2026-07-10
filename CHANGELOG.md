@@ -47,6 +47,25 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   the proxy's first SSE surface. Protected by the existing credential check
   (`Authorization: Bearer` / `X-API-Key`).
 
+### Breaking
+
+- **`/api/v1/validate` renames the `MODIFY` action to `REDACT`.** When a
+  request is allowed but PII was redacted, the response `action` is now
+  `"REDACT"` (was `"MODIFY"`); `redacted_content` is populated on `REDACT`
+  exactly as before. This aligns the REST vocabulary with the internal
+  `GovernanceAction.REDACT` value. The `CIRCUIT_BREAK → BLOCK` mapping is
+  unchanged. No compatibility shim is carried: the in-repo n8n node,
+  CheshireCat plugin, and OpenClaw skill are updated in the same change,
+  and external callers must switch to `REDACT`. Admina is pre-1.0, so the
+  public API may still evolve before the 1.0 stability commitment.
+
+### Fixed
+
+- The proxy `/mcp` forensic record now carries `would_action` — the shadow
+  decision recorded in `observe` / `dry-run` mode — matching the
+  ClickHouse analytics record. Previously the shadow decision reached only
+  ClickHouse, leaving the hash-chained audit trail without it.
+
 ## [0.10.1] — 2026-06-17
 
 Security patch release. Updates two dependencies flagged by upstream
