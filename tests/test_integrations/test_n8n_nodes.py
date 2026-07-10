@@ -189,6 +189,10 @@ class TestAdminaGovernNode:
     def test_icon_reference(self, source: str) -> None:
         assert "admina-govern.svg" in source
 
+    def test_uses_redact_action(self, source: str) -> None:
+        assert "'REDACT'" in source, "node must branch on the REDACT action"
+        assert "'MODIFY'" not in source, "node must not reference the old MODIFY action"
+
 
 class TestAdminaAuditNode:
     """Validate AdminaAudit.node.ts has correct structure."""

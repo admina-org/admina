@@ -190,7 +190,7 @@ export class AdminaGovern implements INodeType {
 				},
 			};
 
-			if (action === 'MODIFY' && response.redacted_content) {
+			if (action === 'REDACT' && response.redacted_content) {
 				outputItem.json[contentField] = response.redacted_content;
 			}
 
