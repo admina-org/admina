@@ -85,7 +85,28 @@ items.
 
 ---
 
-## 0.12.0 — Multi-tenancy and RBAC
+## 0.12.0 — Observability and performance
+
+Production observability and performance work beyond the current OTEL +
+Grafana baseline.
+
+- Emission of the streaming-request metadata shaped in 0.11 onto the
+  OpenTelemetry GenAI semantic conventions (`gen_ai.request.model`,
+  `gen_ai.usage.*`, `gen_ai.response.finish_reasons`,
+  `gen_ai.client.operation.duration`) — no metadata field is renamed at
+  the emission boundary.
+- Native Prometheus metrics endpoint with an SLO panel.
+- Structured error taxonomy: stable error codes across proxy, SDK, and
+  REST API.
+- Shared async pool for data connectors; decision cache for the injection
+  firewall fast path.
+- Benchmark regression gate in CI (fail on a >10% regression versus
+  baseline).
+- Request-level tracing correlation across SDK, proxy, and upstream LLM.
+
+---
+
+## 0.13.0 — Multi-tenancy and RBAC
 
 Operating Admina as a shared service.
 
@@ -98,7 +119,7 @@ Operating Admina as a shared service.
 
 ---
 
-## 0.13.0 — Compliance template expansion
+## 0.14.0 — Compliance template expansion
 
 Beyond the EU AI Act.
 
