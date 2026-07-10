@@ -170,3 +170,63 @@ def test_stream_block_with_real_engine_does_not_raise() -> None:
     assert out == []
     assert adapter.stream_called is False
     assert model.last_stream_result["action"] == "BLOCK"
+
+
+class _RaisingGuard:
+    name = "stream-raiser"
+
+    async def inspect_request(self, payload):
+        raise RuntimeError("sdk stream guard boom")
+
+
+class TestStreamGuardFailMode:
+    """B3 follow-up: stream()'s pre-stream gate honors ADMINA_GUARD_FAIL_MODE
+    (mirrors TestGuardFailMode in test_governed_model.py, which covers ask())."""
+
+    def test_open_mode_swallows_guard_error_and_streams(self, monkeypatch) -> None:
+        monkeypatch.setenv("ADMINA_GUARD_FAIL_MODE", "open")
+        adapter = StreamMock(["ok"])
+        model = GovernedModel(
+            "m",
+            adapter=adapter,
+            audit=False,
+            firewall_enabled=False,
+            pii_redaction=False,
+            governance_guards=[_RaisingGuard()],
+        )
+        out = _collect(model, "hi")
+        assert "".join(out) == "ok"
+        assert adapter.stream_called is True
+        assert model.last_stream_result["action"] == "ALLOW"
+
+    def test_closed_mode_blocks_on_guard_error(self, monkeypatch) -> None:
+        monkeypatch.setenv("ADMINA_GUARD_FAIL_MODE", "closed")
+        adapter = StreamMock(["should", "never", "appear"])
+        model = GovernedModel(
+            "m",
+            adapter=adapter,
+            audit=False,
+            firewall_enabled=False,
+            pii_redaction=False,
+            governance_guards=[_RaisingGuard()],
+        )
+        out = _collect(model, "hi")
+        assert out == []
+        assert adapter.stream_called is False
+        assert model.last_stream_result["action"] == "BLOCK"
+        assert model.last_stream_result["finish_reason"] == "content_filter"
+
+    def test_default_is_open(self, monkeypatch) -> None:
+        monkeypatch.delenv("ADMINA_GUARD_FAIL_MODE", raising=False)
+        adapter = StreamMock(["ok"])
+        model = GovernedModel(
+            "m",
+            adapter=adapter,
+            audit=False,
+            firewall_enabled=False,
+            pii_redaction=False,
+            governance_guards=[_RaisingGuard()],
+        )
+        out = _collect(model, "hi")
+        assert "".join(out) == "ok"
+        assert model.last_stream_result["action"] == "ALLOW"

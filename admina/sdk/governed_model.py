@@ -382,6 +382,7 @@ class GovernedModel:
             pii_enabled=self._pii_redaction,
             loop_enabled=loop_on,
             mode=self._mode,
+            guard_fail_mode=self._guard_fail_mode,
         )
 
         pre_action = pre.gov_response.action
