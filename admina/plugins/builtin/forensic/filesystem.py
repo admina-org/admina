@@ -23,8 +23,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import logging
+import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,11 +45,14 @@ class FilesystemForensicStore(BaseForensicStore):
 
     name = "filesystem"
 
-    def __init__(self, base_dir: str = ".admina/forensic") -> None:
+    def __init__(
+        self, base_dir: str = ".admina/forensic", state_signing_key: str | None = None
+    ) -> None:
         self._base_dir = Path(base_dir).resolve()
         self._base_dir.mkdir(parents=True, exist_ok=True)
         self._chain_head: str = "GENESIS"
         self._record_count: int = 0
+        self._state_signing_key = state_signing_key or os.environ.get("ADMINA_FORENSIC_STATE_KEY")
         self._lock = asyncio.Lock()
         self._restore_chain_state()
 
@@ -193,39 +198,77 @@ class FilesystemForensicStore(BaseForensicStore):
         )
         return True
 
+    def _sign_state_payload(self, payload: bytes) -> str | None:
+        """HMAC-SHA256 hex digest of *payload*, or None when no signing key
+        is configured (``ADMINA_FORENSIC_STATE_KEY`` unset)."""
+        if not self._state_signing_key:
+            return None
+        return hmac.new(
+            self._state_signing_key.encode("utf-8"), payload, hashlib.sha256
+        ).hexdigest()
+
+    def _state_sig_is_valid(self, payload: bytes, signature: str | None) -> bool:
+        """True iff a signing key is set and *signature* matches *payload*."""
+        expected = self._sign_state_payload(payload)
+        if expected is None or not signature:
+            return False
+        return hmac.compare_digest(signature, expected)
+
     def _restore_chain_state(self) -> None:
         """Restore chain state from the state file on startup.
 
-        When the state file is missing or corrupt, falls back to
-        reconstructing state from the stored record files so the chain is
-        never silently restarted from GENESIS while records still exist.
+        When the state file is missing, corrupt, or (with a signing key set)
+        carries a missing/invalid HMAC signature, falls back to reconstructing
+        state from the stored record files so the chain is never silently
+        restarted from GENESIS while records still exist.
         """
         state_file = self._base_dir / "_chain_state.json"
-        if state_file.exists():
-            try:
-                state = json.loads(state_file.read_text(encoding="utf-8"))
-                self._chain_head = state.get("chain_head", "GENESIS")
-                self._record_count = state.get("record_count", 0)
-            except (OSError, json.JSONDecodeError):
-                logger.error(
-                    "Corrupt forensic chain state at %s — reconstructing from records",
+        if not state_file.exists():
+            self._reconstruct_from_records()
+            return
+        try:
+            payload = state_file.read_bytes()
+        except OSError:
+            logger.error(
+                "Cannot read forensic chain state at %s — reconstructing from records",
+                state_file,
+            )
+            self._reconstruct_from_records()
+            return
+        if self._state_signing_key:
+            sig_file = self._base_dir / "_chain_state.json.sig"
+            signature = sig_file.read_text(encoding="utf-8").strip() if sig_file.exists() else None
+            if not self._state_sig_is_valid(payload, signature):
+                logger.critical(
+                    "Forensic chain state signature INVALID or MISSING at %s "
+                    "— possible tampering; reconstructing from records",
                     state_file,
                 )
                 self._reconstruct_from_records()
-        else:
+                return
+        try:
+            state = json.loads(payload)
+            self._chain_head = state.get("chain_head", "GENESIS")
+            self._record_count = state.get("record_count", 0)
+        except json.JSONDecodeError:
+            logger.error(
+                "Corrupt forensic chain state at %s — reconstructing from records",
+                state_file,
+            )
             self._reconstruct_from_records()
 
     def _persist_chain_state(self) -> None:
-        """Persist chain state to a JSON file."""
+        """Persist chain state to a JSON file, with an optional HMAC sidecar."""
         state_file = self._base_dir / "_chain_state.json"
-        state_file.write_text(
-            json.dumps(
-                {
-                    "chain_head": self._chain_head,
-                    "record_count": self._record_count,
-                    "updated_at": datetime.now(UTC).isoformat(),
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
+        payload = json.dumps(
+            {
+                "chain_head": self._chain_head,
+                "record_count": self._record_count,
+                "updated_at": datetime.now(UTC).isoformat(),
+            },
+            indent=2,
+        ).encode("utf-8")
+        state_file.write_bytes(payload)
+        sig = self._sign_state_payload(payload)
+        if sig is not None:
+            (self._base_dir / "_chain_state.json.sig").write_text(sig, encoding="utf-8")

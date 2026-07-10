@@ -1259,3 +1259,59 @@ def test_ollama_send_offloads_blocking_call(monkeypatch):
     out = asyncio.run(a.send("hello"))
     assert out["text"] == "hey"
     assert seen["to_thread"] == 1  # the blocking chat() was offloaded
+
+
+def test_plugin_signed_state_writes_sidecar(tmp_path):
+    from admina.plugins.builtin.forensic.filesystem import FilesystemForensicStore
+
+    s = FilesystemForensicStore(base_dir=str(tmp_path), state_signing_key="k")
+    _run(s.append({"e": 1}))
+    assert (tmp_path / "_chain_state.json.sig").exists()
+
+
+def test_plugin_no_key_writes_no_sidecar(tmp_path):
+    from admina.plugins.builtin.forensic.filesystem import FilesystemForensicStore
+
+    s = FilesystemForensicStore(base_dir=str(tmp_path))
+    _run(s.append({"e": 1}))
+    assert not (tmp_path / "_chain_state.json.sig").exists()
+
+
+def test_plugin_valid_signature_is_trusted(tmp_path):
+    from admina.plugins.builtin.forensic.filesystem import FilesystemForensicStore
+
+    s1 = FilesystemForensicStore(base_dir=str(tmp_path), state_signing_key="k")
+    _run(s1.append({"e": 1}))
+    _run(s1.append({"e": 2}))
+    head, count = s1._chain_head, s1._record_count
+    # Remove record files, keep the signed state → only the trusted path
+    # recovers head/count (reconstruction would find nothing → GENESIS/0).
+    for p in tmp_path.glob("[0-9]*.json"):
+        p.unlink()
+    s2 = FilesystemForensicStore(base_dir=str(tmp_path), state_signing_key="k")
+    assert s2._record_count == count
+    assert s2._chain_head == head
+
+
+def test_plugin_invalid_signature_reconstructs(tmp_path):
+    from admina.plugins.builtin.forensic.filesystem import FilesystemForensicStore
+
+    s1 = FilesystemForensicStore(base_dir=str(tmp_path), state_signing_key="k")
+    _run(s1.append({"e": 1}))
+    _run(s1.append({"e": 2}))
+    head, count = s1._chain_head, s1._record_count
+    (tmp_path / "_chain_state.json").write_bytes(
+        json.dumps({"chain_head": "0" * 64, "record_count": 99}).encode("utf-8")
+    )
+    s2 = FilesystemForensicStore(base_dir=str(tmp_path), state_signing_key="k")
+    assert s2._record_count == count  # reconstructed, not 99
+    assert s2._chain_head == head
+
+
+def test_plugin_env_var_supplies_signing_key(tmp_path, monkeypatch):
+    from admina.plugins.builtin.forensic.filesystem import FilesystemForensicStore
+
+    monkeypatch.setenv("ADMINA_FORENSIC_STATE_KEY", "envkey")
+    s = FilesystemForensicStore(base_dir=str(tmp_path))
+    _run(s.append({"e": 1}))
+    assert (tmp_path / "_chain_state.json.sig").exists()
