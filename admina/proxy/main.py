@@ -1297,6 +1297,7 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
         injection_enabled=settings.INJECTION_FAST_PATH_ENABLED,
         pii_enabled=settings.PII_REDACTION_ENABLED,
         mode=settings.GOVERNANCE_MODE,
+        guard_fail_mode=settings.GUARD_FAIL_MODE,
     )
 
     persisted_details = build_governance_details(pipeline_result)
