@@ -15,6 +15,14 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ### Added
 
+- **Configurable guard fail mode** (`ADMINA_GUARD_FAIL_MODE=open|closed`,
+  default `open`). When a pluggable governance guard raises, `open` keeps the
+  current behavior (the guard is skipped and recorded as an `ERROR` check);
+  `closed` turns the exception into a `BLOCK`. Enforced on the request-side
+  pipeline (SDK `GovernedModel` and the proxy) and, proxy-only, on
+  response inspection — where a fail-closed block also writes an explicit
+  forensic `ERROR` record, since the request-side record is written before
+  response inspection runs.
 - Forensic chain-state file (`_chain_state.json`) can be signed with
   HMAC-SHA256. Set `ADMINA_FORENSIC_STATE_KEY` (or pass `state_signing_key=`)
   to enable: on restore a valid signature is trusted (fast path); a missing or
