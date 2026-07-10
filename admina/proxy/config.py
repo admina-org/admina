@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from admina.core.types import EventType, GovernanceAction, RiskLevel
+from admina.domains.governance import normalize_guard_fail_mode
 
 
 # ── Environment Config ──────────────────────────────────────
@@ -122,6 +123,14 @@ class Settings(BaseSettings):
     PII_REDACTION_ENABLED: bool = True
     MAX_REQUEST_TOKENS: int = 100000
 
+    # Guard fail mode (B3): what happens when a governance guard raises.
+    #   "open" (default): the guard is skipped, recorded as an ERROR check,
+    #           and the pipeline continues — a crashing third-party guard
+    #           must not take the whole pipeline down by default.
+    #   "closed": a guard exception yields BLOCK.
+    # Read from ADMINA_GUARD_FAIL_MODE (canonical name, shared with the SDK).
+    GUARD_FAIL_MODE: str = Field(default="open", validation_alias="ADMINA_GUARD_FAIL_MODE")
+
     # ── OpenAI-compatible gateway (A3) ───────────────────────────
     # Upstream OpenAI-compatible API the gateway forwards to (Ollama,
     # vLLM, OpenAI, …). Must include the API base path (typically /v1).
@@ -142,6 +151,11 @@ class Settings(BaseSettings):
                 f"GOVERNANCE_MODE must be one of: enforce | observe | dry-run (got {v!r})"
             )
         return "dry-run" if v == "dry_run" else v
+
+    @field_validator("GUARD_FAIL_MODE")
+    @classmethod
+    def validate_guard_fail_mode(cls, v: str) -> str:
+        return normalize_guard_fail_mode(v)
 
     @field_validator("FORENSIC_BACKEND")
     @classmethod
