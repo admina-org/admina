@@ -13,6 +13,16 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-07-15
+
+Streaming, gateway, and PII-engine release. Adds response streaming with
+inline PII redaction on `GovernedModel`, an OpenAI-compatible governance
+gateway, a selectable Microsoft Presidio PII engine, an HMAC-signed
+forensic chain-state file, and a configurable guard fail mode. Includes one
+breaking change — the `/api/v1/validate` action `MODIFY` is renamed to
+`REDACT` (permitted under the pre-1.0 posture: the public API may still
+evolve before the 1.0 stability commitment).
+
 ### Added
 
 - **Configurable guard fail mode** (`ADMINA_GUARD_FAIL_MODE=open|closed`,
@@ -613,7 +623,8 @@ environment in `docker-compose.benchmark.yml`.
 
 ---
 
-[Unreleased]: https://github.com/admina-org/admina/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/admina-org/admina/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/admina-org/admina/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/admina-org/admina/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/admina-org/admina/compare/v0.9.5...v0.10.0
 [0.9.5]: https://github.com/admina-org/admina/compare/v0.9.4...v0.9.5
