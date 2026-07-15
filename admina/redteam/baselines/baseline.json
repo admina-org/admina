@@ -22,6 +22,12 @@
       "type_recall": 0.6551724137931034,
       "fp": 0,
       "fp_samples": 16
+    },
+    "presidio": {
+      "type_recall": 0.5172413793103449,
+      "fp": 9,
+      "fp_samples": 16,
+      "mode": "presidio:2.2.363/en+it"
     }
   },
   "loop": {

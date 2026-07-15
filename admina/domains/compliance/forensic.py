@@ -18,8 +18,10 @@ Hash-chain integrity, immutable audit trail.
 """
 
 import hashlib
+import hmac
 import json
 import logging
+import os
 import threading
 import time
 from datetime import UTC, datetime
@@ -31,6 +33,8 @@ logger = logging.getLogger("admina.forensic_blackbox")
 
 # Key used to persist the chain state in the object store.
 _CHAIN_STATE_KEY = "_chain_state.json"
+# Sidecar holding the HMAC-SHA256 signature of the chain-state payload.
+_CHAIN_STATE_SIG_KEY = "_chain_state.json.sig"
 
 
 class ForensicBlackBox(BaseForensicStore):
@@ -63,6 +67,8 @@ class ForensicBlackBox(BaseForensicStore):
         # Retry policy for transient S3 errors
         s3_max_retries: int = 5,
         s3_base_delay_s: float = 0.2,
+        # Optional HMAC key for the chain-state file (else ADMINA_FORENSIC_STATE_KEY)
+        state_signing_key: str | None = None,
     ):
         self.boto3_client = boto3_client
         self.bucket = bucket
@@ -75,6 +81,7 @@ class ForensicBlackBox(BaseForensicStore):
         self.chain_head: str = "GENESIS"
         self.record_count: int = 0
         self._write_lock = threading.Lock()
+        self._state_signing_key = state_signing_key or os.environ.get("ADMINA_FORENSIC_STATE_KEY")
         if self.filesystem_dir is not None:
             self.filesystem_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_bucket()
@@ -160,12 +167,35 @@ class ForensicBlackBox(BaseForensicStore):
         )
         return True
 
+    def _read_s3_state_sig(self) -> str | None:
+        """Read the HMAC sidecar object for the chain state (S3), or None."""
+        try:
+            obj = self.boto3_client.get_object(Bucket=self.bucket, Key=_CHAIN_STATE_SIG_KEY)
+            return obj["Body"].read().decode("utf-8").strip()
+        except Exception:  # noqa: BLE001 — NoSuchKey or similar
+            return None
+
     def _restore_chain_state(self):
         """Restore chain_head and record_count from the configured backend."""
         if self.boto3_client is not None:
             try:
                 obj = self.boto3_client.get_object(Bucket=self.bucket, Key=_CHAIN_STATE_KEY)
-                state = json.loads(obj["Body"].read().decode("utf-8"))
+                payload = obj["Body"].read()
+            except Exception:  # noqa: BLE001 — NoSuchKey or similar
+                logger.info("No existing forensic chain state in S3, starting fresh")
+                self._reconstruct_chain_state_from_records()
+                return
+            if self._state_signing_key and not self._state_sig_is_valid(
+                payload, self._read_s3_state_sig()
+            ):
+                logger.critical(
+                    "Forensic chain state signature INVALID or MISSING (S3) "
+                    "— possible tampering; reconstructing from records"
+                )
+                self._reconstruct_chain_state_from_records()
+                return
+            try:
+                state = json.loads(payload)
                 self.chain_head = state.get("chain_head", "GENESIS")
                 self.record_count = state.get("record_count", 0)
                 logger.info(
@@ -173,15 +203,37 @@ class ForensicBlackBox(BaseForensicStore):
                     self.record_count,
                     self.chain_head[:16],
                 )
-            except Exception:  # noqa: BLE001 — NoSuchKey or similar
-                logger.info("No existing forensic chain state in S3, starting fresh")
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                logger.error("Corrupt forensic chain state (S3) — reconstructing from records")
                 self._reconstruct_chain_state_from_records()
             return
         if self.filesystem_dir is not None:
             state_path = self.filesystem_dir / _CHAIN_STATE_KEY
             if state_path.exists():
                 try:
-                    state = json.loads(state_path.read_text(encoding="utf-8"))
+                    payload = state_path.read_bytes()
+                except OSError:
+                    logger.error(
+                        "Cannot read forensic chain state at %s — reconstructing from records",
+                        state_path,
+                    )
+                    self._reconstruct_chain_state_from_records()
+                    return
+                if self._state_signing_key:
+                    sig_path = self.filesystem_dir / _CHAIN_STATE_SIG_KEY
+                    signature = (
+                        sig_path.read_text(encoding="utf-8").strip() if sig_path.exists() else None
+                    )
+                    if not self._state_sig_is_valid(payload, signature):
+                        logger.critical(
+                            "Forensic chain state signature INVALID or MISSING at %s "
+                            "— possible tampering; reconstructing from records",
+                            state_path,
+                        )
+                        self._reconstruct_chain_state_from_records()
+                        return
+                try:
+                    state = json.loads(payload)
                     self.chain_head = state.get("chain_head", "GENESIS")
                     self.record_count = state.get("record_count", 0)
                     logger.info(
@@ -189,7 +241,7 @@ class ForensicBlackBox(BaseForensicStore):
                         self.record_count,
                         self.chain_head[:16],
                     )
-                except (OSError, json.JSONDecodeError):
+                except json.JSONDecodeError:
                     logger.error(
                         "Corrupt forensic chain state at %s — reconstructing from records",
                         state_path,
@@ -220,18 +272,47 @@ class ForensicBlackBox(BaseForensicStore):
                     Body=payload,
                     ContentType="application/json",
                 )
+                sig = self._sign_state_payload(payload)
+                if sig is not None:
+                    self._s3_call(
+                        self.boto3_client.put_object,
+                        Bucket=self.bucket,
+                        Key=_CHAIN_STATE_SIG_KEY,
+                        Body=sig.encode("utf-8"),
+                        ContentType="text/plain",
+                    )
             except Exception as e:  # noqa: BLE001
                 logger.warning("Failed to persist chain state (S3): %s", e)
             return
         if self.filesystem_dir is not None:
             try:
                 (self.filesystem_dir / _CHAIN_STATE_KEY).write_bytes(payload)
+                sig = self._sign_state_payload(payload)
+                if sig is not None:
+                    (self.filesystem_dir / _CHAIN_STATE_SIG_KEY).write_text(sig, encoding="utf-8")
             except OSError as e:
                 logger.warning("Failed to persist chain state (filesystem): %s", e)
 
     def _compute_hash(self, data: str) -> str:
         """SHA-256 hash for chain integrity."""
         return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+    def _sign_state_payload(self, payload: bytes) -> str | None:
+        """HMAC-SHA256 hex digest of *payload*, or None when no signing key
+        is configured (``ADMINA_FORENSIC_STATE_KEY`` unset)."""
+        if not self._state_signing_key:
+            return None
+        return hmac.new(
+            self._state_signing_key.encode("utf-8"), payload, hashlib.sha256
+        ).hexdigest()
+
+    def _state_sig_is_valid(self, payload: bytes, signature: str | None) -> bool:
+        """True iff a signing key is set and *signature* matches *payload*
+        (constant-time)."""
+        expected = self._sign_state_payload(payload)
+        if expected is None or not signature:
+            return False
+        return hmac.compare_digest(signature, expected)
 
     def record(self, event: dict) -> dict:
         """
@@ -439,7 +520,7 @@ class ForensicBlackBox(BaseForensicStore):
             resp = self._s3_call(self.boto3_client.list_objects_v2, **kwargs)
             for item in resp.get("Contents", []) or []:
                 key = item["Key"]
-                if key.endswith(_CHAIN_STATE_KEY):
+                if key.endswith(_CHAIN_STATE_KEY) or key.endswith(_CHAIN_STATE_SIG_KEY):
                     continue
                 obj = self._s3_call(self.boto3_client.get_object, Bucket=self.bucket, Key=key)
                 out.append(json.loads(obj["Body"].read().decode("utf-8")))

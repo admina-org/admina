@@ -27,6 +27,7 @@ from admina.sdk.governed_agent import GovernedAgent
 from admina.sdk.governed_data import GovernedData
 from admina.sdk.governed_model import GovernedModel
 from admina.sdk.retry import RetryPolicy, run_with_retry
+from admina.sdk.streaming import StreamRedactor
 
 __all__ = [
     "GovernedModel",
@@ -37,4 +38,5 @@ __all__ = [
     "run_with_retry",
     "RetryableUpstreamError",
     "TerminalUpstreamError",
+    "StreamRedactor",
 ]

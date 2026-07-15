@@ -29,6 +29,7 @@ import time
 from typing import Any
 
 from admina.plugins.base import BaseModelAdapter
+from admina.plugins.builtin.adapters._streaming import aiter_sync
 
 logger = logging.getLogger("admina.plugins.adapters.anthropic")
 
@@ -136,6 +137,41 @@ class AnthropicAdapter(BaseModelAdapter):
                 "model": model,
             },
         }
+
+    async def send_stream(
+        self,
+        prompt: str,
+        context: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Stream text deltas from the Anthropic Messages API."""
+        client = self._get_client()
+        model = kwargs.pop("model", None) or self._default_model
+        if not model:
+            raise ValueError(
+                "AnthropicAdapter needs a model: pass model=... or set ADMINA_ANTHROPIC_MODEL"
+            )
+        max_tokens = kwargs.pop("max_tokens", self._max_tokens)
+
+        messages = [{"role": "user", "content": prompt}]
+        create_kwargs: dict[str, Any] = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": messages,
+            "stream": True,
+            **kwargs,
+        }
+        if context:
+            create_kwargs["system"] = str(context)
+
+        def _make() -> Any:
+            return client.messages.create(**create_kwargs)
+
+        async for event in aiter_sync(_make):
+            if getattr(event, "type", None) == "content_block_delta":
+                text = getattr(getattr(event, "delta", None), "text", None)
+                if text:
+                    yield text
 
     def supports_model(self, model_name: str) -> bool:
         """Return ``True`` for model names with the ``claude-`` prefix."""

@@ -19,8 +19,8 @@ sequenceDiagram
     alt BLOCK
         A-->>App: {"action": "BLOCK", "risk_level": "HIGH"}
         App->>App: Abort action
-    else MODIFY
-        A-->>App: {"action": "MODIFY", "redacted_content": "..."}
+    else REDACT
+        A-->>App: {"action": "REDACT", "redacted_content": "..."}
         App->>App: Use redacted content
     else ALLOW
         A-->>App: {"action": "ALLOW"}
@@ -49,7 +49,7 @@ Validate content through the governance pipeline before execution.
 **Response:**
 ```json
 {
-  "action": "ALLOW | BLOCK | MODIFY",
+  "action": "ALLOW | BLOCK | REDACT",
   "risk_level": "LOW | MEDIUM | HIGH | CRITICAL",
   "checks": {
     "loop_breaker": {"is_loop": false, "similarity": 0.12},

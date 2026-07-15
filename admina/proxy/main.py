@@ -62,6 +62,7 @@ from admina.engines import (
     get_pii_engine,
 )
 from admina.proxy.api.dashboard import create_dashboard_endpoints
+from admina.proxy.api.gateway import create_gateway_endpoints
 from admina.proxy.api.integration import create_integration_endpoints
 from admina.proxy.config import GovernanceEvent, settings
 from admina.proxy.multi_upstream import MultiUpstreamRouter
@@ -478,6 +479,12 @@ _integration_router = create_integration_endpoints(
     get_settings=lambda: settings,
 )
 app.include_router(_integration_router)
+
+_gateway_router = create_gateway_endpoints(
+    get_state=lambda: app.state.proxy,
+    get_settings=lambda: settings,
+)
+app.include_router(_gateway_router)
 
 
 # ── Bundled dashboard (no-Docker dev mode) ────────────────────
@@ -1290,6 +1297,7 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
         injection_enabled=settings.INJECTION_FAST_PATH_ENABLED,
         pii_enabled=settings.PII_REDACTION_ENABLED,
         mode=settings.GOVERNANCE_MODE,
+        guard_fail_mode=settings.GUARD_FAIL_MODE,
     )
 
     persisted_details = build_governance_details(pipeline_result)
@@ -1343,6 +1351,11 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                     "risk_level": risk_level,
                     "governance_latency_ms": round(governance_latency, 2),
                     "checks": {k: safe_serialize(v) for k, v in pipeline_result.checks.items()},
+                    "would_action": (
+                        safe_serialize(pipeline_result.would_action)
+                        if pipeline_result.would_action is not None
+                        else None
+                    ),
                 }
             ),
         )
@@ -1465,10 +1478,44 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                         exc,
                         exc_info=True,
                     )
-                    # follow-up: optional fail-closed mode
                     # Response guard errors are not collected into pipeline_result.checks
                     # (that result is already built before this path runs); the ERROR log
                     # with exc_info is the audit trail for response-side contract failures.
+                    if settings.GUARD_FAIL_MODE == "closed":
+                        # Fail-closed: a crashing response guard blocks the response.
+                        # The request-side forensic record was written before the
+                        # upstream call, so it cannot carry this response-side error —
+                        # write an explicit ERROR record here for the audit trail.
+                        if state.forensic_box:
+                            error_record = {
+                                "event_id": event_id,
+                                "event_type": EventType.MCP_RESPONSE,
+                                "agent_id": agent_id,
+                                "session_id": session_id,
+                                "method": method,
+                                "action": GovernanceAction.BLOCK,
+                                "risk_level": risk_level,
+                                "checks": {
+                                    f"guard_{guard.name}": {
+                                        "action": "ERROR",
+                                        "error": str(exc),
+                                    }
+                                },
+                            }
+                            _loop = asyncio.get_running_loop()
+                            await _loop.run_in_executor(
+                                None, state.forensic_box.record, error_record
+                            )
+                        state.inc_metric("requests_blocked")
+                        logger.warning(
+                            "Guard %r response error blocked response for event %s (fail-closed)",
+                            guard.name,
+                            event_id,
+                        )
+                        return JSONResponse(
+                            status_code=403,
+                            content=mcp_transport.format_block_response(gov_response, body),
+                        )
 
         total_latency = (time.perf_counter() - start_time) * 1000
         state.update_avg_latency(total_latency)

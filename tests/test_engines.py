@@ -68,6 +68,35 @@ def test_pii_engine_resolver_default_and_unknown(monkeypatch):
         engines.get_pii_engine(name="nonexistent-engine")
 
 
+def test_presidio_registered_in_factory(monkeypatch):
+    monkeypatch.setenv("ADMINA_ENGINE", "python")
+    _reload_engines()
+    from admina import engines
+
+    assert "presidio" in engines._PII_ENGINE_FACTORIES
+
+
+def test_admina_pii_engine_env_selects_presidio_factory(monkeypatch):
+    monkeypatch.setenv("ADMINA_PII_ENGINE", "presidio")
+    _reload_engines()
+    from admina import engines
+
+    sentinel = object()
+    # Route without building a real analyzer: prove ADMINA_PII_ENGINE picked the
+    # "presidio" factory, independent of whether presidio is installed.
+    monkeypatch.setitem(engines._PII_ENGINE_FACTORIES, "presidio", lambda: sentinel)
+    assert engines.get_pii_engine() is sentinel
+
+
+def test_explicit_name_overrides_pii_env(monkeypatch):
+    monkeypatch.setenv("ADMINA_PII_ENGINE", "presidio")
+    _reload_engines()
+    from admina import engines
+
+    pii = engines.get_pii_engine(name="spacy-regex")
+    assert pii.get_stats()["engine"] in ("python", "rust")
+
+
 # ── YAML overrides reach the engine ──────────────────────────────────────────
 
 

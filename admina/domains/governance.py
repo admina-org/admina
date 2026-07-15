@@ -40,6 +40,20 @@ logger = logging.getLogger("admina.proxy")
 _MAX_SCAN_DEPTH = 6
 
 
+def normalize_guard_fail_mode(value: str | None) -> str:
+    """Normalize the guard fail-mode setting to ``"open"`` or ``"closed"``.
+
+    ``"open"`` (default): a guard that raises its contract is skipped and
+    recorded as an ``ERROR`` check; the pipeline continues. ``"closed"``:
+    a guard exception yields ``action=BLOCK``. ``None`` and the empty string
+    resolve to ``"open"``. Any other value raises ``ValueError``.
+    """
+    normalized = (value or "open").strip().lower()
+    if normalized not in ("open", "closed"):
+        raise ValueError(f"guard fail mode must be 'open' or 'closed' (got {value!r})")
+    return normalized
+
+
 @dataclass
 class GovernanceResult:
     """Result of running the full governance pipeline on a request."""
@@ -72,6 +86,7 @@ async def run_pipeline(
     pii_enabled: bool = True,
     loop_enabled: bool = True,
     mode: str = "enforce",
+    guard_fail_mode: str = "open",
 ) -> GovernanceResult:
     """Execute the full governance pipeline and return a GovernanceResult.
 
@@ -83,6 +98,11 @@ async def run_pipeline(
     ``False`` for single-shot callers (e.g. GovernedModel) that have no
     cross-call session state; the stage is skipped and ``loop_result`` is
     set to a no-op dict so downstream code is unaffected.
+
+    ``guard_fail_mode`` selects request-side behavior when a governance guard
+    raises: ``"open"`` (default) records an ``ERROR`` check and continues;
+    ``"closed"`` sets ``action=BLOCK`` (risk HIGH) while still recording the
+    ``ERROR`` check.
     """
     start_time = time.perf_counter()
     result = GovernanceResult()
@@ -137,11 +157,16 @@ async def run_pipeline(
                     exc,
                     exc_info=True,
                 )
-                # follow-up: optional fail-closed mode
                 result.checks[f"guard_{guard.name}"] = {
                     "action": "ERROR",
                     "error": str(exc),
                 }
+                if guard_fail_mode == "closed":
+                    # Fail-closed: a guard that breaks its contract blocks the
+                    # request. The ERROR entry above stays as the audit trail.
+                    result.action = GovernanceAction.BLOCK
+                    result.risk_level = RiskLevel.HIGH
+                    break
 
     # 5. Apply governance MODE — observe / dry-run downgrade BLOCK to ALLOW
     # but record what would have happened in `would_action` so dashboards

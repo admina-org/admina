@@ -117,7 +117,7 @@ def agent_fast_reply(fast_reply: dict, cat) -> dict:
             )
         }
 
-    if result.get("action") == "MODIFY" and result.get("redacted_content"):
+    if result.get("action") == "REDACT" and result.get("redacted_content"):
         # Replace PII in the working memory so the LLM never sees it
         user_msg["text"] = result["redacted_content"]
         cat.working_memory["user_message_json"] = user_msg
@@ -149,7 +149,7 @@ def before_cat_sends_message(message: dict, cat) -> dict:
     result = _validate(text, session_id=session_id)
 
     if result is not None:
-        if result.get("action") == "MODIFY" and result.get("redacted_content"):
+        if result.get("action") == "REDACT" and result.get("redacted_content"):
             message["content"] = result["redacted_content"]
 
         if result.get("action") == "BLOCK":
@@ -201,7 +201,7 @@ def before_cat_recalls_memories(default_query: str, cat) -> str:
         )
         return ""  # empty query = no retrieval
 
-    if result.get("action") == "MODIFY" and result.get("redacted_content"):
+    if result.get("action") == "REDACT" and result.get("redacted_content"):
         return result["redacted_content"]
 
     return default_query

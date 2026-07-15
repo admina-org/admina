@@ -385,7 +385,6 @@ def pick_event(session_id: str) -> dict[str, Any]:
 COLORS = {
     "ALLOW": "\033[32m",  # green
     "BLOCK": "\033[31m",  # red
-    "MODIFY": "\033[33m",  # yellow
     "REDACT": "\033[33m",  # yellow
     "INFO": "\033[36m",  # cyan
     "ERROR": "\033[31m",  # red
@@ -413,7 +412,7 @@ def run_simulation(
         "total": 0,
         "ALLOW": 0,
         "BLOCK": 0,
-        "MODIFY": 0,
+        "REDACT": 0,
         "errors": 0,
         "audit": 0,
         "compliance": 0,
@@ -533,7 +532,7 @@ def run_simulation(
     print(f"  Total requests:  {total} in {elapsed}s ({total / elapsed:.1f} req/s)")
     print(f"  ALLOW:           {counters.get('ALLOW', 0)}")
     print(f"  BLOCK:           {counters.get('BLOCK', 0)}")
-    print(f"  MODIFY/REDACT:   {counters.get('MODIFY', 0)}")
+    print(f"  REDACT:          {counters.get('REDACT', 0)}")
     print(f"  Audit logged:    {counters['audit']}")
     print(f"  Compliance:      {counters['compliance']}")
     print(f"  Dashboard reads: {counters['dashboard']}")

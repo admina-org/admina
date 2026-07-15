@@ -29,6 +29,7 @@ it in ``admina.yaml`` under the ``plugins:`` section.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -101,6 +102,29 @@ class BaseModelAdapter(ABC):
         Args:
             model_name: A model identifier, e.g. ``"llama3"`` or ``"gpt-4o"``.
         """
+
+    async def send_stream(
+        self,
+        prompt: str,
+        context: Any = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        """Stream text deltas from the model.
+
+        Base default: a non-streaming fallback that calls :meth:`send`
+        once and yields the whole text as a single chunk. Adapters backed
+        by SDKs with mature streaming override this to yield incrementally.
+
+        Args:
+            prompt: The text prompt to send.
+            context: Optional conversation context or system prompt.
+            **kwargs: Provider-specific parameters (temperature, model, …).
+
+        Yields:
+            Raw (un-redacted) text deltas. The fallback yields exactly one.
+        """
+        result = await self.send(prompt, context=context, **kwargs)
+        yield result.get("text", "")
 
     @property
     @abstractmethod

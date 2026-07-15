@@ -63,6 +63,7 @@ class EventType(str, Enum):
     # Proxy / MCP events
     MCP_REQUEST = "mcp_request"
     MCP_RESPONSE = "mcp_response"
+    GATEWAY_REQUEST = "gateway_request"
     INJECTION_DETECTED = "injection_detected"
     PII_REDACTED = "pii_redacted"
     LOOP_DETECTED = "loop_detected"

@@ -6,10 +6,10 @@ not on a calendar. Scope may shift in response to user feedback, security
 findings, or upstream changes in the governance landscape (EU AI Act
 implementing acts, new frameworks, new attack classes).
 
-The current release is **0.9.0**. Admina is pre-1.0: the public API is
-feature-complete and production-ready, but the stability commitment is
-deferred until community validation has confirmed the shape of the public
-surface.
+The current release is **0.11.0**. Admina is pre-1.0: the public API may
+still evolve before the 1.0 stability commitment, so a minor release may
+carry a declared breaking change once its replacement is in place. Shipped
+detail lives in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -25,36 +25,88 @@ Patch releases only. No new features.
 
 ---
 
-## 0.10.0 — Adapter coverage and SDK ergonomics
+## 0.10.0 — Adapter coverage and pipeline unification
 
-Broader model and engine support; SDK usability improvements.
+Broader provider support and a single governance pipeline across every
+surface.
 
-- Model adapters: Anthropic, Mistral, AWS Bedrock, Google Gemini, native
-  vLLM (beyond the current Ollama-based bridge)
-- PII engine: Microsoft Presidio as a first-class alternative to spaCy +
-  regex
-- SDK: streaming-first API on `GovernedModel` (async iterator with
-  inline governance on each chunk)
-- SDK: configurable retry / backoff policies on all governed primitives
-- Dashboard: WebSocket authentication with API-key scoping
+- Five model adapters — Anthropic, Mistral, AWS Bedrock, Google Gemini,
+  and a native vLLM adapter — each lazy-importing its provider SDK through
+  a per-provider packaging extra.
+- Configurable retry / backoff on the governed primitives
+  (`GovernedModel`, `GovernedAgent`, `GovernedData`), opt-in via a
+  `RetryPolicy` with no new runtime dependency.
+- Uniform engine selection (`ADMINA_ENGINE=auto|python|rust`) across proxy,
+  SDK, and integrations, with engines acquired through a single
+  `admina.engines` package.
+- One canonical governance pipeline (loop → firewall → PII → guards) shared
+  by `POST /mcp`, `POST /api/v1/validate`, and the SDK primitives;
+  `GovernedModel.ask()` runs full governance by default.
+- Dashboard live-feed WebSocket authentication with session-cookie
+  verification and an Origin allow-list.
+- Security and forensic hardening: fail-closed default when no API key is
+  configured, hash-chain state reconstruction from persisted records, and
+  serialized forensic writes.
 
 ---
 
-## 0.11.0 — Observability and performance
+## 0.11.0 — Streaming governance and an OpenAI-compatible gateway
 
-Production observability beyond the current OTEL + Grafana baseline.
+Governance on streamed responses and behind an OpenAI-compatible HTTP
+surface, an additional PII engine, and the closure of deferred hardening
+items.
 
-- Native Prometheus metrics endpoint with SLO panel
+- SDK streaming on `GovernedModel`: an async iterator that applies inline
+  governance to each chunk through a windowed recomposition buffer, so a
+  PII entity split across chunk boundaries is still redacted. Streaming
+  metadata is shaped to map onto the OpenTelemetry GenAI conventions so
+  0.12 can emit it unchanged.
+- Microsoft Presidio as a selectable first-class PII engine
+  (`ADMINA_PII_ENGINE=presidio`), analyzer-only so the redaction mask
+  format is identical across engines. The default engine is unchanged
+  (`spacy-regex`).
+- An OpenAI-compatible HTTP gateway (`POST /v1/chat/completions`,
+  `GET /v1/models`) as an additional governed surface, streaming and
+  non-streaming, protected by the existing credential check.
+- Breaking change: `/api/v1/validate` returns `action="REDACT"` in place
+  of the former `"MODIFY"`, a clean rename with no compatibility shim.
+  Permitted under the pre-1.0 posture: the public API may still evolve
+  before the 1.0 stability commitment.
+- Signed forensic state file: an optional HMAC over `_chain_state.json`
+  (`ADMINA_FORENSIC_STATE_KEY`); an unsigned or tampered state falls back
+  to reconstruction from the persisted records.
+- Configurable guard fail mode (`ADMINA_GUARD_FAIL_MODE=open|closed`,
+  default `open`): under `closed`, an exception inside a guard yields
+  `action="BLOCK"`.
+- Detection-efficacy red-team suite (already on `main`): measures
+  firewall, PII, and loop-breaker recall against committed corpora with
+  baseline pinning and a comparison gate that refuses to compare metrics
+  across engine modes.
+
+---
+
+## 0.12.0 — Observability and performance
+
+Production observability and performance work beyond the current OTEL +
+Grafana baseline.
+
+- Emission of the streaming-request metadata shaped in 0.11 onto the
+  OpenTelemetry GenAI semantic conventions (`gen_ai.request.model`,
+  `gen_ai.usage.*`, `gen_ai.response.finish_reasons`,
+  `gen_ai.client.operation.duration`) — no metadata field is renamed at
+  the emission boundary.
+- Native Prometheus metrics endpoint with an SLO panel.
 - Structured error taxonomy: stable error codes across proxy, SDK, and
-  REST API
-- Shared async pool for data connectors; decision cache for the
-  injection firewall fast path
-- Benchmark regression gate in CI (fail on >10% regression vs baseline)
-- Request-level tracing correlation across SDK, proxy, and upstream LLM
+  REST API.
+- Shared async pool for data connectors; decision cache for the injection
+  firewall fast path.
+- Benchmark regression gate in CI (fail on a >10% regression versus
+  baseline).
+- Request-level tracing correlation across SDK, proxy, and upstream LLM.
 
 ---
 
-## 0.12.0 — Multi-tenancy and RBAC
+## 0.13.0 — Multi-tenancy and RBAC
 
 Operating Admina as a shared service.
 
@@ -67,7 +119,7 @@ Operating Admina as a shared service.
 
 ---
 
-## 0.13.0 — Compliance template expansion
+## 0.14.0 — Compliance template expansion
 
 Beyond the EU AI Act.
 
@@ -110,7 +162,7 @@ Running Admina as stateless, horizontally-scaled infrastructure.
 Reserved for breaking changes that cannot be delivered under 1.x.
 No breaking changes are planned. Candidate drivers:
 
-- Plugin ABI v2 if adoption reveals design limitations that cannot be
+- Plugin ABI v2 if real-world use reveals design limitations that cannot be
   extended under v1
 - Streaming-first pipeline rearchitecture if chunk-level governance
   becomes the dominant workload

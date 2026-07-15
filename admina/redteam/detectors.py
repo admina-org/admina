@@ -29,6 +29,21 @@ def rust_available() -> bool:
         return False
 
 
+def presidio_available() -> bool:
+    """True when presidio-analyzer is importable AND at least one Admina spaCy
+    model is present (so the engine can actually be constructed)."""
+    try:
+        import importlib.util
+
+        import spacy
+
+        if importlib.util.find_spec("presidio_analyzer") is None:
+            return False
+        return spacy.util.is_package("en_core_web_sm") or spacy.util.is_package("it_core_news_sm")
+    except ImportError:
+        return False
+
+
 class InjectionAdapter:
     name = "injection"
     kind = "binary"
@@ -53,7 +68,12 @@ class PiiAdapter:
     kind = "pii"
 
     def engines(self) -> list[str]:
-        return ["python", "rust"] if rust_available() else ["python"]
+        engs = ["python"]
+        if rust_available():
+            engs.append("rust")
+        if presidio_available():
+            engs.append("presidio")
+        return engs
 
     def env_signature(self, engine: str) -> str | None:
         """Pin the measurement environment that changes the Python PII metrics.
@@ -70,6 +90,13 @@ class PiiAdapter:
         signature so the gate verifies metrics only against the exact pinned
         environment. The Rust engine is regex-only and deterministic → no signature.
         """
+        if engine == "presidio":
+            from importlib.metadata import version
+
+            from admina.engines.presidio import get_presidio_pii_engine
+
+            langs = "+".join(get_presidio_pii_engine().languages)
+            return f"presidio:{version('presidio-analyzer')}/{langs}"
         if engine != "python":
             return None
         from admina.domains.data_sovereignty.pii import SPACY_MODEL, PIIRedactor
@@ -86,6 +113,10 @@ class PiiAdapter:
             import admina_core
 
             cats = admina_core.RustPiiScanner().redact(text).categories
+        elif engine == "presidio":
+            from admina.engines.presidio import get_presidio_pii_engine
+
+            cats = [e["type"] for e in get_presidio_pii_engine().redact(text)["entities"]]
         else:
             from admina.domains.data_sovereignty.pii import PIIRedactor
 

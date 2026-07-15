@@ -31,6 +31,7 @@ class TestEventType:
             # Proxy / MCP events
             "MCP_REQUEST",
             "MCP_RESPONSE",
+            "GATEWAY_REQUEST",
             "INJECTION_DETECTED",
             "PII_REDACTED",
             "LOOP_DETECTED",

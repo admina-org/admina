@@ -29,6 +29,7 @@ import time
 from typing import Any
 
 from admina.plugins.base import BaseModelAdapter
+from admina.plugins.builtin.adapters._streaming import aiter_sync
 
 logger = logging.getLogger("admina.plugins.adapters.openai")
 
@@ -131,6 +132,38 @@ class OpenAIAdapter(BaseModelAdapter):
                 "model": model,
             },
         }
+
+    async def send_stream(
+        self,
+        prompt: str,
+        context: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Stream text deltas from an OpenAI-compatible chat completion.
+
+        Yields raw ``delta.content`` strings; frames without content
+        (role/finish frames) are skipped.
+        """
+        client = self._get_client()
+        model = kwargs.pop("model", self._default_model)
+
+        messages: list[dict[str, str]] = []
+        if context:
+            messages.append({"role": "system", "content": str(context)})
+        messages.append({"role": "user", "content": prompt})
+
+        def _make() -> Any:
+            return client.chat.completions.create(
+                model=model, messages=messages, stream=True, **kwargs
+            )
+
+        async for chunk in aiter_sync(_make):
+            choices = getattr(chunk, "choices", None)
+            if not choices:
+                continue
+            text = getattr(choices[0].delta, "content", None)
+            if text:
+                yield text
 
     def supports_model(self, model_name: str) -> bool:
         """Return ``True`` for models matching known OpenAI prefixes."""

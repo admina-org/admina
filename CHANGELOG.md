@@ -13,6 +13,88 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-07-15
+
+Streaming, gateway, and PII-engine release. Adds response streaming with
+inline PII redaction on `GovernedModel`, an OpenAI-compatible governance
+gateway, a selectable Microsoft Presidio PII engine, an HMAC-signed
+forensic chain-state file, and a configurable guard fail mode. Includes one
+breaking change — the `/api/v1/validate` action `MODIFY` is renamed to
+`REDACT` (permitted under the pre-1.0 posture: the public API may still
+evolve before the 1.0 stability commitment).
+
+### Added
+
+- **Configurable guard fail mode** (`ADMINA_GUARD_FAIL_MODE=open|closed`,
+  default `open`). When a pluggable governance guard raises, `open` keeps the
+  current behavior (the guard is skipped and recorded as an `ERROR` check);
+  `closed` turns the exception into a `BLOCK`. Enforced on the request-side
+  pipeline of every governed surface — SDK `GovernedModel.ask()` and
+  `.stream()`, the MCP proxy (`mcp_proxy`), and the OpenAI-compatible gateway
+  (`/v1/chat/completions`) — and, MCP-proxy-only, on response inspection —
+  where a fail-closed block also writes an explicit forensic `ERROR` record,
+  since the request-side record is written before response inspection runs.
+- Forensic chain-state file (`_chain_state.json`) can be signed with
+  HMAC-SHA256. Set `ADMINA_FORENSIC_STATE_KEY` (or pass `state_signing_key=`)
+  to enable: on restore a valid signature is trusted (fast path); a missing or
+  invalid signature is treated as untrusted — a CRITICAL event is logged and
+  the chain state is reconstructed from the immutable records instead of the
+  (potentially rewritten) state file. With no key set the state file is
+  unsigned: baseline truncation protection via record reconstruction is
+  retained, and signing is recommended in production. Applies to
+  `ForensicBlackBox` (filesystem + S3 backends) and the `FilesystemForensicStore`
+  plugin; the signature is stored in a `_chain_state.json.sig` sidecar.
+- **SDK streaming.** `GovernedModel.stream(prompt)` yields PII-redacted
+  response deltas as an async iterator, with the full governance outcome in
+  `GovernedModel.last_stream_result`. The pre-stream gate matches `ask()`:
+  a blocked prompt yields no deltas and reports `action="BLOCK"` (no
+  exception).
+- **`StreamRedactor`** (`admina.sdk.StreamRedactor`) — a windowed
+  recomposition buffer that redacts PII spanning streamed-delta boundaries.
+  `window_chars` must exceed the longest expected entity.
+- **`BaseModelAdapter.send_stream()`** — an async-iterator streaming method
+  on the adapter contract. Real streaming for the OpenAI, Ollama, vLLM, and
+  Anthropic adapters; the Mistral, Gemini, and Bedrock adapters use the base
+  single-chunk fallback pending a follow-on.
+- **Presidio PII engine.** Microsoft Presidio is selectable as the PII engine
+  via `ADMINA_PII_ENGINE=presidio` or `pii_engine: presidio` in `admina.yaml`,
+  behind the new `[presidio]` extra. Presidio performs detection only; Admina
+  keeps its own masking, so the output format is identical to the default
+  `spacy-regex` engine (per-category masks, e.g. `[EMAIL]`, `[PERSON]`).
+  Languages EN + IT. The default engine is unchanged (`spacy-regex`). The
+  redteam efficacy suite measures Presidio as a third PII column with
+  version/language mode-pinning.
+- **OpenAI-compatible governance gateway** — a new `/v1` HTTP surface on
+  the proxy (`POST /v1/chat/completions`, streaming and non-streaming, plus
+  `GET /v1/models`). Requests are forwarded to a configurable upstream
+  (`ADMINA_GATEWAY_UPSTREAM`) over httpx while the canonical governance
+  pipeline runs inline: prompts are firewall-checked and PII-redacted before
+  they reach the upstream, streamed responses are redacted through a
+  windowed recomposition buffer, and a blocked request returns a synthetic
+  completion (or SSE stream) with `finish_reason: "content_filter"` instead
+  of a raw HTTP error. Every request is written to the forensic log. This is
+  the proxy's first SSE surface. Protected by the existing credential check
+  (`Authorization: Bearer` / `X-API-Key`).
+
+### Breaking
+
+- **`/api/v1/validate` renames the `MODIFY` action to `REDACT`.** When a
+  request is allowed but PII was redacted, the response `action` is now
+  `"REDACT"` (was `"MODIFY"`); `redacted_content` is populated on `REDACT`
+  exactly as before. This aligns the REST vocabulary with the internal
+  `GovernanceAction.REDACT` value. The `CIRCUIT_BREAK → BLOCK` mapping is
+  unchanged. No compatibility shim is carried: the in-repo n8n node,
+  CheshireCat plugin, and OpenClaw skill are updated in the same change,
+  and external callers must switch to `REDACT`. Admina is pre-1.0, so the
+  public API may still evolve before the 1.0 stability commitment.
+
+### Fixed
+
+- The proxy `/mcp` forensic record now carries `would_action` — the shadow
+  decision recorded in `observe` / `dry-run` mode — matching the
+  ClickHouse analytics record. Previously the shadow decision reached only
+  ClickHouse, leaving the hash-chained audit trail without it.
+
 ## [0.10.1] — 2026-06-17
 
 Security patch release. Updates two dependencies flagged by upstream
@@ -541,7 +623,8 @@ environment in `docker-compose.benchmark.yml`.
 
 ---
 
-[Unreleased]: https://github.com/admina-org/admina/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/admina-org/admina/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/admina-org/admina/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/admina-org/admina/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/admina-org/admina/compare/v0.9.5...v0.10.0
 [0.9.5]: https://github.com/admina-org/admina/compare/v0.9.4...v0.9.5

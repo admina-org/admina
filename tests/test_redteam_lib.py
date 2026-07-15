@@ -16,6 +16,8 @@ import json
 import subprocess
 import sys
 
+import pytest
+
 from admina import redteam
 from admina.redteam import corpora, detectors, gate, metrics, report, runner
 
@@ -485,3 +487,46 @@ def test_recall_item_raises_clear_error_when_neither_key_present():
         raise AssertionError("expected KeyError")
     except KeyError as e:
         assert "neither" in str(e)
+
+
+# ── Presidio measured column (optional third PII engine) ───────────────────
+
+
+def test_pii_adapter_excludes_presidio_when_absent():
+    import importlib.util
+
+    if importlib.util.find_spec("presidio_analyzer") is not None:
+        pytest.skip("presidio installed in this env")
+    assert "presidio" not in detectors.PiiAdapter().engines()
+
+
+def test_pii_adapter_presidio_signature_and_predict():
+    pytest.importorskip("presidio_analyzer")
+    adapter = detectors.PiiAdapter()
+    if "presidio" not in adapter.engines():
+        pytest.skip("presidio models not installed")
+    sig = adapter.env_signature("presidio")
+    assert sig.startswith("presidio:") and "/" in sig  # version + active langs pinned
+    out = adapter.predict("presidio", {"text": "email me at a@b.com"})
+    assert "EMAIL" in out["detected_types"]
+
+
+def test_to_markdown_includes_presidio_column():
+    results = {"pii": {"python": _fake_eval_pii(), "presidio": _fake_eval_pii()}}
+    card = report.build_scorecard(
+        results, rust_version=None, env={"pii": {"presidio": "presidio:2.2.355/en+it"}}
+    )
+    md = report.to_markdown(card)
+    assert "Presidio" in md  # new column header
+    assert "presidio:2.2.355/en+it" in md  # measurement mode surfaced in the footnote
+
+
+def test_committed_baseline_declares_presidio_pii_entry():
+    from pathlib import Path
+
+    path = Path(redteam.__file__).parent / "baselines" / "baseline.json"
+    base = json.loads(path.read_text(encoding="utf-8"))
+    entry = base["pii"]["presidio"]
+    assert "type_recall" in entry
+    assert "fp" in entry and "fp_samples" in entry
+    assert entry["mode"].startswith("presidio:")
