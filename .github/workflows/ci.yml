@@ -121,7 +121,11 @@ jobs:
         run: uv sync --group dev --all-extras --python ${{ matrix.python-version }}
 
       - name: Download spaCy model
-        run: uv run --python ${{ matrix.python-version }} python -m spacy download en_core_web_sm
+        # Install the model as a wheel via `uv pip install` rather than
+        # `spacy download`: the latter shells out to `python -m pip`, but the
+        # uv-managed venv has no pip, so it fails with "No module named pip".
+        # The 3.8.0 model wheel is compatible with the whole spaCy 3.8.x line.
+        run: uv pip install --python ${{ matrix.python-version }} "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
 
       - name: Run pytest with coverage
         # The `--cov-fail-under=78` gate in pyproject.toml prevents
