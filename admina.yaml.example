@@ -77,7 +77,9 @@ domains:
     # GuardrailsAI content validation (optional plugin)
     domains:
       guardrailsai:
-        enabled: false            # opt-in: pip install admina[guardrailsai]
+        enabled: false            # opt-in: install guardrails-ai yourself
+                                  # (no [guardrailsai] extra — upstream is in
+                                  # PyPI quarantine; see README)
         inference_mode: local     # local | remote
         validators:
           - name: toxic_language

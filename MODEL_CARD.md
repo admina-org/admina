@@ -2,7 +2,7 @@
 
 This document is the transparency artifact for the **rule-based and
 heuristic components** that ship inside Admina. Admina does not train or
-distribute machine-learning models in v0.9.x: the governance pipeline is
+distribute machine-learning models in v0.11.x: the governance pipeline is
 built on regex pattern sets, TF-IDF cosine similarity, SHA-256 hash
 chains, and keyword-based EU AI Act classifiers. This card documents the
 intended use, scope, limitations, and known failure modes of each
@@ -26,7 +26,7 @@ functions, and ISO/IEC 42001 clause 8 (Operations).
 | Component | Type | Engine | Source |
 |-----------|------|--------|--------|
 | Injection Firewall | Pattern matcher (RegexSet) + heuristic scorer | Rust (`core-rust/src/firewall.rs`) + Python fallback | `admina/domains/agent_security/firewall.py` |
-| PII Scanner | Regex + spaCy NER (optional) | Rust (`core-rust/src/pii.rs`) + Python fallback | `admina/domains/data_sovereignty/` |
+| PII Scanner | Regex + spaCy NER (optional), or Microsoft Presidio (opt-in) | Python default even when Rust is installed; Rust (`core-rust/src/pii.rs`) only under an explicit `ADMINA_ENGINE=rust` | `admina/domains/data_sovereignty/`, `admina/engines/presidio.py` |
 | Loop Breaker | TF-IDF cosine similarity over a sliding window | Rust (`core-rust/src/loop_breaker.rs`) + Python fallback | `admina/domains/agent_security/loop_breaker.py` |
 | Forensic Hash Chain | SHA-256 chained log | Rust (`core-rust/src/forensic.rs`) + Python fallback | `admina/domains/compliance/forensic.py` |
 | EU AI Act Classifier | Keyword-based risk classifier + Annex III mapping | Python (`admina/domains/compliance/eu_ai_act.py`) | — |
@@ -86,16 +86,75 @@ Admina is **not**:
 
 ### What it does
 
-Scans inbound text for 15 categories of prompt-injection attempts using
-a single-pass `RegexSet`. Returns matched categories and a heuristic
-score (`0.0`–`1.0`).
+Scans inbound text for prompt-injection attempts. Two layers: a fast
+path of compiled regexes run against the raw text *and* against an
+evasion-normalised copy (homoglyph / leetspeak / char-by-char /
+base64 neutralised), and a deep path that scores five heuristic signals
+(`0.0`–`1.0`). The fast path returns matched **categories**; the deep
+path returns **signals** (e.g. `imperative_density=0.14`) and a score,
+never a category.
 
-### Categories covered (v0.9.0)
+### Categories emitted (v0.11.0)
 
-`instruction_override`, `role_hijacking`, `developer_mode`, `dan_mode`,
-`prompt_extraction`, `delimiter_injection`, `data_exfiltration`,
-`system_prompt_leak`, `jailbreak`, `obfuscation`, `new_instructions`,
-`ignore_safety`, `multilang_evasion`, `roleplay_escape`, `tool_abuse`.
+The Python engine — the default, higher-recall engine — emits exactly
+**9** distinct category labels. This is the authoritative set: it is
+what appears in `detections_by_type`
+(`admina/domains/agent_security/firewall.py:593-595`), what becomes the
+`category` label of the Prometheus series
+`admina_firewall_detections_total`
+(`admina/proxy/main.py:777-785`), and the set of values valid in
+`agent_security.firewall.disabled_categories`
+(`admina.yaml.example:53-58`).
+
+Each category covers several **pattern families**. The families are not
+categories: a match in any family is reported under the category label
+of its group.
+
+| Category | Risk | Pattern families grouped under it | Source |
+|----------|------|-----------------------------------|--------|
+| `instruction_override` | critical / high | verb + qualifier + target override phrasing (`ignore` / `disregard` / `forget` / `override` / `bypass` / `circumvent` / `skip` / `sidestep` / `nullify` / `cancel` / `suspend` / `drop` / `remove` / `undo` × `instructions` / `prompts` / `rules` / `directions` / `directives` / `guidelines` / `guardrails` / `restrictions` / `policies` / `filters` / `safeguards` / `the above` / `everything`); imperative verb chains ("Ignore. Forget. Override.") | `firewall.py:196-210` |
+| `role_hijack` | high | "you are now a…"; "act as a / DAN / AIM / STAN / DUDE"; "pretend to be"; "let's roleplay / imagine"; "from now on you will" | `firewall.py:211-224` |
+| `prompt_extraction` | high / medium | reveal / show / print / repeat the system prompt or configuration (high); "what are your instructions / rules" (medium) | `firewall.py:225-241` |
+| `jailbreak` | critical | mode toggles (`DAN` / `developer` / `admin` / `debug` / `maintenance` / `god` / `sudo` / `root` / `jailbreak` / `uncensored` / `unrestricted` **mode enabled / activated / on**); "DAN mode / DAN prompt"; "do anything now"; AIM | `firewall.py:242-256` |
+| `delimiter_injection` | critical / high | ChatML / Llama / FIM control tokens (`<\|im_start\|>`, `<\|endoftext\|>`, `[INST]`, `<<SYS>>`); `<system>` / `<user>` / `<assistant>` tags; `### system:` headers | `firewall.py:257-266` |
+| `data_exfiltration` | high | `curl` / `wget` / `nc` to a URL; send / post / upload / forward / leak … to an external URL or a known burner domain (webhook.site, requestbin, ngrok.io, pastebin, gist) | `firewall.py:267-285` |
+| `tool_abuse` | critical / high | shell execution (`exec`, `subprocess`, `os.system`, `sh -c`); sensitive filesystem paths (`/etc/passwd`, `~/.ssh/`, `~/.aws/credentials`, `/proc/self/environ`); internal / admin / private API calls; destructive commands (`rm -rf`, `DROP TABLE`, `mkfs.`, `dd if=`) | `firewall.py:286-322` |
+| `obfuscation` | high / medium | base64 encode/decode markers; hex-escape runs (`\xNN\xNN\xNN`); ROT13 / Caesar-cipher markers; hex-escape-as-instruction | `firewall.py:323-333` |
+| `multilang_evasion` | critical | override phrasing in Italian, French, Spanish and German (verb-then-target and target-then-adjective word orders) | `firewall.py:334-397` |
+
+Operators can add further categories without forking: every entry in
+`agent_security.firewall.custom_patterns` carries its own `category`
+label, which flows through to the same stats and Prometheus series
+(`admina/engines/__init__.py:125-131`, `admina.yaml.example:59-71`).
+
+### Rust engine labels differ from Python's
+
+The optional Rust accelerator (`core-rust/src/firewall.rs:89-106`) has
+its own, narrower pattern set with **15** label strings. Earlier
+versions of this card listed those 15 as if they were the framework's
+categories — they are not. They are only visible in the Rust engine's
+`matched_patterns` field; the Rust bridge reports an empty
+`detections_by_type` (`admina/engines/__init__.py:216-227`), so no Rust
+label ever reaches the stats API, the Prometheus series, or
+`disabled_categories` (a non-empty `disabled_categories` forces the
+Python bridge — `admina/engines/__init__.py:333-341`).
+
+| Rust label | Python equivalent |
+|------------|-------------------|
+| `instruction_override` | `instruction_override` |
+| `role_hijacking` | `role_hijack` (short form) |
+| `developer_mode`, `dan_mode` | `jailbreak` |
+| `jailbreak` ("bypass safety filters") | `instruction_override` |
+| `ignore_safety` ("disable safety checks") | partly `instruction_override`; "disable / turn off / deactivate … checks" is not in the Python regex set and is left to the deep path |
+| `prompt_extraction` | `prompt_extraction` |
+| `system_prompt_leak` ("what are your instructions") | `prompt_extraction` (medium-risk family) |
+| `delimiter_injection` | `delimiter_injection` |
+| `data_exfiltration` | `data_exfiltration` |
+| `obfuscation` | `obfuscation` |
+| `multilang_evasion` | `multilang_evasion` |
+| `tool_abuse` ("execute this command") | `tool_abuse` — Python requires a concrete target (path, destructive command), so a bare "run this script" does not match |
+| `new_instructions` ("new system instructions:") | no Python equivalent — Rust-only pattern |
+| `roleplay_escape` ("you have no restrictions") | no Python equivalent — Rust-only pattern |
 
 ### Languages
 
@@ -124,13 +183,20 @@ additional locales.
 
 ### How to extend
 
-New patterns are contributed via PR to
-`core-rust/src/firewall.rs` (and the Python fallback at
-`admina/domains/agent_security/firewall.py`). Each new pattern must include:
+New patterns are contributed via PR to the authoritative Python set in
+`admina/domains/agent_security/firewall.py` (`INJECTION_PATTERNS`), and
+optionally mirrored into the Rust accelerator at
+`core-rust/src/firewall.rs`. Each new pattern must include:
 
-- A test case in `tests/test_proxy_security.py` showing the attack matches.
+- A test case in `tests/test_domains.py` showing the attack matches.
 - A test case showing a benign string that should not match.
-- A description in this card.
+- If the pattern is mirrored into Rust, an entry in the parity corpus in
+  `tests/test_firewall_parity.py` (`_SHARED_ATTACKS`); if it is not, add
+  it to `_KNOWN_GAP` so the divergence stays measured.
+- A description in this card. A new *category* label (rather than a new
+  family under an existing one) must also be added to the "Builtin set"
+  comment in `admina.yaml.example`, since that list is what operators
+  read when setting `disabled_categories`.
 
 ---
 
@@ -138,21 +204,36 @@ New patterns are contributed via PR to
 
 ### What it does
 
-Detects and redacts PII in text. Two modes:
+Detects and redacts PII in text. Three modes:
 
 - **Regex-only** (default, fast): email, phone, SSN, US credit card
   (Luhn-validated — Python engine only; Rust path does not run Luhn),
-  IBAN, IPv4. Python engine default; Rust path opt-in via `ADMINA_ENGINE=rust`.
+  IBAN, IPv4, Italian codice fiscale, Spanish DNI/NIE, and German
+  Personalausweis (shipped but **disabled by default** — the format is
+  too ambiguous to regex safely). Python engine default; Rust path
+  opt-in via `ADMINA_ENGINE=rust`. Categories are individually
+  toggleable from `admina.yaml`
+  (`admina/domains/data_sovereignty/pii.py:39-106`).
 - **Regex + spaCy NER** (`pip install admina-framework[nlp]`): adds named-entity
-  detection for `PERSON`, `ORG`, `GPE`. Python only.
+  detection for `PERSON`, `ORG`, `GPE`, `LOC`. Python only
+  (`admina/domains/data_sovereignty/pii.py:58-75`).
+- **Microsoft Presidio** (`pip install admina-framework[presidio]`,
+  selected with `ADMINA_PII_ENGINE=presidio` or `pii_engine: presidio`
+  in `admina.yaml`): a third, opt-in detection engine. Presidio does
+  **detection only** — Admina keeps its own masking, so the output
+  shape matches the default engine (`admina/engines/presidio.py`,
+  `pyproject.toml:144`).
 
 ### Known limitations
 
 - **English-trained NER model.** The shipped `en_core_web_sm` is a
   small English model. It under-detects names and organizations in
   Italian, French, German, Spanish, etc. For multilingual deployments,
-  install Microsoft Presidio via the
-  [`guardrailsai`](README.md#guardrailsai) extra.
+  switch to the Presidio engine (`admina-framework[presidio]` +
+  `ADMINA_PII_ENGINE=presidio`) and download the per-language spaCy
+  models it needs. Note that on Admina's own corpus Presidio measures
+  *lower* type-level recall than the default spaCy+regex engine on
+  EU identifiers — see §9.
 - **Regex precision varies by category.** Phone-number regex has high
   recall but low precision (matches version strings, IDs). Credit-card
   regex uses Luhn validation (Python engine) and is reliable. IBAN regex does not
@@ -208,7 +289,7 @@ historical record invalidates all subsequent hashes.
 - **No external time anchoring by default.** Timestamps are local to
   the proxy. For non-repudiation against a third party, anchor the
   chain head to an external time-stamping authority (RFC 3161, OpenTSA,
-  or a public blockchain) — outside the scope of v0.9.x.
+  or a public blockchain) — outside the scope of v0.11.x.
 
 ---
 
@@ -431,6 +512,13 @@ mode (the mode pinned in the baseline):
 | pii       | 100% (type-level, nlp) | 66% (type-level) | 6/16 · 0/16 |
 | loop      | 82% (sample-level) | 91% | 0/11 · 0/11 |
 
+The optional Presidio PII engine is measured as a third row in the same
+baseline (`admina/redteam/baselines/baseline.json`): **52%** type-level
+recall with **9/16** false positives, pinned to mode
+`presidio:2.2.363/en+it`. It is an alternative engine, not an
+accelerator, so it is reported separately rather than in the
+Python-vs-Rust matrix above.
+
 Notable measured gaps (run `python scripts/redteam.py --format md` for the full
 per-class matrix): the Rust firewall scores **0%** on base64 / homoglyph /
 leetspeak / ROT13 / hyphenation evasions that the Python engine catches (no
@@ -468,7 +556,7 @@ extending the corpora (more languages, larger adversarial sets, `garak` /
 
 This card is versioned alongside the codebase. Material changes are
 recorded in `CHANGELOG.md` under the relevant release. The current
-version corresponds to **Admina 0.9.0**.
+version corresponds to **Admina 0.11.0**.
 
 ---
 

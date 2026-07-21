@@ -254,15 +254,22 @@ from admina import GovernedModel, GovernedData, GovernedAgent, ComplianceKit
 
 | Interface | Builtin implementations |
 |-----------|------------------------|
-| Model Adapter | Ollama, OpenAI |
+| Model Adapter | Ollama, OpenAI, Anthropic, Gemini, Mistral, Bedrock, vLLM |
 | Data Connector | ChromaDB, Filesystem |
 | Governance Domain | GuardrailsAI (toxic, jailbreak, bias, PII) |
 | Compliance Template | EU AI Act |
 | Transport Adapter | MCP, HTTP REST |
 | Forensic Store | Filesystem, S3-compatible (boto3 — AWS S3, MinIO, R2, …) |
 | Auth Provider | API Key |
-| PII Engine | spaCy + Regex |
+| PII Engine | spaCy + Regex (default), Microsoft Presidio (`pip install admina-framework[presidio]`, `ADMINA_PII_ENGINE=presidio`) |
 | Alert Channel | Log, Webhook |
+
+Model adapters lazy-import their provider SDK, so install the ones you
+use: `pip install admina-framework[adapters]` for all of them, or a
+single provider (`[openai]`, `[ollama]`, `[anthropic]`, `[mistral]`,
+`[gemini]`, `[bedrock]`). vLLM has no extra of its own — it serves an
+OpenAI-compatible API and subclasses the OpenAI adapter, so install
+`[openai]` for it.
 
 ```bash
 admina plugin list                    # List registered plugins

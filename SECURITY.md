@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.9.x   | Yes       |
-| < 0.9   | No        |
+| 0.11.x  | Yes       |
+| < 0.11  | No        |
 
 During the pre-1.0 phase only the latest minor line receives security
 fixes. Once 1.0 ships, an LTS window will be defined in
@@ -55,7 +55,9 @@ Out of scope:
 ## Security Design Notes
 
 - **API key authentication**: Set `ADMINA_API_KEY` (generated with `openssl rand -hex 32`)
-  to protect all endpoints. Without it, the proxy is unauthenticated (local dev only).
+  to protect the API. `/health`, `/metrics`, the OpenAPI docs and the dashboard static
+  assets are always public. Without a key the proxy is fail-closed: protected requests are
+  rejected with 401 unless `ALLOW_UNAUTHENTICATED=true` is set explicitly (local dev only).
 - **Secrets**: Never commit `.env` to version control. Use `.env.example` as a template.
 - **Network isolation**: The Docker Compose setup isolates ClickHouse and Redis on an
   internal network — do not expose their ports to the internet.
