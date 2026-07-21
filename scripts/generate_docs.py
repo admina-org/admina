@@ -251,19 +251,19 @@ def generate_architecture_diagram() -> None:
     GUIDES_DIR.mkdir(parents=True, exist_ok=True)
 
     # Collect data from the actual codebase
-    sdk_classes = _list_classes(ROOT / "sdk")
-    core_classes = _list_classes(ROOT / "core")
+    sdk_classes = _list_classes(ROOT / "admina" / "sdk")
+    core_classes = _list_classes(ROOT / "admina" / "core")
     plugin_bases = _list_classes(ROOT / "admina" / "plugins")
-    builtin_count = _count_py_files(ROOT / "plugins" / "builtin")
+    builtin_count = _count_py_files(ROOT / "admina" / "plugins" / "builtin")
 
     domain_info = {}
     for d in ["data_sovereignty", "agent_security", "compliance", "ai_infra"]:
-        dpath = ROOT / "domains" / d
+        dpath = ROOT / "admina" / "domains" / d
         domain_info[d] = _list_classes(dpath, max_items=4)
 
     proxy_modules = [
         f.stem
-        for f in sorted((ROOT / "proxy").glob("*.py"))
+        for f in sorted((ROOT / "admina" / "proxy").glob("*.py"))
         if not f.name.startswith("_") and f.name != "__init__.py"
     ]
 

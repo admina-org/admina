@@ -74,7 +74,7 @@ up: secrets
 
 # Show engine status
 status:
-	@cd proxy && uv run python -c "from engine_bridge import engine_status; import json; print(json.dumps(engine_status(), indent=2))"
+	@uv run python -c "from admina.engines import engine_status; import json; print(json.dumps(engine_status(), indent=2))"
 
 help:
 	@echo ""
