@@ -112,7 +112,9 @@ class Settings(BaseSettings):
     #   "dry-run": same as observe but additionally tag the response so
     #              downstream tools know the request was analysed.
     # Restrictive default — opt out explicitly via ADMINA_GOVERNANCE_MODE=observe.
-    GOVERNANCE_MODE: str = "enforce"
+    # Read from ADMINA_GOVERNANCE_MODE (canonical name; the bare GOVERNANCE_MODE
+    # env var is not accepted).
+    GOVERNANCE_MODE: str = Field(default="enforce", validation_alias="ADMINA_GOVERNANCE_MODE")
 
     # Governance thresholds
     LOOP_WINDOW_SIZE: int = 10

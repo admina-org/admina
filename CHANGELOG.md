@@ -13,6 +13,26 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ADMINA_GOVERNANCE_MODE` is now honoured.** The proxy `Settings` field
+  declared no alias, so pydantic bound it to the bare name `GOVERNANCE_MODE`
+  and — because the model is configured with `extra="ignore"` — the
+  prefixed variable was silently discarded with no error, despite being the
+  name advertised by the field's own comment, `admina.yaml.example`,
+  `admina doctor`, and the dashboard. It now declares
+  `validation_alias="ADMINA_GOVERNANCE_MODE"`, matching the
+  `ADMINA_GUARD_FAIL_MODE` precedent. **Note:** the undocumented bare
+  `GOVERNANCE_MODE` variable is no longer accepted; a deployment relying on
+  it silently reverts to the `enforce` default, so switch it to the prefixed
+  name. The bare `LOOP_*` and `INJECTION_*` variables are unaffected — those
+  are read directly from the environment by `admina/core/config.py` and stay
+  unprefixed.
+- `make status` and `scripts/generate_docs.py` referenced top-level
+  `proxy/`, `domains/`, `sdk/`, `core/` and `plugins/` directories that have
+  not existed since the package was consolidated under `admina/`. Both now
+  use the real paths, and `engine_status` is imported from `admina.engines`.
+
 ## [0.11.0] — 2026-07-15
 
 Streaming, gateway, and PII-engine release. Adds response streaming with
