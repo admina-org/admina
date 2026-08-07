@@ -407,7 +407,11 @@ def create_dashboard_endpoints(
                     "used_memory_bytes": info.get("used_memory", 0),
                 }
             except (OSError, RuntimeError) as exc:
-                services["redis"] = {"status": "unhealthy", "error": str(exc)}
+                # The exception text can carry connection details (host, port,
+                # credentials embedded in a URL); log it server-side and return
+                # a generic reason, as the other dashboard queries already do.
+                logger.warning("Redis health check failed: %s", exc)
+                services["redis"] = {"status": "unhealthy", "error": "Health check failed"}
         else:
             services["redis"] = {"status": "not_configured"}
 
@@ -432,9 +436,10 @@ def create_dashboard_endpoints(
                     "event_count": row_count,
                 }
             except (OSError, RuntimeError, Exception) as exc:
+                logger.warning("ClickHouse health check failed: %s", exc)
                 services["clickhouse"] = {
                     "status": "unhealthy",
-                    "error": str(exc),
+                    "error": "Health check failed",
                 }
         else:
             services["clickhouse"] = {"status": "not_configured"}
