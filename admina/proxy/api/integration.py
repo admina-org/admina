@@ -37,6 +37,25 @@ class _DefaultSettings:
     GOVERNANCE_MODE: str = "enforce"
 
 
+def _scrub_check_errors(checks: dict[str, Any]) -> dict[str, Any]:
+    """Replace guard exception text with a generic reason for external callers.
+
+    A guard that breaks its contract records the raw exception text under
+    ``checks["guard_<name>"]["error"]``. That detail is valuable in the
+    forensic record — which keeps it — but it can carry internal information
+    (file paths, hostnames, credentials embedded in a connection URL), so it
+    is not returned over the REST API. The check name and its ``ERROR``
+    action still tell a caller which guard failed.
+    """
+    scrubbed: dict[str, Any] = {}
+    for name, entry in checks.items():
+        if isinstance(entry, dict) and "error" in entry:
+            scrubbed[name] = {**entry, "error": "Guard error"}
+        else:
+            scrubbed[name] = entry
+    return scrubbed
+
+
 def create_integration_endpoints(
     *,
     get_firewall: Any,
@@ -125,7 +144,7 @@ def create_integration_endpoints(
         return {
             "action": action,
             "risk_level": gov.risk_level,
-            "checks": result.checks,
+            "checks": _scrub_check_errors(result.checks),
             "redacted_content": redacted_content if action == "REDACT" else None,
             "latency_ms": round(result.latency_ms, 2),
         }
