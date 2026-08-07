@@ -13,6 +13,26 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-07-16
+
+Patch release: dependency security updates, an information-disclosure fix,
+and two configuration/tooling corrections. No API changes.
+
+### Security
+
+- **API responses no longer carry exception text.** The dashboard services
+  endpoint returned `str(exc)` from failed Redis and ClickHouse health
+  checks, and `POST /api/v1/validate` returned the raw exception text of a
+  guard that broke its contract. Either could echo a host, port or a
+  credential embedded in a connection URL back to the caller. Both now
+  report a generic reason; the detail is logged server-side and the
+  forensic records keep the full text, so the audit trail is unchanged.
+- **cryptography** updated to 50.0.0, resolving the high-severity advisory
+  affecting `< 50.0.0`. The dependency ceiling is widened from `<50` to
+  `<51`.
+- **setuptools** updated to 83.0.0 and **pymdown-extensions** to 11.0.1,
+  resolving two moderate advisories reported against the lockfile.
+
 ### Fixed
 
 - **`ADMINA_GOVERNANCE_MODE` is now honoured.** The proxy `Settings` field
@@ -643,7 +663,8 @@ environment in `docker-compose.benchmark.yml`.
 
 ---
 
-[Unreleased]: https://github.com/admina-org/admina/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/admina-org/admina/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/admina-org/admina/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/admina-org/admina/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/admina-org/admina/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/admina-org/admina/compare/v0.9.5...v0.10.0
