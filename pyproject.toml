@@ -132,7 +132,7 @@ full = ["admina-framework[proxy,nlp,telemetry]"]
 # extra only controls whether the provider wheel is present.
 openai = ["openai>=1.0,<3"]
 ollama = ["ollama>=0.3,<1"]
-anthropic = ["anthropic>=0.39,<1"]
+anthropic = ["anthropic>=0.39,<2"]
 mistral = ["mistralai>=1.0,<3"]
 gemini = ["google-genai>=1.0,<3"]
 bedrock = ["boto3>=1.34,<2"]
