@@ -130,7 +130,7 @@ rust = [
 full = ["admina-framework[proxy,nlp,telemetry]"]
 # Model-adapter provider SDKs — each adapter lazy-imports its SDK, so the
 # extra only controls whether the provider wheel is present.
-openai = ["openai>=1.0,<3"]
+openai = ["openai>=1.0,<4"]
 ollama = ["ollama>=0.3,<1"]
 anthropic = ["anthropic>=0.39,<2"]
 mistral = ["mistralai>=1.0,<3"]
