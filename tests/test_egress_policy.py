@@ -1,3 +1,5 @@
+import logging
+
 from admina.core.types import RiskLevel
 from admina.domains.agent_security.egress import EgressPolicy, analyze
 
@@ -29,12 +31,20 @@ class TestAllowlistMatching:
         assert p.evaluate(_intent({"host": "10.1.2.3"}), "enforce").allowed
         assert not p.evaluate(_intent({"host": "192.168.1.1"}), "enforce").allowed
 
-    def test_malformed_allow_entry_is_skipped_not_fatal(self):
-        p = EgressPolicy(allow=["", "***", "api.openai.com"])
+    def test_malformed_allow_entry_is_skipped_not_fatal(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="admina.egress"):
+            p = EgressPolicy(allow=["", "***", "api.openai.com"])
         assert p.evaluate(_intent({"url": "https://api.openai.com/v1"}), "enforce").allowed
         d = p.evaluate(_intent({"url": "https://evil.example"}), "enforce")
         assert d.allowed is False
         assert d.blocked == ["evil.example"]
+
+        # "" is absent, not malformed, and must not warn; "***" must be named in
+        # exactly one warning, which is the observable sign that it was rejected
+        # rather than silently admitted.
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "***" in warnings[0].getMessage()
 
     def test_single_label_allow_entry_matches_bare_host(self):
         """Docker/compose-style single-label service names must be authorisable."""
