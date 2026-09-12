@@ -1,7 +1,9 @@
 import logging
 
+import pytest
+
 from admina.core.types import RiskLevel
-from admina.domains.agent_security.egress import EgressPolicy, analyze
+from admina.domains.agent_security.egress import EgressPolicy, analyze, resolve_egress_mode
 
 
 def _intent(params):
@@ -90,3 +92,30 @@ class TestQuarantine:
         assert p.evaluate(write, "enforce").allowed is False
         assert p.evaluate(write, "enforce").risk_level is RiskLevel.CRITICAL
         assert p.evaluate(read, "enforce").allowed is True, "reads survive quarantine"
+
+
+class TestModeComposition:
+    @pytest.mark.parametrize(
+        "governance, egress, expected",
+        [
+            ("observe", "enforce", "observe"),  # global contract wins
+            ("observe", "observe", "observe"),
+            ("dry-run", "enforce", "observe"),
+            ("enforce", "observe", "observe"),  # the default: records, never blocks
+            ("enforce", "enforce", "enforce"),
+            ("enforce", None, "observe"),  # unset defaults to observe
+        ],
+    )
+    def test_table(self, governance, egress, expected, monkeypatch):
+        monkeypatch.delenv("ADMINA_EGRESS_MODE", raising=False)
+        if egress is not None:
+            monkeypatch.setenv("ADMINA_EGRESS_MODE", egress)
+        assert resolve_egress_mode(governance) == expected
+
+    def test_invalid_value_falls_back_to_observe(self, monkeypatch):
+        monkeypatch.setenv("ADMINA_EGRESS_MODE", "banana")
+        assert resolve_egress_mode("enforce") == "observe"
+
+    def test_explicit_argument_beats_the_environment(self, monkeypatch):
+        monkeypatch.setenv("ADMINA_EGRESS_MODE", "observe")
+        assert resolve_egress_mode("enforce", "enforce") == "enforce"

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -33,7 +34,14 @@ from urllib.parse import urlsplit
 
 from admina.core.types import RiskLevel
 
-__all__ = ["EgressStatus", "EgressIntent", "analyze", "EgressDecision", "EgressPolicy"]
+__all__ = [
+    "EgressStatus",
+    "EgressIntent",
+    "analyze",
+    "EgressDecision",
+    "EgressPolicy",
+    "resolve_egress_mode",
+]
 
 logger = logging.getLogger("admina.egress")
 
@@ -345,3 +353,25 @@ class EgressPolicy:
             )
 
         return EgressDecision(allowed=True)
+
+
+_VALID_EGRESS_MODES = frozenset({"observe", "enforce"})
+
+
+def resolve_egress_mode(governance_mode: str, egress_mode: str | None = None) -> str:
+    """Compose the global governance mode with the egress-specific mode.
+
+    The global mode is a ceiling: when governance is observing or dry-running,
+    egress never blocks, whatever the egress mode says. Otherwise the egress
+    mode decides, defaulting to "observe" so that upgrading a deployment that
+    already runs enforce does not silently turn on default-deny.
+    """
+    if governance_mode in ("observe", "dry-run", "dry_run"):
+        return "observe"
+    value = egress_mode if egress_mode is not None else os.environ.get("ADMINA_EGRESS_MODE", "")
+    value = (value or "").strip().lower()
+    if value not in _VALID_EGRESS_MODES:
+        if value:
+            logger.warning("Invalid ADMINA_EGRESS_MODE %r — falling back to 'observe'", value)
+        return "observe"
+    return value
