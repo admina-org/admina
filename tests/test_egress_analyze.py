@@ -233,6 +233,57 @@ class TestTriState:
         assert intent.status is not EgressStatus.NO_EGRESS
         assert "scan_truncated" not in intent.evidence
 
+    def test_truncation_outranks_a_destination_resolved_above_it(self):
+        """A decoy allowlisted host must not buy passage for a buried one.
+
+        `analyze()` already lets one unresolvable *field* beat a resolved
+        sibling; a region the walk never reached is the same situation and
+        must rank the same way. Otherwise "allowlisted host at the top, real
+        destination below the depth cap" is a one-line evasion of a
+        default-deny control.
+        """
+        from admina.domains.agent_security.egress import EgressPolicy
+
+        decoy = {
+            "url": "https://api.openai.com/v1",
+            "x": _nest(7, {"url": "https://evil.example/x"}),
+        }
+        intent = analyze(decoy)
+        assert intent.status is EgressStatus.UNRESOLVABLE
+        assert intent.evidence["scan_truncated"] is True
+        assert EgressPolicy(allow=["api.openai.com"]).evaluate(intent, "enforce").allowed is False
+
+    def test_the_decoy_case_is_recorded_not_blocked_under_observe(self):
+        from admina.domains.agent_security.egress import EgressPolicy
+
+        decoy = {
+            "url": "https://api.openai.com/v1",
+            "x": _nest(7, {"url": "https://evil.example/x"}),
+        }
+        decision = EgressPolicy(allow=["api.openai.com"]).evaluate(analyze(decoy), "observe")
+        assert decision.allowed is True
+        assert "nested past the scan depth limit" in decision.reason
+
+    def test_the_denial_reason_names_truncation_not_the_allowlist(self):
+        """An operator must be able to tell a depth refusal from an
+        allowlist refusal, from the response or the forensic record alone."""
+        from admina.domains.agent_security.egress import EgressPolicy
+
+        policy = EgressPolicy(allow=["api.openai.com"])
+        depth = policy.evaluate(analyze(_nest(8, {"url": "https://evil.example/x"})), "enforce")
+        allowlist = policy.evaluate(analyze({"url": "https://evil.example/x"}), "enforce")
+        assert "nested past the scan depth limit" in depth.reason
+        assert "nested past the scan depth limit" not in allowlist.reason
+        assert allowlist.reason == "destination not on the egress allowlist"
+
+    def test_truncation_and_an_unresolvable_field_are_both_named(self):
+        from admina.domains.agent_security.egress import EgressPolicy
+
+        params = {"host": "${SECRET}", "x": _nest(7, {"url": "https://evil.example/x"})}
+        reason = EgressPolicy(allow=[]).evaluate(analyze(params), "enforce").reason
+        assert "nested past the scan depth limit" in reason
+        assert "'host'" in reason
+
     def test_shallow_non_network_call_is_still_no_egress(self):
         """Truncation is the trigger, not depth: a shallow computation tool
         must keep passing through untouched under default-deny."""

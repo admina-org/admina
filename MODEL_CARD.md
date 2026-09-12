@@ -330,6 +330,21 @@ included. Wiring it is a separate change, not a configuration option.
   to be closed at this layer.
 - **The allowlist is host- and CIDR-scoped.** There are no path-level
   rules: a path is not a security boundary any more than a method is.
+- **Arguments nested deeper than the scan limit are refused under
+  `enforce`.** The walk over the tool arguments stops at a fixed depth
+  (`_MAX_SCAN_DEPTH`, 6, shared with the firewall and PII walks). A region
+  the walk never reached could have held a destination, so the call is
+  treated as having an undeterminable target and is denied — the same rule
+  spec §5.2 applies to any field whose value cannot be resolved, and it
+  outranks any destination resolved higher up, so an allowlisted host at
+  the top of the arguments does not buy passage for one buried below the
+  limit. The depth limit is therefore a denial trigger, not only a
+  recursion guard. The refusal is explicit rather than silent: the decision
+  reason reads *"unresolvable destination: arguments nested past the scan
+  depth limit"* and `evidence.scan_truncated` is `true` in the forensic
+  record, so a depth refusal is never mistaken for an allowlist refusal.
+  Depth alone is not the trigger — a call that fits inside the limit is
+  scanned in full, and a call with no network-facing argument still passes.
 - **`observe` mode records without blocking.** A deployment that never
   promotes an allowlist gets observation, not protection.
 - **Observation only reaches `suggest-allowlist` from two of the five

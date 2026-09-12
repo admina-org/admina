@@ -134,6 +134,24 @@ class TestEgressStage:
         assert r.checks["egress"]["status"] == "unresolvable"
         assert r.checks["egress"]["evidence"]["scan_truncated"] is True
 
+    async def test_a_decoy_allowlisted_host_does_not_buy_passage_for_a_buried_one(self):
+        """Truncation outranks a destination resolved above it, end to end."""
+        decoy: dict = {"url": "https://api.openai.com/v1", "x": {}}
+        cur = decoy["x"]
+        for _ in range(8):
+            cur["k"] = {}
+            cur = cur["k"]
+        cur["url"] = "https://publictestwiki.com/w.pl?action=edit"
+        r = await _run(decoy, EgressPolicy(allow=["api.openai.com"]), "enforce")
+        assert r.action == GovernanceAction.BLOCK
+        assert r.checks["egress"]["status"] == "unresolvable"
+        assert r.checks["egress"]["evidence"]["scan_truncated"] is True
+        assert "nested past the scan depth limit" in r.checks["egress"]["reason"]
+
+        observed = await _run(decoy, EgressPolicy(allow=["api.openai.com"]), "observe")
+        assert observed.action == GovernanceAction.ALLOW
+        assert observed.checks["egress"]["evidence"]["scan_truncated"] is True
+
     async def test_read_only_tools_are_read_off_the_policy_not_from_config(self):
         """The stage must not touch admina.yaml: the names ride on the policy."""
         policy = EgressPolicy(allow=["search.corp"], read_only_tools=frozenset({"docs_search"}))

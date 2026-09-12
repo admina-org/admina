@@ -255,21 +255,18 @@ def analyze(
     unresolved: list[str] = []
     truncated = _walk(params, 0, hosts, network_keys, unresolved)
 
-    if unresolved:
+    # A region of the arguments the walk never reached taints the call, the
+    # same way an individual field that could not be resolved does — and it
+    # outranks any destination found above it. Both are the same situation:
+    # something is present that could not be established, which spec §5.2
+    # calls ambiguity and denies under enforce. Letting a resolved sibling
+    # win would leave "put an allowlisted host at the top and the real one
+    # below the depth cap" as a one-line evasion of a default-deny control.
+    if truncated or unresolved:
         status = EgressStatus.UNRESOLVABLE
     elif hosts:
         status = EgressStatus.RESOLVED
     elif network_keys:
-        status = EgressStatus.UNRESOLVABLE
-    elif truncated:
-        # The walk stopped at _MAX_SCAN_DEPTH with nothing found. "Nothing
-        # found" is then a statement about the scan, not about the call, so
-        # it cannot be reported as NO_EGRESS — that outcome is the one the
-        # policy passes through unconditionally, which would make burying a
-        # URL below the depth cap a way to walk past the control entirely.
-        # Spec §5.2: an egress attempt whose target cannot be established is
-        # denied under enforce, and truncating the scan is one way of
-        # failing to establish it.
         status = EgressStatus.UNRESOLVABLE
     else:
         status = EgressStatus.NO_EGRESS
@@ -278,8 +275,8 @@ def analyze(
     if unresolved:
         evidence["unresolvable_fields"] = sorted(set(unresolved))
     if truncated:
-        # Recorded even when a destination *was* found shallower: the
-        # operator can then see that the verdict rests on a partial scan.
+        # What makes the denial diagnosable: the operator can tell a
+        # depth refusal from an allowlist refusal without reading the code.
         evidence["scan_truncated"] = True
 
     write_shaped = False
@@ -390,11 +387,16 @@ class EgressPolicy:
             return EgressDecision(allowed=True)
 
         if intent.status is EgressStatus.UNRESOLVABLE:
+            # Truncation is named first and always, so a block caused by
+            # argument depth is never mistaken for a block caused by the
+            # allowlist — from the response or from the forensic record.
             fields = intent.evidence.get("unresolvable_fields", [])
-            if fields:
-                reason = f"unresolvable destination in {fields}"
-            elif intent.evidence.get("scan_truncated"):
+            if intent.evidence.get("scan_truncated"):
                 reason = "unresolvable destination: arguments nested past the scan depth limit"
+                if fields:
+                    reason += f", and unresolvable fields {fields}"
+            elif fields:
+                reason = f"unresolvable destination in {fields}"
             else:
                 reason = "unresolvable destination in arguments"
             return EgressDecision(
