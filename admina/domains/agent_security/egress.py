@@ -135,14 +135,14 @@ def _walk(
             _walk(item, depth + 1, hosts, network_keys, unresolved)
 
 
-def _classify_write_shaped(obj: Any, depth: int, hosts: list[str]) -> str | None:
+def _classify_write_shaped(obj: Any, depth: int) -> str | None:
     """Return the reason the call is payload-bearing, or None."""
     if depth > _MAX_SCAN_DEPTH:
         return None
     if isinstance(obj, str):
         if _host_from_string(obj):
             query = urlsplit(obj).query if "://" in obj else ""
-            return "url query string" if query else None
+            return "url query string" if len(query) >= _PAYLOAD_MIN_CHARS else None
         if len(obj.strip()) >= _PAYLOAD_MIN_CHARS:
             return "free-form payload value"
         return None
@@ -150,13 +150,13 @@ def _classify_write_shaped(obj: Any, depth: int, hosts: list[str]) -> str | None
         for key, value in obj.items():
             if isinstance(key, str) and key.lower() in _PAYLOAD_KEYS and value:
                 return f"payload field {key!r}"
-            reason = _classify_write_shaped(value, depth + 1, hosts)
+            reason = _classify_write_shaped(value, depth + 1)
             if reason:
                 return reason
         return None
     if isinstance(obj, list):
         for item in obj:
-            reason = _classify_write_shaped(item, depth + 1, hosts)
+            reason = _classify_write_shaped(item, depth + 1)
             if reason:
                 return reason
     return None
@@ -185,7 +185,7 @@ def analyze(
     tool_name: str = "",
     read_only_tools: frozenset[str] = frozenset(),
 ) -> EgressIntent:
-    """Characterise the outbound intent of a tool call in a single pass."""
+    """Characterise the outbound intent and payload shape of a tool call."""
     hosts: list[str] = []
     network_keys: list[str] = []
     unresolved: list[str] = []
@@ -204,16 +204,16 @@ def analyze(
     if unresolved:
         evidence["unresolvable_fields"] = sorted(set(unresolved))
 
-    hint = _remote_hint(params)
-    if hint is not None:
-        evidence["remote_read_only_hint"] = hint
-
     write_shaped = False
     if status is not EgressStatus.NO_EGRESS:
+        hint = _remote_hint(params)
+        if hint is not None:
+            evidence["remote_read_only_hint"] = hint
+
         if tool_name and tool_name in read_only_tools:
             evidence["write_shaped_reason"] = "read_only_tools override"
         else:
-            reason = _classify_write_shaped(params, 0, hosts)
+            reason = _classify_write_shaped(params, 0)
             if reason:
                 write_shaped = True
                 evidence["write_shaped_reason"] = reason

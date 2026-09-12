@@ -6,6 +6,12 @@ class TestWriteShaped:
         i = analyze({"url": "https://wiki.com/w.pl?action=edit&text=hello+there+everyone"})
         assert i.write_shaped is True
 
+    def test_trivial_query_string_is_not_payload_bearing(self):
+        """Short query strings like ?id=1 are ordinary reads, not payloads."""
+        assert analyze({"url": "https://api.corp/items?id=1"}).write_shaped is False
+        assert analyze({"url": "https://api.corp/p?page=2"}).write_shaped is False
+        assert analyze({"url": "https://api.corp/x?q=a"}).write_shaped is False
+
     def test_url_without_query_is_not_payload_bearing(self):
         i = analyze({"url": "https://docs.python.org/3/library/json.html"})
         assert i.write_shaped is False
