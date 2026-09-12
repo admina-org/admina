@@ -24,13 +24,18 @@ security boundary.
 from __future__ import annotations
 
 import ipaddress
+import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 from urllib.parse import urlsplit
 
-__all__ = ["EgressStatus", "EgressIntent", "analyze"]
+from admina.core.types import RiskLevel
+
+__all__ = ["EgressStatus", "EgressIntent", "analyze", "EgressDecision", "EgressPolicy"]
+
+logger = logging.getLogger("admina.egress")
 
 # Mirrors _MAX_SCAN_DEPTH in admina/domains/governance.py so the egress walk
 # and the PII/firewall walk agree on how deep a payload is inspected.
@@ -224,3 +229,102 @@ def analyze(
         write_shaped=write_shaped,
         evidence=evidence,
     )
+
+
+@dataclass
+class EgressDecision:
+    """Outcome of evaluating one EgressIntent against the policy."""
+
+    allowed: bool = True
+    reason: str = ""
+    risk_level: RiskLevel = RiskLevel.LOW
+    blocked: list[str] = field(default_factory=list)
+
+
+class EgressPolicy:
+    """Destination allowlist plus a quarantine set refreshed out of band."""
+
+    def __init__(self, allow: list[str], quarantine: frozenset[str] = frozenset()) -> None:
+        self._exact: set[str] = set()
+        self._wildcards: list[str] = []
+        self._networks: list[Any] = []
+        for entry in allow:
+            self._compile_entry(entry)
+        self._quarantine = quarantine
+
+    def _compile_entry(self, entry: str) -> None:
+        value = (entry or "").strip().lower()
+        if not value:
+            return
+        if value.startswith("*."):
+            suffix = value[2:]
+            if suffix:
+                self._wildcards.append(suffix)
+            return
+        if "/" in value:
+            try:
+                self._networks.append(ipaddress.ip_network(value, strict=False))
+            except ValueError:
+                logger.warning("Skipping malformed egress CIDR %r", entry)
+            return
+        try:
+            self._exact.add(str(ipaddress.ip_address(value)))
+            return
+        except ValueError:
+            pass
+        if _HOST_RX.match(value):
+            self._exact.add(value)
+        else:
+            logger.warning("Skipping malformed egress allow entry %r", entry)
+
+    def set_quarantine(self, hosts: frozenset[str]) -> None:
+        """Replace the quarantine set. Called by the out-of-band refresh."""
+        self._quarantine = hosts
+
+    def _is_allowed(self, host: str) -> bool:
+        if host in self._exact:
+            return True
+        for suffix in self._wildcards:
+            if host.endswith("." + suffix):
+                return True
+        try:
+            addr = ipaddress.ip_address(host)
+        except ValueError:
+            return False
+        return any(addr in net for net in self._networks)
+
+    def evaluate(self, intent: EgressIntent, mode: str) -> EgressDecision:
+        """Decide on one call. ``mode`` is "observe" or "enforce"."""
+        enforcing = mode == "enforce"
+
+        if intent.status is EgressStatus.NO_EGRESS:
+            return EgressDecision(allowed=True)
+
+        if intent.status is EgressStatus.UNRESOLVABLE:
+            fields = intent.evidence.get("unresolvable_fields", [])
+            return EgressDecision(
+                allowed=not enforcing,
+                reason=f"unresolvable destination in {fields or 'arguments'}",
+                risk_level=RiskLevel.HIGH,
+                blocked=[],
+            )
+
+        quarantined = [h for h in intent.destinations if h in self._quarantine]
+        if quarantined and intent.write_shaped:
+            return EgressDecision(
+                allowed=not enforcing,
+                reason="destination quarantined for writes",
+                risk_level=RiskLevel.CRITICAL,
+                blocked=quarantined,
+            )
+
+        unlisted = [h for h in intent.destinations if not self._is_allowed(h)]
+        if unlisted:
+            return EgressDecision(
+                allowed=not enforcing,
+                reason="destination not on the egress allowlist",
+                risk_level=RiskLevel.HIGH,
+                blocked=unlisted,
+            )
+
+        return EgressDecision(allowed=True)
