@@ -184,7 +184,9 @@ class GovernedModel:
                 "or resolve one via PluginRegistry."
             )
 
+        from admina.domains.agent_security.egress import resolve_egress_mode
         from admina.domains.governance import redact_response_result, run_pipeline
+        from admina.engines import get_egress_policy
 
         explicit_session = kwargs.pop("session_id", None)
         loop_on = self._loop_detection and explicit_session is not None
@@ -220,6 +222,8 @@ class GovernedModel:
             loop_enabled=loop_on,
             mode=self._mode,
             guard_fail_mode=self._guard_fail_mode,
+            egress_policy=get_egress_policy(),
+            egress_mode=resolve_egress_mode(self._mode),
         )
 
         pre_action = pre.gov_response.action  # uppercase: ALLOW/BLOCK/CIRCUIT_BREAK
@@ -349,7 +353,9 @@ class GovernedModel:
                 "or resolve one via PluginRegistry."
             )
 
+        from admina.domains.agent_security.egress import resolve_egress_mode
         from admina.domains.governance import run_pipeline
+        from admina.engines import get_egress_policy
 
         context = kwargs.pop("context", None)
         window = kwargs.pop("stream_window_chars", 64)
@@ -383,6 +389,8 @@ class GovernedModel:
             loop_enabled=loop_on,
             mode=self._mode,
             guard_fail_mode=self._guard_fail_mode,
+            egress_policy=get_egress_policy(),
+            egress_mode=resolve_egress_mode(self._mode),
         )
 
         pre_action = pre.gov_response.action

@@ -120,6 +120,7 @@ def _state(http, **over):
         firewall=_FakeFirewall(),
         pii_redactor=_FakePII(),
         loop_breaker=_FakeLoopBreaker(),
+        egress_policy=None,
         governance_guards=[_RaisingGuard()],
         forensic_box=None,
         http_client=http,

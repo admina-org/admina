@@ -87,6 +87,8 @@ async def run_pipeline(
     loop_enabled: bool = True,
     mode: str = "enforce",
     guard_fail_mode: str = "open",
+    egress_policy: Any = None,
+    egress_mode: str = "observe",
 ) -> GovernanceResult:
     """Execute the full governance pipeline and return a GovernanceResult.
 
@@ -103,6 +105,12 @@ async def run_pipeline(
     raises: ``"open"`` (default) records an ``ERROR`` check and continues;
     ``"closed"`` sets ``action=BLOCK`` (risk HIGH) while still recording the
     ``ERROR`` check.
+
+    ``egress_policy`` is an :class:`~admina.domains.agent_security.egress.
+    EgressPolicy` (or ``None`` to skip the stage entirely — the operator has
+    disabled egress control). ``egress_mode`` is ``"observe"`` (default) or
+    ``"enforce"``, typically produced by
+    :func:`~admina.domains.agent_security.egress.resolve_egress_mode`.
     """
     start_time = time.perf_counter()
     result = GovernanceResult()
@@ -138,6 +146,31 @@ async def run_pipeline(
         pii_count = pii_result["count"]
         if pii_count > 0:
             result.redacted_body = {**body, "params": redacted_params}
+
+    # 3b. Egress policy — destination control, method-independent.
+    #
+    # Runs after redaction because the destination and payload that matter are
+    # the ones actually leaving, and before the guards so a denied destination
+    # short-circuits third-party inspection.
+    if result.action == GovernanceAction.ALLOW and egress_policy is not None:
+        from admina.domains.agent_security.egress import analyze
+        from admina.engines import get_egress_read_only_tools
+
+        tool_name = params.get("name", "") if isinstance(params, dict) else ""
+        intent = analyze(params, tool_name, get_egress_read_only_tools())
+        decision = egress_policy.evaluate(intent, egress_mode)
+        result.checks["egress"] = {
+            "status": intent.status.value,
+            "destinations": list(intent.destinations),
+            "write_shaped": intent.write_shaped,
+            "allowed": decision.allowed,
+            "reason": decision.reason,
+            "evidence": dict(intent.evidence),
+            "blocked": list(decision.blocked),
+        }
+        if not decision.allowed:
+            result.action = GovernanceAction.BLOCK
+            result.risk_level = decision.risk_level
 
     # 4. Pluggable Governance Guards
     if result.action == GovernanceAction.ALLOW and governance_guards:

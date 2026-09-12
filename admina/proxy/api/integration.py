@@ -63,6 +63,7 @@ def create_integration_endpoints(
     get_loop_breaker: Any,
     get_forensic_box: Any,
     get_settings: Any = lambda: _DefaultSettings(),
+    get_egress_policy: Any = lambda: None,
 ) -> APIRouter:
     """Create a new APIRouter with integration endpoints.
 
@@ -74,6 +75,8 @@ def create_integration_endpoints(
         get_loop_breaker: Callable returning the loop breaker.
         get_forensic_box: Callable returning ForensicBlackBox | None.
         get_settings: Callable returning the settings object (optional).
+        get_egress_policy: Callable returning the EgressPolicy, or None when
+            egress control is disabled (optional; defaults to ``None``).
 
     Returns:
         The configured APIRouter.
@@ -90,6 +93,7 @@ def create_integration_endpoints(
         Returns ``action`` (ALLOW / BLOCK / REDACT), ``risk_level``,
         and per-domain ``checks``.
         """
+        from admina.domains.agent_security.egress import resolve_egress_mode
         from admina.domains.governance import run_pipeline
 
         content = body.get("content", "")
@@ -118,6 +122,8 @@ def create_integration_endpoints(
             injection_enabled=True,
             pii_enabled=True,
             mode=mode,
+            egress_policy=get_egress_policy(),
+            egress_mode=resolve_egress_mode(mode),
         )
 
         gov = result.gov_response  # action/risk_level are already UPPERCASE

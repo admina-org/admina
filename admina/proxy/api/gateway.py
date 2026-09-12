@@ -40,6 +40,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from admina.core.types import EventType
+from admina.domains.agent_security.egress import resolve_egress_mode
 from admina.domains.governance import redact_response_result, run_pipeline, safe_serialize
 
 
@@ -269,7 +270,8 @@ def create_gateway_endpoints(
 
     Args:
         get_state: Callable returning the ProxyState (firewall, pii_redactor,
-            loop_breaker, governance_guards, forensic_box, http_client).
+            loop_breaker, egress_policy, governance_guards, forensic_box,
+            http_client).
         get_settings: Callable returning the settings object.
     """
     router = APIRouter(prefix="/v1", tags=["gateway"])
@@ -322,6 +324,8 @@ def create_gateway_endpoints(
             loop_enabled=False,
             mode=cfg.GOVERNANCE_MODE,
             guard_fail_mode=cfg.GUARD_FAIL_MODE,
+            egress_policy=state.egress_policy,
+            egress_mode=resolve_egress_mode(cfg.GOVERNANCE_MODE),
         )
         action = pre.gov_response.action  # uppercase: ALLOW/BLOCK/CIRCUIT_BREAK
 

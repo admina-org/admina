@@ -49,6 +49,7 @@ class ProxyState:
     firewall: Any = None
     pii_redactor: Any = None
     loop_breaker: Any = None
+    egress_policy: Any = None
 
     # Subsystems
     forensic_box: ForensicBlackBox | None = None

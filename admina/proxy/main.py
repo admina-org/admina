@@ -47,6 +47,7 @@ from admina import __version__
 from admina.core.event_bus import GovernanceEvent as BusGovernanceEvent
 from admina.core.event_bus import bus as governance_bus
 from admina.core.types import EventType, GovernanceAction
+from admina.domains.agent_security.egress import resolve_egress_mode
 from admina.domains.compliance.forensic import ForensicBlackBox
 from admina.domains.compliance.otel import OTELGovernanceExporter
 from admina.domains.governance import (
@@ -57,6 +58,7 @@ from admina.domains.governance import (
 )
 from admina.engines import (
     engine_status,
+    get_egress_policy,
     get_firewall,
     get_loop_breaker,
     get_pii_engine,
@@ -162,6 +164,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             similarity_threshold=settings.LOOP_SIMILARITY_THRESHOLD,
             max_consecutive=settings.LOOP_MAX_CONSECUTIVE,
         ),
+        egress_policy=get_egress_policy(),
         router=MultiUpstreamRouter(default_upstream=settings.UPSTREAM_MCP_URL),
     )
 
@@ -477,6 +480,7 @@ _integration_router = create_integration_endpoints(
     get_loop_breaker=lambda: app.state.proxy.loop_breaker,
     get_forensic_box=lambda: app.state.proxy.forensic_box,
     get_settings=lambda: settings,
+    get_egress_policy=lambda: app.state.proxy.egress_policy,
 )
 app.include_router(_integration_router)
 
@@ -1298,6 +1302,8 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
         pii_enabled=settings.PII_REDACTION_ENABLED,
         mode=settings.GOVERNANCE_MODE,
         guard_fail_mode=settings.GUARD_FAIL_MODE,
+        egress_policy=state.egress_policy,
+        egress_mode=resolve_egress_mode(settings.GOVERNANCE_MODE),
     )
 
     persisted_details = build_governance_details(pipeline_result)
