@@ -69,7 +69,10 @@ _NETWORK_KEYS = frozenset(
 
 # A hostname with at least one dot and an alphabetic TLD. Deliberately strict:
 # a false negative here downgrades to UNRESOLVABLE (denied in enforce) when the
-# value sits under a network key, which is the safe direction.
+# value sits under a network key, which is the safe direction. It is also
+# deliberately *not* sufficient on its own: it accepts "notes.txt" and
+# "os.path" too, so a scheme-less match only counts under a network key (see
+# _host_from_string's allow_bare_host).
 _HOST_RX = re.compile(
     r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})*\."
     r"[A-Za-z]{2,63}$"
@@ -113,8 +116,20 @@ class EgressIntent:
     evidence: dict[str, Any] = field(default_factory=dict)
 
 
-def _host_from_string(value: str) -> str | None:
-    """Return a normalised host for a URL, bare hostname or IP literal."""
+def _host_from_string(value: str, allow_bare_host: bool = False) -> str | None:
+    """Return a normalised host for a URL, IP literal or bare hostname.
+
+    A string carrying ``"://"`` and an IP literal are unambiguous and are
+    recognised wherever they appear in the arguments. A scheme-less dotted
+    token is not: ``notes.txt``, ``report.docx``, ``users.accounts`` and
+    ``os.path`` all satisfy :data:`_HOST_RX`. It is therefore accepted only
+    when *allow_bare_host* is set, which :func:`_walk` does solely for values
+    sitting under a key in :data:`_NETWORK_KEYS` — the same gate already
+    applied to :data:`_SINGLE_LABEL_RX`, and for the same reason: the
+    argument name, not the shape of the value, is what declares a
+    destination. Without it a local file tool is read as an egress attempt
+    and is refused under default-deny.
+    """
     v = value.strip()
     if not v:
         return None
@@ -125,7 +140,7 @@ def _host_from_string(value: str) -> str | None:
         return str(ipaddress.ip_address(v))
     except ValueError:
         pass
-    if _HOST_RX.match(v):
+    if allow_bare_host and _HOST_RX.match(v):
         return v.lower()
     return None
 
@@ -136,33 +151,47 @@ def _walk(
     hosts: list[str],
     network_keys: list[str],
     unresolved: list[str],
-) -> None:
+) -> bool:
+    """Collect destinations. Returns True if the walk was cut short by depth.
+
+    A truncated walk means part of the arguments was never inspected, so the
+    caller cannot claim the call has no destination — see :func:`analyze`.
+    """
     if depth > _MAX_SCAN_DEPTH:
-        return
+        # Only a string, dict or list could have hidden a destination; an
+        # int, float, bool or None could not, so skipping one loses nothing
+        # and must not be reported as an incomplete scan.
+        return isinstance(obj, str | dict | list)
     if isinstance(obj, str):
         host = _host_from_string(obj)
         if host and host not in hosts:
             hosts.append(host)
-        return
+        return False
+    truncated = False
     if isinstance(obj, dict):
         for key, value in obj.items():
             if isinstance(key, str) and key.lower() in _NETWORK_KEYS:
                 network_keys.append(key)
-                resolved = isinstance(value, str) and bool(_host_from_string(value))
-                if not resolved and isinstance(value, str):
-                    candidate = value.strip()
-                    if _SINGLE_LABEL_RX.match(candidate):
-                        host = candidate.lower()
-                        if host not in hosts:
-                            hosts.append(host)
-                        resolved = True
-                if not resolved:
+                host = None
+                if isinstance(value, str):
+                    host = _host_from_string(value, allow_bare_host=True)
+                    if host is None and _SINGLE_LABEL_RX.match(value.strip()):
+                        host = value.strip().lower()
+                if host is None:
                     unresolved.append(key)
-            _walk(value, depth + 1, hosts, network_keys, unresolved)
-        return
+                elif host not in hosts:
+                    hosts.append(host)
+                if isinstance(value, str):
+                    # Read in full just above; a string has no children, so
+                    # recursing would only risk a spurious depth truncation
+                    # when the key itself sat on the last scanned level.
+                    continue
+            truncated |= _walk(value, depth + 1, hosts, network_keys, unresolved)
+        return truncated
     if isinstance(obj, list):
         for item in obj:
-            _walk(item, depth + 1, hosts, network_keys, unresolved)
+            truncated |= _walk(item, depth + 1, hosts, network_keys, unresolved)
+    return truncated
 
 
 def _classify_write_shaped(obj: Any, depth: int) -> str | None:
@@ -170,7 +199,12 @@ def _classify_write_shaped(obj: Any, depth: int) -> str | None:
     if depth > _MAX_SCAN_DEPTH:
         return None
     if isinstance(obj, str):
-        if _host_from_string(obj):
+        # Bare hostnames are recognised here regardless of the key: the
+        # question this function asks is "is this string a payload?", and a
+        # dotted token answering "no" only ever makes the call look *less*
+        # payload-bearing. That is the conservative direction, and it keeps
+        # the write-shaped verdict unchanged by the destination gate above.
+        if _host_from_string(obj, allow_bare_host=True):
             query = urlsplit(obj).query if "://" in obj else ""
             return "url query string" if len(query) >= _PAYLOAD_MIN_CHARS else None
         if len(obj.strip()) >= _PAYLOAD_MIN_CHARS:
@@ -219,7 +253,7 @@ def analyze(
     hosts: list[str] = []
     network_keys: list[str] = []
     unresolved: list[str] = []
-    _walk(params, 0, hosts, network_keys, unresolved)
+    truncated = _walk(params, 0, hosts, network_keys, unresolved)
 
     if unresolved:
         status = EgressStatus.UNRESOLVABLE
@@ -227,12 +261,26 @@ def analyze(
         status = EgressStatus.RESOLVED
     elif network_keys:
         status = EgressStatus.UNRESOLVABLE
+    elif truncated:
+        # The walk stopped at _MAX_SCAN_DEPTH with nothing found. "Nothing
+        # found" is then a statement about the scan, not about the call, so
+        # it cannot be reported as NO_EGRESS — that outcome is the one the
+        # policy passes through unconditionally, which would make burying a
+        # URL below the depth cap a way to walk past the control entirely.
+        # Spec §5.2: an egress attempt whose target cannot be established is
+        # denied under enforce, and truncating the scan is one way of
+        # failing to establish it.
+        status = EgressStatus.UNRESOLVABLE
     else:
         status = EgressStatus.NO_EGRESS
 
     evidence: dict[str, Any] = {}
     if unresolved:
         evidence["unresolvable_fields"] = sorted(set(unresolved))
+    if truncated:
+        # Recorded even when a destination *was* found shallower: the
+        # operator can then see that the verdict rests on a partial scan.
+        evidence["scan_truncated"] = True
 
     write_shaped = False
     if status is not EgressStatus.NO_EGRESS:
@@ -327,9 +375,15 @@ class EgressPolicy:
 
         if intent.status is EgressStatus.UNRESOLVABLE:
             fields = intent.evidence.get("unresolvable_fields", [])
+            if fields:
+                reason = f"unresolvable destination in {fields}"
+            elif intent.evidence.get("scan_truncated"):
+                reason = "unresolvable destination: arguments nested past the scan depth limit"
+            else:
+                reason = "unresolvable destination in arguments"
             return EgressDecision(
                 allowed=not enforcing,
-                reason=f"unresolvable destination in {fields or 'arguments'}",
+                reason=reason,
                 risk_level=RiskLevel.HIGH,
                 blocked=[],
             )

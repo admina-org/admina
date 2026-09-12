@@ -1,4 +1,17 @@
+import pytest
+
 from admina.domains.agent_security.egress import EgressStatus, analyze
+
+
+def _nest(levels: int, leaf: dict) -> dict:
+    """Wrap *leaf* in *levels* plain dicts, so leaf keys sit at that depth."""
+    root: dict = {}
+    cur = root
+    for _ in range(levels):
+        cur["k"] = {}
+        cur = cur["k"]
+    cur.update(leaf)
+    return root
 
 
 class TestWriteShaped:
@@ -104,6 +117,56 @@ class TestSingleLabelHosts:
         assert i.write_shaped is True
 
 
+class TestBareDottedTokens:
+    """A dotted token is a destination only when the argument name says so.
+
+    ``_HOST_RX`` accepts any dotted token with an alphabetic tail, so
+    "notes.txt" and "os.path" parse as hostnames. Accepting them anywhere in
+    the arguments makes every local-file, database and module-name tool an
+    egress attempt, and under default-deny that refuses the call — while
+    spec §5.2's table says a local file tool must pass through. It also
+    poisons `admina egress suggest-allowlist`, which proposes exactly the
+    destinations observed here.
+    """
+
+    @pytest.mark.parametrize(
+        "tool, params",
+        [
+            ("read_file", {"path": "notes.txt"}),
+            ("write_file", {"filename": "report.docx"}),
+            ("db_query", {"table": "users.accounts"}),
+            ("import_module", {"module": "os.path"}),
+            ("archive", {"src": "backup.tar.gz", "dest_name": "backup.old"}),
+        ],
+    )
+    def test_local_tools_are_not_egress_attempts(self, tool, params):
+        i = analyze(params, tool)
+        assert i.status is EgressStatus.NO_EGRESS
+        assert i.destinations == []
+
+    def test_a_full_url_under_a_non_network_key_is_still_caught(self):
+        """The gate is on bare tokens only: a scheme makes a value unambiguous."""
+        i = analyze({"note": "https://publictestwiki.com/w.pl?action=edit"})
+        assert i.status is EgressStatus.RESOLVED
+        assert i.destinations == ["publictestwiki.com"]
+
+    def test_an_ip_literal_under_a_non_network_key_is_still_caught(self):
+        i = analyze({"note": "10.0.0.5"})
+        assert i.status is EgressStatus.RESOLVED
+        assert i.destinations == ["10.0.0.5"]
+
+    def test_a_bare_host_under_a_network_key_still_resolves(self):
+        """The gate must not cost the scheme-less host form of §5.1."""
+        i = analyze({"endpoint": "publictestwiki.com"})
+        assert i.status is EgressStatus.RESOLVED
+        assert i.destinations == ["publictestwiki.com"]
+
+    def test_a_file_name_under_a_network_key_is_still_a_destination(self):
+        """The argument name is what declares intent, so this must resolve —
+        the operator named the field, not the analyzer."""
+        assert analyze({"url": "notes.txt"}).destinations == ["notes.txt"]
+
+
 class TestTriState:
     def test_pure_computation_tool_is_not_an_egress_attempt(self):
         """A tool with no network-shaped argument must never be denied."""
@@ -124,11 +187,57 @@ class TestTriState:
         i = analyze({"text": "please summarise the quarterly report"})
         assert i.status is EgressStatus.NO_EGRESS
 
-    def test_depth_limit_does_not_crash(self):
-        deep = {"k": {}}
-        cur = deep["k"]
-        for _ in range(50):
-            cur["k"] = {}
-            cur = cur["k"]
-        cur["url"] = "https://deep.com"
-        assert analyze(deep).status is EgressStatus.NO_EGRESS
+    def test_truncated_scan_is_unresolvable_not_no_egress(self):
+        """A destination buried past the depth cap must not read as "no egress".
+
+        NO_EGRESS is the outcome the policy passes through unconditionally,
+        so reporting it for a scan that simply stopped early would let an
+        agent that controls its own argument shape walk past the control by
+        nesting the URL deep enough. Spec §5.2: an egress attempt whose
+        target cannot be established is denied.
+        """
+        deep = _nest(50, {"url": "https://deep.com"})
+        intent = analyze(deep)
+        assert intent.status is EgressStatus.UNRESOLVABLE
+        assert intent.evidence["scan_truncated"] is True
+
+    def test_truncated_scan_is_denied_under_enforce(self):
+        from admina.domains.agent_security.egress import EgressPolicy
+
+        policy = EgressPolicy(allow=["api.openai.com"])
+        decision = policy.evaluate(analyze(_nest(50, {"url": "https://deep.com"})), "enforce")
+        assert decision.allowed is False
+        assert "unresolvable" in decision.reason
+
+    def test_truncated_scan_records_without_blocking_under_observe(self):
+        from admina.domains.agent_security.egress import EgressPolicy
+
+        policy = EgressPolicy(allow=["api.openai.com"])
+        decision = policy.evaluate(analyze(_nest(50, {"url": "https://deep.com"})), "observe")
+        assert decision.allowed is True
+
+    @pytest.mark.parametrize("nesting", [7, 8, 11, 30])
+    def test_first_unscanned_level_and_beyond_all_fail_closed(self, nesting):
+        """Level 6 is still scanned; 7 is the first level past the walk.
+
+        Before this was fixed, 7 and everything below it reported NO_EGRESS
+        and were allowed under default-deny.
+        """
+        assert analyze(_nest(nesting, {"url": "https://deep.com"})).status is (
+            EgressStatus.UNRESOLVABLE
+        )
+
+    @pytest.mark.parametrize("nesting", [0, 3, 6])
+    def test_levels_within_the_scan_still_resolve_the_destination(self, nesting):
+        intent = analyze(_nest(nesting, {"url": "https://deep.com"}))
+        assert intent.status is not EgressStatus.NO_EGRESS
+        assert "scan_truncated" not in intent.evidence
+
+    def test_shallow_non_network_call_is_still_no_egress(self):
+        """Truncation is the trigger, not depth: a shallow computation tool
+        must keep passing through untouched under default-deny."""
+        assert analyze({"expression": "2 + 2"}).status is EgressStatus.NO_EGRESS
+
+    def test_deep_but_complete_non_network_call_is_still_no_egress(self):
+        """Nesting that stays within the cap is not truncation."""
+        assert analyze(_nest(5, {"expression": "2 + 2"})).status is EgressStatus.NO_EGRESS
