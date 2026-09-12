@@ -33,6 +33,15 @@ class TestAllowlistMatching:
         p = EgressPolicy(allow=["", "***", "api.openai.com"])
         assert p.evaluate(_intent({"url": "https://api.openai.com/v1"}), "enforce").allowed
 
+    def test_single_label_allow_entry_matches_bare_host(self):
+        """Docker/compose-style single-label service names must be authorisable."""
+        p = EgressPolicy(allow=["redis"])
+        assert p.evaluate(_intent({"host": "redis", "port": 6379}), "enforce").allowed
+
+    def test_single_label_allow_entry_matches_url_host(self):
+        p = EgressPolicy(allow=["localhost"])
+        assert p.evaluate(_intent({"url": "http://localhost:9000"}), "enforce").allowed
+
 
 class TestTriStateHandling:
     def test_no_egress_always_passes(self):

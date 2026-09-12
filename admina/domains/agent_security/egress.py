@@ -67,6 +67,15 @@ _HOST_RX = re.compile(
     r"[A-Za-z]{2,63}$"
 )
 
+# A single-label hostname with no dot: Docker/compose service names
+# ("redis", "upstream-mcp") and "localhost". Deliberately excludes $, {, },
+# and _, so a shell/template placeholder like ${TARGET_ENDPOINT} never
+# matches. Used only where the string sits under a network-declaring key
+# (see _walk) and, symmetrically, to accept the same shape as an allowlist
+# entry (see EgressPolicy._compile_entry) — never inside _host_from_string,
+# where a bare English word must not become a "host".
+_SINGLE_LABEL_RX = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+
 # Argument names that carry a request payload by convention.
 _PAYLOAD_KEYS = frozenset({"body", "data", "payload", "json", "content", "text", "params"})
 
@@ -131,7 +140,15 @@ def _walk(
         for key, value in obj.items():
             if isinstance(key, str) and key.lower() in _NETWORK_KEYS:
                 network_keys.append(key)
-                if not (isinstance(value, str) and _host_from_string(value)):
+                resolved = isinstance(value, str) and bool(_host_from_string(value))
+                if not resolved and isinstance(value, str):
+                    candidate = value.strip()
+                    if _SINGLE_LABEL_RX.match(candidate):
+                        host = candidate.lower()
+                        if host not in hosts:
+                            hosts.append(host)
+                        resolved = True
+                if not resolved:
                     unresolved.append(key)
             _walk(value, depth + 1, hosts, network_keys, unresolved)
         return
@@ -272,7 +289,7 @@ class EgressPolicy:
             return
         except ValueError:
             pass
-        if _HOST_RX.match(value):
+        if _HOST_RX.match(value) or _SINGLE_LABEL_RX.match(value):
             self._exact.add(value)
         else:
             logger.warning("Skipping malformed egress allow entry %r", entry)

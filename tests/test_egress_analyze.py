@@ -72,6 +72,31 @@ class TestDestinationExtraction:
         assert i.destinations == ["x.com"]
 
 
+class TestSingleLabelHosts:
+    """Single-label hostnames (Docker/compose service names) resolve, but only
+    when they sit under a key that declares a network destination."""
+
+    def test_bare_single_label_host_under_network_key_resolves(self):
+        i = analyze({"host": "redis", "port": 6379})
+        assert i.status is EgressStatus.RESOLVED
+        assert i.destinations == ["redis"]
+
+    def test_placeholder_under_network_key_is_still_unresolvable(self):
+        """The single-label pattern must not accept shell/template placeholders."""
+        i = analyze({"url": "${TARGET_ENDPOINT}"})
+        assert i.status is EgressStatus.UNRESOLVABLE
+
+    def test_single_label_value_outside_a_network_key_is_not_a_destination(self):
+        i = analyze({"note": "hello"})
+        assert i.status is EgressStatus.NO_EGRESS
+        assert i.destinations == []
+
+    def test_write_shaped_classification_unaffected_by_single_label_word(self):
+        """A bare word must not become a 'host' for write-shaped purposes."""
+        i = analyze({"url": "https://api.corp/x", "note": "hello"})
+        assert i.write_shaped is False
+
+
 class TestTriState:
     def test_pure_computation_tool_is_not_an_egress_attempt(self):
         """A tool with no network-shaped argument must never be denied."""
