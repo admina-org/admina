@@ -302,18 +302,18 @@ a denied destination never reaches third-party guard code.
   promotes an allowlist gets observation, not protection.
 - **A search API with a query string is classified payload-bearing.**
   Declare it under `read_only_tools` if that matters.
-- **Write-shaped classification keys on the argument name, not the
-  value's type or length.** A truthy value under `body`, `data`,
-  `payload`, `json`, `content`, `text` or `params` is write-shaped
-  whatever its shape — `{"body": true}` and `{"data": 1}` both count. A
-  value under any other key never triggers this rule by itself, no matter
-  how it functions in the tool's own semantics: `{"active": true}` and
-  `{"status": "done"}` are not write-shaped, and neither is a falsy value
-  even under a payload key (`{"payload": 0}`, `{"content": false}`). This
-  does not affect the block decision — an unlisted destination is refused
-  whatever the call's shape — but it means a mutating call is only
-  visible to any future counting built on `write_shaped` when it happens
-  to carry one of those seven key names.
+- **Only three narrow conditions make a call payload-bearing.** A truthy
+  value under one of the seven payload keys (`body`, `data`, `payload`,
+  `json`, `content`, `text`, `params`) counts regardless of its type — a
+  boolean or an int under `body` counts just as a string would. A URL
+  query string of at least 16 characters counts. And, under any other
+  key, a plain string of at least 16 characters that is not itself a URL
+  or hostname counts. Nothing else does: a short non-string scalar under
+  an ordinary key never counts, `{"active": true}` and `{"status":
+  "done"}` included. This does not affect the block decision — an
+  unlisted destination is refused whatever the call's shape — but it
+  means a call that falls outside those three conditions is invisible to
+  any future counting built on `write_shaped`.
 - **Config reload is not immediate on any surface.** `GovernedModel`
   resolves the policy lazily on first use and caches it for the life of
   the instance. The proxy and the gateway resolve it once at startup and
