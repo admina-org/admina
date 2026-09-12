@@ -32,6 +32,9 @@ class TestAllowlistMatching:
     def test_malformed_allow_entry_is_skipped_not_fatal(self):
         p = EgressPolicy(allow=["", "***", "api.openai.com"])
         assert p.evaluate(_intent({"url": "https://api.openai.com/v1"}), "enforce").allowed
+        d = p.evaluate(_intent({"url": "https://evil.example"}), "enforce")
+        assert d.allowed is False
+        assert d.blocked == ["evil.example"]
 
     def test_single_label_allow_entry_matches_bare_host(self):
         """Docker/compose-style single-label service names must be authorisable."""

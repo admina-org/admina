@@ -95,6 +95,13 @@ class TestSingleLabelHosts:
         """A bare word must not become a 'host' for write-shaped purposes."""
         i = analyze({"url": "https://api.corp/x", "note": "hello"})
         assert i.write_shaped is False
+        assert i.destinations == ["api.corp"]
+
+    def test_long_free_form_word_beside_destination_is_still_write_shaped(self):
+        """A single long word is a payload by length; it must not be swallowed by
+        host-shaped handling meant only for network-key values."""
+        i = analyze({"url": "https://api.corp/x", "note": "supercalifragilistic"})
+        assert i.write_shaped is True
 
 
 class TestTriState:
