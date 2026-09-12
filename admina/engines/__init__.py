@@ -24,7 +24,10 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from admina.domains.agent_security.egress import EgressPolicy
 
 logger = logging.getLogger("admina.engines")
 
@@ -359,7 +362,7 @@ def get_loop_breaker(**kwargs: Any) -> LoopBreakerBridge:
     return _PythonLoopBridge(**kwargs)
 
 
-def get_egress_policy() -> Any:
+def get_egress_policy() -> EgressPolicy | None:
     """Build the egress policy from admina.yaml.
 
     Returns None when the operator has disabled egress control, so callers
@@ -375,8 +378,8 @@ def get_egress_policy() -> Any:
         from admina.core.config import load_config
 
         cfg = load_config().agent_security.egress
-    except (ImportError, AttributeError, OSError, ValueError) as exc:
-        logger.debug("Egress config unavailable, using an empty allowlist: %s", exc)
+    except Exception as exc:
+        logger.warning("Egress config unavailable or malformed, using an empty allowlist: %s", exc)
         return EgressPolicy(allow=[])
 
     if not cfg.enabled:
@@ -385,12 +388,18 @@ def get_egress_policy() -> Any:
 
 
 def get_egress_read_only_tools() -> frozenset[str]:
-    """Tool names the operator has declared non-mutating."""
+    """Tool names the operator has declared non-mutating.
+
+    Falls back to an empty frozenset if the config is unavailable or
+    malformed, so the caller can proceed with default (all-mutating) logic
+    rather than crashing.
+    """
     try:
         from admina.core.config import load_config
 
         return frozenset(load_config().agent_security.egress.read_only_tools)
-    except (ImportError, AttributeError, OSError, ValueError):
+    except Exception as exc:
+        logger.warning("Egress read_only_tools unavailable or malformed, using empty set: %s", exc)
         return frozenset()
 
 

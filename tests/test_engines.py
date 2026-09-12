@@ -368,6 +368,7 @@ class TestEgressPolicyFactory:
         assert get_egress_policy() is None
 
     def test_unreadable_config_yields_an_empty_policy_not_a_crash(self, monkeypatch):
+        from admina.domains.agent_security.egress import EgressPolicy, analyze
         from admina.engines import get_egress_policy
 
         def _boom():
@@ -375,4 +376,31 @@ class TestEgressPolicyFactory:
 
         monkeypatch.setattr("admina.core.config.load_config", _boom)
         policy = get_egress_policy()
-        assert policy is not None
+        assert isinstance(policy, EgressPolicy)
+        # Verify it is genuinely empty: a call to any destination is blocked under enforce
+        blocked = policy.evaluate(analyze({"url": "https://example.com"}), "enforce")
+        assert not blocked.allowed
+
+    def test_read_only_tools_reads_from_config(self, tmp_path, monkeypatch):
+        from admina.engines import get_egress_read_only_tools
+
+        (tmp_path / "admina.yaml").write_text(
+            "schema_version: 1\n"
+            "domains:\n"
+            "  agent_security:\n"
+            "    egress:\n"
+            "      read_only_tools: [get_data, list_items]\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        tools = get_egress_read_only_tools()
+        assert tools == frozenset({"get_data", "list_items"})
+
+    def test_read_only_tools_returns_empty_on_malformed_config(self, monkeypatch):
+        from admina.engines import get_egress_read_only_tools
+
+        def _boom():
+            raise OSError("no config")
+
+        monkeypatch.setattr("admina.core.config.load_config", _boom)
+        tools = get_egress_read_only_tools()
+        assert tools == frozenset()
