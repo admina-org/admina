@@ -1,6 +1,46 @@
 from admina.domains.agent_security.egress import EgressStatus, analyze
 
 
+class TestWriteShaped:
+    def test_query_string_makes_a_call_payload_bearing(self):
+        i = analyze({"url": "https://wiki.com/w.pl?action=edit&text=hello+there+everyone"})
+        assert i.write_shaped is True
+
+    def test_url_without_query_is_not_payload_bearing(self):
+        i = analyze({"url": "https://docs.python.org/3/library/json.html"})
+        assert i.write_shaped is False
+
+    def test_body_field_makes_a_call_payload_bearing(self):
+        i = analyze({"url": "https://api.corp/x", "body": {"note": "a sufficiently long value"}})
+        assert i.write_shaped is True
+
+    def test_substantial_free_string_beside_a_destination(self):
+        i = analyze({"url": "https://api.corp/x", "note": "task 42 done, results in ZZZ_Page"})
+        assert i.write_shaped is True
+
+    def test_short_incidental_values_are_not_payloads(self):
+        i = analyze({"url": "https://api.corp/x", "retries": 3, "mode": "fast"})
+        assert i.write_shaped is False
+
+    def test_read_only_tools_override_wins(self):
+        i = analyze(
+            {"url": "https://search.corp/q?query=how+do+i+configure+this"},
+            tool_name="docs_search",
+            read_only_tools=frozenset({"docs_search"}),
+        )
+        assert i.write_shaped is False
+        assert i.evidence["write_shaped_reason"] == "read_only_tools override"
+
+    def test_remote_read_only_hint_is_evidence_but_never_decisive(self):
+        """The resource under evaluation does not get to clear itself."""
+        i = analyze({"url": "https://wiki.com/w.pl?action=edit&text=payload", "readOnlyHint": True})
+        assert i.write_shaped is True
+        assert i.evidence["remote_read_only_hint"] is True
+
+    def test_no_egress_call_is_never_write_shaped(self):
+        assert analyze({"expression": "2 + 2"}).write_shaped is False
+
+
 class TestDestinationExtraction:
     def test_full_url(self):
         i = analyze({"url": "https://api.openai.com/v1/chat"})

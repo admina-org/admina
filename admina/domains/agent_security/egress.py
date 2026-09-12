@@ -62,6 +62,16 @@ _HOST_RX = re.compile(
     r"[A-Za-z]{2,63}$"
 )
 
+# Argument names that carry a request payload by convention.
+_PAYLOAD_KEYS = frozenset({"body", "data", "payload", "json", "content", "text", "params"})
+
+# A free-form string at or above this length, sitting beside a destination, is
+# treated as a payload. Below it, values look like flags and settings.
+_PAYLOAD_MIN_CHARS = 16
+
+# Remote annotations. Recorded, never trusted: see the module docstring.
+_REMOTE_HINT_KEYS = frozenset({"readonlyhint", "read_only_hint"})
+
 
 class EgressStatus(str, Enum):
     """Whether the call is an egress attempt, and whether its target is known."""
@@ -125,6 +135,51 @@ def _walk(
             _walk(item, depth + 1, hosts, network_keys, unresolved)
 
 
+def _classify_write_shaped(obj: Any, depth: int, hosts: list[str]) -> str | None:
+    """Return the reason the call is payload-bearing, or None."""
+    if depth > _MAX_SCAN_DEPTH:
+        return None
+    if isinstance(obj, str):
+        if _host_from_string(obj):
+            query = urlsplit(obj).query if "://" in obj else ""
+            return "url query string" if query else None
+        if len(obj.strip()) >= _PAYLOAD_MIN_CHARS:
+            return "free-form payload value"
+        return None
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(key, str) and key.lower() in _PAYLOAD_KEYS and value:
+                return f"payload field {key!r}"
+            reason = _classify_write_shaped(value, depth + 1, hosts)
+            if reason:
+                return reason
+        return None
+    if isinstance(obj, list):
+        for item in obj:
+            reason = _classify_write_shaped(item, depth + 1, hosts)
+            if reason:
+                return reason
+    return None
+
+
+def _remote_hint(obj: Any, depth: int = 0) -> bool | None:
+    if depth > _MAX_SCAN_DEPTH:
+        return None
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(key, str) and key.lower().replace("-", "_") in _REMOTE_HINT_KEYS:
+                return bool(value)
+            found = _remote_hint(value, depth + 1)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _remote_hint(item, depth + 1)
+            if found is not None:
+                return found
+    return None
+
+
 def analyze(
     params: Any,
     tool_name: str = "",
@@ -148,4 +203,24 @@ def analyze(
     evidence: dict[str, Any] = {}
     if unresolved:
         evidence["unresolvable_fields"] = sorted(set(unresolved))
-    return EgressIntent(status=status, destinations=hosts, evidence=evidence)
+
+    hint = _remote_hint(params)
+    if hint is not None:
+        evidence["remote_read_only_hint"] = hint
+
+    write_shaped = False
+    if status is not EgressStatus.NO_EGRESS:
+        if tool_name and tool_name in read_only_tools:
+            evidence["write_shaped_reason"] = "read_only_tools override"
+        else:
+            reason = _classify_write_shaped(params, 0, hosts)
+            if reason:
+                write_shaped = True
+                evidence["write_shaped_reason"] = reason
+
+    return EgressIntent(
+        status=status,
+        destinations=hosts,
+        write_shaped=write_shaped,
+        evidence=evidence,
+    )
