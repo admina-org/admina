@@ -284,9 +284,41 @@ call with no network-facing argument is untouched. The call is also
 classified as payload-bearing (`write_shaped`) or not; today the only
 code that reads it is the quarantine check inside `evaluate()` (see
 limitations below), and otherwise it is carried through to the forensic
-record for operators to build on. The stage runs on all five governed
-surfaces, after PII redaction and before pluggable governance guards, so
-a denied destination never reaches third-party guard code.
+record for operators to build on. The stage is wired into five governed
+surfaces — `/mcp`, `/v1/chat/completions`, `/api/v1/validate`,
+`GovernedModel.ask()` and `GovernedModel.stream()` — after PII redaction
+and before pluggable governance guards, so a denied destination never
+reaches third-party guard code.
+
+### Coverage is not uniform across those five surfaces
+
+The stage analyses whatever the surface passes as `params`, and only one
+surface passes tool-call arguments:
+
+| Surface | What `params` carries | What egress can see |
+|---|---|---|
+| `/mcp` | the MCP tool call's `name` and `arguments` | destinations as designed |
+| `/v1/chat/completions` | the chat `messages` | only a URL appearing in the prompt text |
+| `/api/v1/validate` | the submitted `content` string | only a URL appearing in that string |
+| `GovernedModel.ask()` | the prompt | only a URL appearing in the prompt |
+| `GovernedModel.stream()` | the prompt | only a URL appearing in the prompt |
+
+On the four prompt-shaped surfaces the stage usually finds nothing,
+because a prompt is not a tool call. That is not a defect of those
+surfaces — they govern model calls, not tool calls — but it does mean
+"runs on five surfaces" must not be read as "five surfaces are equally
+protected". The destination control is a `/mcp` control in practice.
+
+### `GovernedAgent.call()` has no egress control
+
+`admina/sdk/governed_agent.py` is the agent-to-agent primitive. It carries
+tool-call-shaped `params` — exactly the shape the egress stage was
+designed for — and forwards them to an operator-supplied upstream callable
+that need not be the Admina proxy. It nonetheless runs **no** egress
+check: it reimplements the governance sequence inline instead of calling
+`run_pipeline`, so it did not inherit the stage. An agent using
+`GovernedAgent` reaches any destination it likes, in `enforce` mode
+included. Wiring it is a separate change, not a configuration option.
 
 ### Known limitations
 
@@ -300,6 +332,15 @@ a denied destination never reaches third-party guard code.
   rules: a path is not a security boundary any more than a method is.
 - **`observe` mode records without blocking.** A deployment that never
   promotes an allowlist gets observation, not protection.
+- **Observation only reaches `suggest-allowlist` from two of the five
+  surfaces.** `admina egress suggest-allowlist` reads forensic records, and
+  only `/mcp` and `/v1/chat/completions` write one. `/api/v1/validate`,
+  `GovernedModel.ask()` and `GovernedModel.stream()` write none, so
+  destinations seen there return the verdict to the caller and are then
+  gone. On top of that, `FORENSIC_BACKEND` defaults to `memory`, which
+  keeps nothing across a restart: an observation window intended to produce
+  an allowlist needs `FORENSIC_BACKEND=filesystem` (with
+  `FORENSIC_BASE_DIR`) or `=s3` set before it starts.
 - **A search API with a query string is classified payload-bearing.**
   Declare it under `read_only_tools` if that matters.
 - **Only three narrow conditions make a call payload-bearing.** A truthy
