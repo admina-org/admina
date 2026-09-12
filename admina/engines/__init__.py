@@ -384,23 +384,12 @@ def get_egress_policy() -> EgressPolicy | None:
 
     if not cfg.enabled:
         return None
-    return EgressPolicy(allow=list(cfg.allow))
-
-
-def get_egress_read_only_tools() -> frozenset[str]:
-    """Tool names the operator has declared non-mutating.
-
-    Falls back to an empty frozenset if the config is unavailable or
-    malformed, so the caller can proceed with default (all-mutating) logic
-    rather than crashing.
-    """
-    try:
-        from admina.core.config import load_config
-
-        return frozenset(load_config().agent_security.egress.read_only_tools)
-    except Exception as exc:
-        logger.warning("Egress read_only_tools unavailable or malformed, using empty set: %s", exc)
-        return frozenset()
+    # read_only_tools is resolved here, from the config already loaded above,
+    # and carried on the policy: the pipeline stage must not read config.
+    return EgressPolicy(
+        allow=list(cfg.allow),
+        read_only_tools=frozenset(cfg.read_only_tools),
+    )
 
 
 # ── PII engine registry and resolver ───────────────────────────────────────
@@ -479,7 +468,6 @@ __all__ = [
     "PIIBridge",
     "engine_status",
     "get_egress_policy",
-    "get_egress_read_only_tools",
     "get_firewall",
     "get_loop_breaker",
     "get_pii_engine",

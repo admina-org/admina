@@ -381,8 +381,14 @@ class TestEgressPolicyFactory:
         blocked = policy.evaluate(analyze({"url": "https://example.com"}), "enforce")
         assert not blocked.allowed
 
-    def test_read_only_tools_reads_from_config(self, tmp_path, monkeypatch):
-        from admina.engines import get_egress_read_only_tools
+    def test_read_only_tools_ride_on_the_policy(self, tmp_path, monkeypatch):
+        """The pipeline stage reads read_only_tools off the policy object.
+
+        Resolving them anywhere else would mean a config read per governed
+        call, so the factory — which already holds the loaded config — is the
+        only place they may come from.
+        """
+        from admina.engines import get_egress_policy
 
         (tmp_path / "admina.yaml").write_text(
             "schema_version: 1\n"
@@ -392,18 +398,20 @@ class TestEgressPolicyFactory:
             "      read_only_tools: [get_data, list_items]\n"
         )
         monkeypatch.chdir(tmp_path)
-        tools = get_egress_read_only_tools()
-        assert tools == frozenset({"get_data", "list_items"})
+        policy = get_egress_policy()
+        assert policy is not None
+        assert policy.read_only_tools == frozenset({"get_data", "list_items"})
 
-    def test_read_only_tools_returns_empty_on_malformed_config(self, monkeypatch):
-        from admina.engines import get_egress_read_only_tools
+    def test_read_only_tools_are_empty_on_malformed_config(self, monkeypatch):
+        from admina.engines import get_egress_policy
 
         def _boom():
             raise OSError("no config")
 
         monkeypatch.setattr("admina.core.config.load_config", _boom)
-        tools = get_egress_read_only_tools()
-        assert tools == frozenset()
+        policy = get_egress_policy()
+        assert policy is not None
+        assert policy.read_only_tools == frozenset()
 
     def test_yaml_parse_error_returns_empty_policy_not_crash(self, tmp_path, monkeypatch):
         """Regression test: yaml.parser.ParserError is NOT a ValueError/OSError/ImportError.
@@ -415,7 +423,7 @@ class TestEgressPolicyFactory:
         this real-world failure mode.
         """
         from admina.domains.agent_security.egress import EgressPolicy, analyze
-        from admina.engines import get_egress_policy, get_egress_read_only_tools
+        from admina.engines import get_egress_policy
 
         (tmp_path / "admina.yaml").write_text(
             "schema_version: 1\n"
@@ -430,9 +438,8 @@ class TestEgressPolicyFactory:
         # Verify it is genuinely empty: a call to any destination is blocked
         blocked = policy.evaluate(analyze({"url": "https://example.com"}), "enforce")
         assert not blocked.allowed
-        # read_only_tools also returns empty on parse failure
-        tools = get_egress_read_only_tools()
-        assert tools == frozenset()
+        # read_only_tools is empty too on parse failure
+        assert policy.read_only_tools == frozenset()
 
     def test_wrong_type_field_returns_empty_policy_not_crash(self, tmp_path, monkeypatch):
         """Regression test: TypeError is NOT a ValueError/OSError/ImportError.
@@ -444,7 +451,7 @@ class TestEgressPolicyFactory:
         the broad Exception handler is required.
         """
         from admina.domains.agent_security.egress import EgressPolicy, analyze
-        from admina.engines import get_egress_policy, get_egress_read_only_tools
+        from admina.engines import get_egress_policy
 
         (tmp_path / "admina.yaml").write_text(
             "schema_version: 1\n"
@@ -459,6 +466,5 @@ class TestEgressPolicyFactory:
         # Verify it is genuinely empty: a call to any destination is blocked
         blocked = policy.evaluate(analyze({"url": "https://example.com"}), "enforce")
         assert not blocked.allowed
-        # read_only_tools also returns empty on type error
-        tools = get_egress_read_only_tools()
-        assert tools == frozenset()
+        # read_only_tools is empty too on a type error
+        assert policy.read_only_tools == frozenset()

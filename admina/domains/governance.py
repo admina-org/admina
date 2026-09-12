@@ -159,10 +159,15 @@ async def run_pipeline(
     # than handing an unauthorised outbound call to plugin code.
     if result.action == GovernanceAction.ALLOW and egress_policy is not None:
         from admina.domains.agent_security.egress import analyze
-        from admina.engines import get_egress_read_only_tools
 
+        # `read_only_tools` rides on the policy, which is built once where
+        # the policy is resolved (proxy startup, or first use in the SDK).
+        # Reading it from admina.yaml here would put a blocking filesystem
+        # read and a YAML parse inside this coroutine on every governed
+        # call, breaking the "no storage, no side effects" contract above.
         tool_name = params.get("name", "") if isinstance(params, dict) else ""
-        intent = analyze(params, tool_name, get_egress_read_only_tools())
+        read_only_tools = getattr(egress_policy, "read_only_tools", frozenset())
+        intent = analyze(params, tool_name, read_only_tools)
         decision = egress_policy.evaluate(intent, egress_mode)
         result.checks["egress"] = {
             "status": intent.status.value,

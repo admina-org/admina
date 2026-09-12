@@ -1426,11 +1426,20 @@ _EGRESS_PARAMS = {
 
 @pytest.mark.benchmark
 def test_egress_stage_stays_on_the_microsecond_path():
-    """analyze + evaluate must not move the hot path into milliseconds."""
-    policy = EgressPolicy(allow=["api.openai.com"])
+    """The stage as run_pipeline runs it must stay off the millisecond path.
+
+    The loop mirrors the stage line for line: the tool name and the
+    operator's read_only_tools are read off the policy object, which is
+    built once where the policy is resolved. Measuring `analyze` alone would
+    miss anything the stage does around it — which is how a per-request
+    `load_config()` sat on this path unmeasured.
+    """
+    policy = EgressPolicy(allow=["api.openai.com"], read_only_tools=frozenset({"docs_search"}))
     iterations = 2000
     start = time.perf_counter()
     for _ in range(iterations):
-        policy.evaluate(analyze(_EGRESS_PARAMS), "enforce")
+        tool_name = _EGRESS_PARAMS.get("name", "")
+        read_only_tools = getattr(policy, "read_only_tools", frozenset())
+        policy.evaluate(analyze(_EGRESS_PARAMS, tool_name, read_only_tools), "enforce")
     per_call_us = (time.perf_counter() - start) / iterations * 1_000_000
     assert per_call_us < 200, f"egress stage took {per_call_us:.1f}us per call"

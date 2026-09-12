@@ -315,21 +315,31 @@ class EgressDecision:
 
 
 class EgressPolicy:
-    """Destination allowlist, plus a quarantine set with no production caller.
+    """Destination allowlist, plus the operator settings the stage reads.
 
-    Nothing in the shipped proxy, SDK or CLI calls :meth:`set_quarantine`:
-    in a real deployment the set is always empty and the quarantine branch
-    of :meth:`evaluate` cannot fire. It is reserved for a future
-    out-of-band consumer.
+    The policy also holds a quarantine set, but nothing in the shipped
+    proxy, SDK or CLI calls :meth:`set_quarantine`: in a real deployment the
+    set is always empty and the quarantine branch of :meth:`evaluate` cannot
+    fire. It is reserved for a future out-of-band consumer.
+
+    ``read_only_tools`` holds the tool names the operator has declared
+    non-mutating. It is carried here rather than looked up per call so the
+    pipeline stage reads no configuration on the request path.
     """
 
-    def __init__(self, allow: list[str], quarantine: frozenset[str] = frozenset()) -> None:
+    def __init__(
+        self,
+        allow: list[str],
+        quarantine: frozenset[str] = frozenset(),
+        read_only_tools: frozenset[str] = frozenset(),
+    ) -> None:
         self._exact: set[str] = set()
         self._wildcards: list[str] = []
         self._networks: list[Any] = []
         for entry in allow:
             self._compile_entry(entry)
         self._quarantine = quarantine
+        self.read_only_tools = read_only_tools
 
     def _compile_entry(self, entry: str) -> None:
         value = (entry or "").strip().lower()
