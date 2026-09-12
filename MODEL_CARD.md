@@ -28,6 +28,7 @@ functions, and ISO/IEC 42001 clause 8 (Operations).
 | Injection Firewall | Pattern matcher (RegexSet) + heuristic scorer | Rust (`core-rust/src/firewall.rs`) + Python fallback | `admina/domains/agent_security/firewall.py` |
 | PII Scanner | Regex + spaCy NER (optional), or Microsoft Presidio (opt-in) | Python default even when Rust is installed; Rust (`core-rust/src/pii.rs`) only under an explicit `ADMINA_ENGINE=rust` | `admina/domains/data_sovereignty/`, `admina/engines/presidio.py` |
 | Loop Breaker | TF-IDF cosine similarity over a sliding window | Rust (`core-rust/src/loop_breaker.rs`) + Python fallback | `admina/domains/agent_security/loop_breaker.py` |
+| Egress Policy | Destination allowlist (exact host / `*.suffix` / CIDR) matched against tool-call arguments | Python only — no Rust variant | `admina/domains/agent_security/egress.py` |
 | Forensic Hash Chain | SHA-256 chained log | Rust (`core-rust/src/forensic.rs`) + Python fallback | `admina/domains/compliance/forensic.py` |
 | EU AI Act Classifier | Keyword-based risk classifier + Annex III mapping | Python (`admina/domains/compliance/eu_ai_act.py`) | — |
 | NIS2 Self-Assessment | Deterministic checklist (10 areas × 4 controls = 40 checks) + gap analysis | Python (`admina/domains/compliance/nis2.py`) | — |
@@ -268,9 +269,9 @@ configurable threshold (default 0.85) and consecutive-match limit
 
 ---
 
-### Egress policy
+## 5b. Egress Policy
 
-#### What it does
+### What it does
 
 Extracts destinations from tool-call arguments and evaluates them against
 an operator-maintained allowlist, independently of the HTTP method: the
@@ -280,13 +281,14 @@ boundary. The allowlist (`domains.agent_security.egress.allow` in
 A call naming a destination that is not on the allowlist is blocked under
 `ADMINA_EGRESS_MODE=enforce` and recorded (not blocked) under `observe`; a
 call with no network-facing argument is untouched. The call is also
-classified as payload-bearing (`write_shaped`) or not, a distinction used
-today only by the quarantine check (`EgressPolicy.set_quarantine()`,
-refreshed out of band). The stage runs on all five governed surfaces,
-after PII redaction and before pluggable governance guards, so a denied
-destination never reaches third-party guard code.
+classified as payload-bearing (`write_shaped`) or not; today the only
+code that reads it is the quarantine check inside `evaluate()` (see
+limitations below), and otherwise it is carried through to the forensic
+record for operators to build on. The stage runs on all five governed
+surfaces, after PII redaction and before pluggable governance guards, so
+a denied destination never reaches third-party guard code.
 
-#### Known limitations
+### Known limitations
 
 - **Admina sees the tool call arguments, not what the tool composes and
   actually dials.** A tool that assembles a URL from parts, or receives an
@@ -300,12 +302,18 @@ destination never reaches third-party guard code.
   promotes an allowlist gets observation, not protection.
 - **A search API with a query string is classified payload-bearing.**
   Declare it under `read_only_tools` if that matters.
-- **Short non-string values are never classified write-shaped.**
-  `{"active": true}` or `{"status": "done"}` carry no payload by this
-  rule, so a state change expressed purely as a short scalar is not
-  counted as a write. This does not affect the block decision — an
-  unlisted destination is refused whatever its shape — but it means such
-  calls are invisible to any future counting built on `write_shaped`.
+- **Write-shaped classification keys on the argument name, not the
+  value's type or length.** A truthy value under `body`, `data`,
+  `payload`, `json`, `content`, `text` or `params` is write-shaped
+  whatever its shape — `{"body": true}` and `{"data": 1}` both count. A
+  value under any other key never triggers this rule by itself, no matter
+  how it functions in the tool's own semantics: `{"active": true}` and
+  `{"status": "done"}` are not write-shaped, and neither is a falsy value
+  even under a payload key (`{"payload": 0}`, `{"content": false}`). This
+  does not affect the block decision — an unlisted destination is refused
+  whatever the call's shape — but it means a mutating call is only
+  visible to any future counting built on `write_shaped` when it happens
+  to carry one of those seven key names.
 - **Config reload is not immediate on any surface.** `GovernedModel`
   resolves the policy lazily on first use and caches it for the life of
   the instance. The proxy and the gateway resolve it once at startup and
@@ -319,6 +327,12 @@ destination never reaches third-party guard code.
   fail-closed, consistent with default-deny — and a warning is logged
   naming the parse error. If every destination is suddenly blocked, check
   the logs for this warning before assuming the allowlist itself is wrong.
+- **The quarantine hook has no production caller today.**
+  `EgressPolicy.set_quarantine()` exists and is exercised in tests, but
+  nothing in the shipped proxy, SDK, or CLI ever calls it, so the
+  quarantine set is always empty in a real deployment and the
+  quarantine branch in `evaluate()` cannot fire. It is reserved for a
+  future consumer, not a live mechanism.
 
 ---
 
