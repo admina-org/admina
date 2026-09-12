@@ -91,6 +91,48 @@ class TestEgressStage:
         assert "egress" not in r.checks
 
 
+class _RecordingGuard:
+    """A governance guard that records whether it was ever invoked."""
+
+    name = "recorder"
+
+    def __init__(self) -> None:
+        self.called = False
+
+    async def inspect_request(self, payload: dict) -> dict:
+        self.called = True
+        return {"action": "ALLOW"}
+
+
+@pytest.mark.anyio
+async def test_blocked_egress_short_circuits_the_guards():
+    """Before-the-guards is the real ordering constraint (not the PII stage).
+
+    A denied destination must stop the pipeline before any plugin guard runs
+    — handing an unauthorised outbound call to third-party guard code is
+    exactly what this ordering exists to prevent. This must fail if the
+    egress stage were moved after the guard loop.
+    """
+    guard = _RecordingGuard()
+    r = await run_pipeline(
+        body={"params": {"url": "https://publictestwiki.com/w.pl?action=edit&text=long enough"}},
+        content_str="https://publictestwiki.com/w.pl?action=edit&text=long enough",
+        session_id="s1",
+        agent_id="a1",
+        request_id="r1",
+        params={"url": "https://publictestwiki.com/w.pl?action=edit&text=long enough"},
+        firewall=get_firewall(),
+        pii_redactor=get_pii_engine(),
+        loop_breaker=get_loop_breaker(),
+        governance_guards=[guard],
+        loop_enabled=False,
+        egress_policy=EgressPolicy(allow=["api.openai.com"]),
+        egress_mode="enforce",
+    )
+    assert r.action == GovernanceAction.BLOCK
+    assert guard.called is False
+
+
 @pytest.mark.anyio
 async def test_egress_check_reaches_persisted_details():
     """The coordination detector consumes details["egress"]; it must be there."""

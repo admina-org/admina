@@ -74,6 +74,13 @@ def _load_loop_breaker() -> Any:
     return get_loop_breaker()
 
 
+def _load_egress_policy() -> Any:
+    """Egress policy from admina.engines (honors admina.yaml; None if disabled)."""
+    from admina.engines import get_egress_policy
+
+    return get_egress_policy()
+
+
 class GovernedModel:
     """SDK primitive for governed model inference.
 
@@ -133,6 +140,8 @@ class GovernedModel:
         self._pii_redactor: Any = None
         self._firewall: Any = None
         self._loop_breaker: Any = None
+        self._egress_policy: Any = None
+        self._egress_policy_loaded: bool = False
         self.last_stream_result: dict[str, Any] | None = None
 
     def _get_pii_redactor(self) -> Any:
@@ -152,6 +161,20 @@ class GovernedModel:
         if self._loop_breaker is None:
             self._loop_breaker = _load_loop_breaker()
         return self._loop_breaker
+
+    def _get_egress_policy(self) -> Any:
+        """Return the egress policy, creating it lazily.
+
+        ``None`` means egress control is disabled, and that result is itself
+        cached — so a disabled egress stage does not re-read admina.yaml on
+        every call. As with the firewall, PII redactor, and loop breaker
+        above, an admina.yaml edit made after this instance is constructed
+        is not picked up until a new GovernedModel is created.
+        """
+        if not self._egress_policy_loaded:
+            self._egress_policy = _load_egress_policy()
+            self._egress_policy_loaded = True
+        return self._egress_policy
 
     async def ask(
         self,
@@ -186,7 +209,6 @@ class GovernedModel:
 
         from admina.domains.agent_security.egress import resolve_egress_mode
         from admina.domains.governance import redact_response_result, run_pipeline
-        from admina.engines import get_egress_policy
 
         explicit_session = kwargs.pop("session_id", None)
         loop_on = self._loop_detection and explicit_session is not None
@@ -222,7 +244,7 @@ class GovernedModel:
             loop_enabled=loop_on,
             mode=self._mode,
             guard_fail_mode=self._guard_fail_mode,
-            egress_policy=get_egress_policy(),
+            egress_policy=self._get_egress_policy(),
             egress_mode=resolve_egress_mode(self._mode),
         )
 
@@ -355,7 +377,6 @@ class GovernedModel:
 
         from admina.domains.agent_security.egress import resolve_egress_mode
         from admina.domains.governance import run_pipeline
-        from admina.engines import get_egress_policy
 
         context = kwargs.pop("context", None)
         window = kwargs.pop("stream_window_chars", 64)
@@ -389,7 +410,7 @@ class GovernedModel:
             loop_enabled=loop_on,
             mode=self._mode,
             guard_fail_mode=self._guard_fail_mode,
-            egress_policy=get_egress_policy(),
+            egress_policy=self._get_egress_policy(),
             egress_mode=resolve_egress_mode(self._mode),
         )
 

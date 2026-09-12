@@ -149,9 +149,14 @@ async def run_pipeline(
 
     # 3b. Egress policy — destination control, method-independent.
     #
-    # Runs after redaction because the destination and payload that matter are
-    # the ones actually leaving, and before the guards so a denied destination
-    # short-circuits third-party inspection.
+    # Placement after PII is positional only: the PII stage above never
+    # mutates `params` (it builds a separate `redacted_params` used only for
+    # `result.redacted_body`), so this stage sees the same, unredacted
+    # `params` a PII-before ordering would also see.
+    #
+    # Placement before the guards is the real constraint: a denied
+    # destination must short-circuit third-party guard inspection, rather
+    # than handing an unauthorised outbound call to plugin code.
     if result.action == GovernanceAction.ALLOW and egress_policy is not None:
         from admina.domains.agent_security.egress import analyze
         from admina.engines import get_egress_read_only_tools
