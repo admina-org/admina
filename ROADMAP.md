@@ -90,6 +90,11 @@ items.
 Production observability and performance work beyond the current OTEL +
 Grafana baseline.
 
+- Destination-based egress control on tool calls, evaluated independently of
+  the HTTP method, shared by all five governed surfaces. Default-deny under
+  `ADMINA_EGRESS_MODE=enforce`, with an observe-first rollout and an
+  `admina egress suggest-allowlist` command to build the allowlist from
+  observed traffic.
 - Emission of the streaming-request metadata shaped in 0.11 onto the
   OpenTelemetry GenAI semantic conventions (`gen_ai.request.model`,
   `gen_ai.usage.*`, `gen_ai.response.finish_reasons`,
@@ -98,8 +103,6 @@ Grafana baseline.
 - Native Prometheus metrics endpoint with an SLO panel.
 - Structured error taxonomy: stable error codes across proxy, SDK, and
   REST API.
-- Shared async pool for data connectors; decision cache for the injection
-  firewall fast path.
 - Benchmark regression gate in CI (fail on a >10% regression versus
   baseline).
 - Request-level tracing correlation across SDK, proxy, and upstream LLM.
@@ -115,6 +118,8 @@ Operating Admina as a shared service.
   templates enabled)
 - Role-based access control on proxy endpoints (read / write / admin)
 - OIDC authentication provider as a built-in plugin
+- Shared async pool for data connectors; decision cache for the injection
+  firewall fast path.
 - Per-tenant forensic namespace with independent hash chains
 
 ---

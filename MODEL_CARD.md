@@ -268,6 +268,60 @@ configurable threshold (default 0.85) and consecutive-match limit
 
 ---
 
+### Egress policy
+
+#### What it does
+
+Extracts destinations from tool-call arguments and evaluates them against
+an operator-maintained allowlist, independently of the HTTP method: the
+method is an assertion made by the resource being called, not a security
+boundary. The allowlist (`domains.agent_security.egress.allow` in
+`admina.yaml`) accepts exact hosts, `*.suffix` wildcards, and CIDR ranges.
+A call naming a destination that is not on the allowlist is blocked under
+`ADMINA_EGRESS_MODE=enforce` and recorded (not blocked) under `observe`; a
+call with no network-facing argument is untouched. The call is also
+classified as payload-bearing (`write_shaped`) or not, a distinction used
+today only by the quarantine check (`EgressPolicy.set_quarantine()`,
+refreshed out of band). The stage runs on all five governed surfaces,
+after PII redaction and before pluggable governance guards, so a denied
+destination never reaches third-party guard code.
+
+#### Known limitations
+
+- **Admina sees the tool call arguments, not what the tool composes and
+  actually dials.** A tool that assembles a URL from parts, or receives an
+  IP where the allowlist holds a hostname, is not covered.
+- **An agent with direct network access does not traverse Admina and is
+  not governed by it.** This is a property of where Admina sits, not a gap
+  to be closed at this layer.
+- **The allowlist is host- and CIDR-scoped.** There are no path-level
+  rules: a path is not a security boundary any more than a method is.
+- **`observe` mode records without blocking.** A deployment that never
+  promotes an allowlist gets observation, not protection.
+- **A search API with a query string is classified payload-bearing.**
+  Declare it under `read_only_tools` if that matters.
+- **Short non-string values are never classified write-shaped.**
+  `{"active": true}` or `{"status": "done"}` carry no payload by this
+  rule, so a state change expressed purely as a short scalar is not
+  counted as a write. This does not affect the block decision — an
+  unlisted destination is refused whatever its shape — but it means such
+  calls are invisible to any future counting built on `write_shaped`.
+- **Config reload is not immediate on any surface.** `GovernedModel`
+  resolves the policy lazily on first use and caches it for the life of
+  the instance. The proxy and the gateway resolve it once at startup and
+  share that cached object across `/mcp`, `/api/v1/validate`, and
+  `/v1/chat/completions` alike — `/api/v1/validate` reads the same
+  startup-cached policy as the rest of the proxy, not a fresh one per
+  request. An `admina.yaml` edit needs a new `GovernedModel` instance or a
+  process restart to take effect anywhere.
+- **An unreadable or malformed `admina.yaml` yields an empty allowlist**,
+  which under `enforce` refuses every destination. This is deliberate —
+  fail-closed, consistent with default-deny — and a warning is logged
+  naming the parse error. If every destination is suddenly blocked, check
+  the logs for this warning before assuming the allowlist itself is wrong.
+
+---
+
 ## 6. Forensic Hash Chain
 
 ### What it does

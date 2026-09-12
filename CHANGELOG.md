@@ -13,6 +13,31 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+### Added
+
+- **Destination-based egress control on tool calls.** A new pipeline stage
+  extracts destinations from tool-call arguments — independently of the
+  HTTP method, since a method is an assertion made by the resource being
+  called, not a security boundary — and checks them against an operator
+  allowlist. Configured under `domains.agent_security.egress` in
+  `admina.yaml`: `enabled` (default `true`), `allow` (exact hosts,
+  `*.suffix` wildcards, or CIDR ranges), and `read_only_tools` (tool names
+  exempt from the payload-bearing classification). The mode is controlled
+  by `ADMINA_EGRESS_MODE=observe|enforce`, defaulting to `observe` so that
+  upgrading a deployment does not silently turn on default-deny; the
+  global governance mode is a ceiling, so `observe`/`dry-run` governance
+  never lets egress block regardless of this variable. Wired into all five
+  governed surfaces: the MCP proxy, `POST /api/v1/validate`, the
+  OpenAI-compatible gateway (`POST /v1/chat/completions`), and SDK
+  `GovernedModel.ask()` and `.stream()`. The recorded `checks["egress"]`
+  entry carries the destinations seen, whether the call is payload-bearing,
+  and — on a block — which destination(s) among possibly several caused it.
+- **`admina egress suggest-allowlist`** — builds a candidate allowlist from
+  destinations recorded during `observe` mode by scanning local forensic
+  records (`--forensic-dir`, default `.admina/forensic`; `--since DAYS`,
+  default `7`). Prints a ready-to-paste `admina.yaml` block; promoting an
+  entry to the allowlist stays a human decision.
+
 ## [0.11.1] — 2026-07-16
 
 Patch release: dependency security updates, an information-disclosure fix,

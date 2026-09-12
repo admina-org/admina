@@ -48,6 +48,8 @@ from dataclasses import dataclass, field
 
 import pytest
 
+from admina.domains.agent_security.egress import EgressPolicy, analyze
+
 # These are micro-benchmarks: they assert absolute latency thresholds
 # (median < baseline * tolerance, p95 < N µs) that are only meaningful on
 # dedicated hardware. On shared CI runners the timings are non-deterministic
@@ -1405,3 +1407,30 @@ class TestZZZSummary:
         )
 
         print(f"{'=' * 70}")
+
+
+# ── Egress stage — hot-path microbenchmark ───────────────────
+#
+# The egress stage (analyze + evaluate) is inline on every governed call.
+# It must stay firmly on the microsecond path so it never becomes the
+# dominant cost of a governed tool call.
+
+_EGRESS_PARAMS = {
+    "name": "http_get",
+    "arguments": {
+        "url": "https://api.openai.com/v1/chat",
+        "body": {"note": "a representative payload of realistic length"},
+    },
+}
+
+
+@pytest.mark.benchmark
+def test_egress_stage_stays_on_the_microsecond_path():
+    """analyze + evaluate must not move the hot path into milliseconds."""
+    policy = EgressPolicy(allow=["api.openai.com"])
+    iterations = 2000
+    start = time.perf_counter()
+    for _ in range(iterations):
+        policy.evaluate(analyze(_EGRESS_PARAMS), "enforce")
+    per_call_us = (time.perf_counter() - start) / iterations * 1_000_000
+    assert per_call_us < 200, f"egress stage took {per_call_us:.1f}us per call"
