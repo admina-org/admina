@@ -1530,7 +1530,10 @@ def suggest_allowlist(since: int, forensic_dir: str) -> None:
         egress = check.get("egress") or {}
         if not isinstance(egress, dict):
             continue
-        for dest in egress.get("destinations") or []:
+        destinations = egress.get("destinations") or []
+        if not isinstance(destinations, list):
+            continue
+        for dest in destinations:
             if isinstance(dest, str) and dest:
                 seen.add(dest)
 

@@ -173,3 +173,53 @@ class TestSuggestAllowlist:
         assert result.exit_code == 0
         assert "api.openai.com" in result.output
         assert "[1, 2, 3]" not in result.output
+
+    def test_destinations_non_list_value_is_skipped(self, tmp_path):
+        """Test that non-list destinations (e.g., int) are skipped without crashing."""
+        # Record with destinations as an int (not a list)
+        (tmp_path / "bad_destinations_int.json").write_text(
+            json.dumps(
+                {
+                    "event": {
+                        "checks": {
+                            "egress": {"status": "resolved", "destinations": 5, "allowed": True}
+                        }
+                    }
+                }
+            )
+        )
+        _record(tmp_path, "good.json", ["api.openai.com"])
+        result = CliRunner().invoke(
+            app, ["egress", "suggest-allowlist", "--forensic-dir", str(tmp_path)]
+        )
+        assert result.exit_code == 0
+        assert "api.openai.com" in result.output
+        assert "No egress observations" not in result.output
+
+    def test_destinations_dict_keys_not_injected_into_allowlist(self, tmp_path):
+        """Test that dict-typed destinations does not inject keys into allowlist."""
+        # Record with destinations as a dict (not a list)
+        (tmp_path / "bad_destinations_dict.json").write_text(
+            json.dumps(
+                {
+                    "event": {
+                        "checks": {
+                            "egress": {
+                                "status": "resolved",
+                                "destinations": {"sneaky-key.evil.com": 1, "another.bad": 2},
+                                "allowed": True,
+                            }
+                        }
+                    }
+                }
+            )
+        )
+        _record(tmp_path, "good.json", ["api.openai.com"])
+        result = CliRunner().invoke(
+            app, ["egress", "suggest-allowlist", "--forensic-dir", str(tmp_path)]
+        )
+        assert result.exit_code == 0
+        assert "api.openai.com" in result.output
+        # Ensure malicious keys are NOT in the output
+        assert "sneaky-key.evil.com" not in result.output
+        assert "another.bad" not in result.output
