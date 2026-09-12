@@ -404,3 +404,61 @@ class TestEgressPolicyFactory:
         monkeypatch.setattr("admina.core.config.load_config", _boom)
         tools = get_egress_read_only_tools()
         assert tools == frozenset()
+
+    def test_yaml_parse_error_returns_empty_policy_not_crash(self, tmp_path, monkeypatch):
+        """Regression test: yaml.parser.ParserError is NOT a ValueError/OSError/ImportError.
+
+        An unclosed flow sequence (allow: [api.openai.com with no ]) raises
+        yaml.parser.ParserError, which would crash the proxy if the except
+        clause is re-narrowed to (ImportError, AttributeError, OSError, ValueError).
+        This test pins that the broad Exception handler is required and covers
+        this real-world failure mode.
+        """
+        from admina.domains.agent_security.egress import EgressPolicy, analyze
+        from admina.engines import get_egress_policy, get_egress_read_only_tools
+
+        (tmp_path / "admina.yaml").write_text(
+            "schema_version: 1\n"
+            "domains:\n"
+            "  agent_security:\n"
+            "    egress:\n"
+            "      allow: [api.openai.com\n"  # Missing closing bracket
+        )
+        monkeypatch.chdir(tmp_path)
+        policy = get_egress_policy()
+        assert isinstance(policy, EgressPolicy)
+        # Verify it is genuinely empty: a call to any destination is blocked
+        blocked = policy.evaluate(analyze({"url": "https://example.com"}), "enforce")
+        assert not blocked.allowed
+        # read_only_tools also returns empty on parse failure
+        tools = get_egress_read_only_tools()
+        assert tools == frozenset()
+
+    def test_wrong_type_field_returns_empty_policy_not_crash(self, tmp_path, monkeypatch):
+        """Regression test: TypeError is NOT a ValueError/OSError/ImportError.
+
+        When allow is an int (allow: 5) instead of a list, the config
+        module raises TypeError when trying to iterate. This is NOT caught
+        by (ImportError, AttributeError, OSError, ValueError) and would crash
+        the proxy if the except clause is re-narrowed. This test pins that
+        the broad Exception handler is required.
+        """
+        from admina.domains.agent_security.egress import EgressPolicy, analyze
+        from admina.engines import get_egress_policy, get_egress_read_only_tools
+
+        (tmp_path / "admina.yaml").write_text(
+            "schema_version: 1\n"
+            "domains:\n"
+            "  agent_security:\n"
+            "    egress:\n"
+            "      allow: 5\n"  # Wrong type: int instead of list
+        )
+        monkeypatch.chdir(tmp_path)
+        policy = get_egress_policy()
+        assert isinstance(policy, EgressPolicy)
+        # Verify it is genuinely empty: a call to any destination is blocked
+        blocked = policy.evaluate(analyze({"url": "https://example.com"}), "enforce")
+        assert not blocked.allowed
+        # read_only_tools also returns empty on type error
+        tools = get_egress_read_only_tools()
+        assert tools == frozenset()
