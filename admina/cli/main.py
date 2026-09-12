@@ -20,6 +20,7 @@ Entry point: ``admina = "cli.main:app"`` in pyproject.toml.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -1483,6 +1484,54 @@ def password_set(new_password: str) -> None:
 
     click.echo("\n  Password updated across all services.")
     click.echo("  Restart services to apply: docker compose up --build -d\n")
+
+
+# ── admina egress commands ───────────────────────────────────
+
+
+@app.group()
+def egress() -> None:
+    """Inspect and manage the egress policy."""
+
+
+@egress.command("suggest-allowlist")
+@click.option("--since", type=int, default=7, help="Only consider records from the last N days.")
+@click.option(
+    "--forensic-dir",
+    default=".admina/forensic",
+    help="Directory holding forensic records (the filesystem store's base_dir).",
+)
+def suggest_allowlist(since: int, forensic_dir: str) -> None:
+    """Print a candidate allowlist from destinations seen in observe mode."""
+    base = Path(forensic_dir)
+    cutoff = time.time() - since * 86400
+    seen: set[str] = set()
+    for path in sorted(base.glob("*.json")) if base.is_dir() else []:
+        try:
+            if path.stat().st_mtime < cutoff:
+                continue
+            record = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        check = (record.get("checks") or {}).get("egress") or {}
+        for dest in check.get("destinations") or []:
+            if isinstance(dest, str) and dest:
+                seen.add(dest)
+
+    if not seen:
+        click.echo(f"No egress observations found in {base} for the last {since} day(s).")
+        click.echo("Run with ADMINA_EGRESS_MODE=observe to collect them.")
+        return
+
+    click.echo("# Candidate allowlist from observed traffic.")
+    click.echo("# Review every entry before promoting it: observation records what")
+    click.echo("# happened, not what should be allowed.")
+    click.echo("domains:")
+    click.echo("  agent_security:")
+    click.echo("    egress:")
+    click.echo("      allow:")
+    for dest in sorted(seen):
+        click.echo(f"        - {dest}")
 
 
 @app.command()
