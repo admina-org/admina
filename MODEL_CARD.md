@@ -330,6 +330,30 @@ included. Wiring it is a separate change, not a configuration option.
   to be closed at this layer.
 - **The allowlist is host- and CIDR-scoped.** There are no path-level
   rules: a path is not a security boundary any more than a method is.
+- **A scheme-less host is only a destination under a known argument name,
+  and is otherwise invisible.** For a value with no `://`, the argument
+  name is what declares a destination, and only these names count: `url`,
+  `uri`, `host`, `hostname`, `endpoint`, `address`, `server`, `target`,
+  `base_url`, `api_url`, `webhook`. A bare host passed under any other key
+  — `callback_url`, `destination`, `forward_to`, or any tool-specific name
+  — is not seen at all: the call is classified as not an egress attempt,
+  so it passes under `enforce` **and leaves no record under `observe`**.
+  There is nothing in the forensic log for an operator to notice, which
+  makes this the quietest limitation on this page. A full URL (anything
+  containing `://`) and an IP literal are still recognised under any key
+  name, since neither is ambiguous.
+
+  This is a deliberate departure from the design spec, which lists
+  "scheme-less hosts" among the recognised destination forms without
+  qualifying it by argument name. The gate exists because the hostname
+  pattern also matches ordinary dotted tokens — `notes.txt`,
+  `report.docx`, `users.accounts`, `os.path` — so accepting a bare dotted
+  value anywhere would classify every local file, database and
+  module-loading tool as an egress attempt and refuse it under
+  default-deny. The trade is a false-negative on an unrecognised argument
+  name against a false-positive on every non-network tool in the
+  deployment. If a tool in your deployment names its destination something
+  else, that destination is not governed; the list above is the contract.
 - **Arguments nested deeper than the scan limit are refused under
   `enforce`.** The walk over the tool arguments stops at a fixed depth
   (`_MAX_SCAN_DEPTH`, 6, shared with the firewall and PII walks). A region

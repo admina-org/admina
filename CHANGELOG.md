@@ -26,17 +26,49 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   by `ADMINA_EGRESS_MODE=observe|enforce`, defaulting to `observe` so that
   upgrading a deployment does not silently turn on default-deny; the
   global governance mode is a ceiling, so `observe`/`dry-run` governance
-  never lets egress block regardless of this variable. Wired into all five
-  governed surfaces: the MCP proxy, `POST /api/v1/validate`, the
-  OpenAI-compatible gateway (`POST /v1/chat/completions`), and SDK
-  `GovernedModel.ask()` and `.stream()`. The recorded `checks["egress"]`
-  entry carries the destinations seen, whether the call is payload-bearing,
-  and — on a block — which destination(s) among possibly several caused it.
+  never lets egress block regardless of this variable. The recorded
+  `checks["egress"]` entry carries the destinations seen, whether the call
+  is payload-bearing, and — on a block — which destination(s) among
+  possibly several caused it.
+
+  **Coverage is not uniform across surfaces.** The stage runs on five
+  governed surfaces, but only the MCP proxy passes tool-call arguments.
+  `POST /api/v1/validate`, the OpenAI-compatible gateway
+  (`POST /v1/chat/completions`) and SDK `GovernedModel.ask()` / `.stream()`
+  pass prompt text, where a destination is found only if a URL appears in
+  the prompt itself. `GovernedAgent.call()` has **no** egress control at
+  all: it carries tool-call-shaped params but reimplements the governance
+  sequence inline instead of calling the pipeline. Treat this as an MCP
+  control; see `MODEL_CARD.md` §5b for the per-surface table.
+
+  **A destination is declared by the argument name.** For a value without
+  a scheme, only these keys make it a destination: `url`, `uri`, `host`,
+  `hostname`, `endpoint`, `address`, `server`, `target`, `base_url`,
+  `api_url`, `webhook`. A scheme-less host under any other key —
+  `callback_url`, `destination`, or any tool-specific name — is not seen,
+  produces no record, and passes in both modes. A full URL (containing
+  `://`) or an IP literal is still recognised under any key name.
+
+  **Under `enforce`, arguments nested deeper than the scan limit are
+  refused.** The walk over the arguments stops at a fixed depth (6, shared
+  with the firewall and PII walks). A region it never reached could have
+  held a destination, so the call is treated as having an undeterminable
+  target and denied — and that outranks any destination resolved higher up,
+  so an allowlisted host at the top of the arguments does not buy passage
+  for one buried below the limit. The refusal is explicit: the decision
+  reason reads *"unresolvable destination: arguments nested past the scan
+  depth limit"* and `evidence.scan_truncated` is `true` in the forensic
+  record. This affects `enforce` only; `observe` records it and does not
+  block.
 - **`admina egress suggest-allowlist`** — builds a candidate allowlist from
   destinations recorded during `observe` mode by scanning local forensic
-  records (`--forensic-dir`, default `.admina/forensic`; `--since DAYS`,
-  default `7`). Prints a ready-to-paste `admina.yaml` block; promoting an
-  entry to the allowlist stays a human decision.
+  records (`--forensic-dir`, defaulting to `$FORENSIC_BASE_DIR` and then to
+  `.admina/forensic`; `--since DAYS`, default `7`). Prints a ready-to-paste
+  `admina.yaml` block; promoting an entry to the allowlist stays a human
+  decision. Note that `FORENSIC_BACKEND` defaults to `memory`, which
+  persists nothing — an observation window intended to produce an allowlist
+  needs `FORENSIC_BACKEND=filesystem` (with `FORENSIC_BASE_DIR`) or `=s3`
+  set before it starts.
 
 ## [0.11.1] — 2026-07-16
 
