@@ -359,6 +359,41 @@ def get_loop_breaker(**kwargs: Any) -> LoopBreakerBridge:
     return _PythonLoopBridge(**kwargs)
 
 
+def get_egress_policy() -> Any:
+    """Build the egress policy from admina.yaml.
+
+    Returns None when the operator has disabled egress control, so callers
+    can skip the pipeline stage entirely rather than running a policy that
+    allows everything.
+
+    There is no Rust variant: the stage is a set lookup and a handful of
+    string comparisons, so acceleration would not pay for itself.
+    """
+    from admina.domains.agent_security.egress import EgressPolicy
+
+    try:
+        from admina.core.config import load_config
+
+        cfg = load_config().agent_security.egress
+    except (ImportError, AttributeError, OSError, ValueError) as exc:
+        logger.debug("Egress config unavailable, using an empty allowlist: %s", exc)
+        return EgressPolicy(allow=[])
+
+    if not cfg.enabled:
+        return None
+    return EgressPolicy(allow=list(cfg.allow))
+
+
+def get_egress_read_only_tools() -> frozenset[str]:
+    """Tool names the operator has declared non-mutating."""
+    try:
+        from admina.core.config import load_config
+
+        return frozenset(load_config().agent_security.egress.read_only_tools)
+    except (ImportError, AttributeError, OSError, ValueError):
+        return frozenset()
+
+
 # ── PII engine registry and resolver ───────────────────────────────────────
 
 _PII_ENGINE_FACTORIES: dict[str, Callable[[], PIIBridge]] = {}
@@ -434,6 +469,8 @@ __all__ = [
     "LoopBreakerBridge",
     "PIIBridge",
     "engine_status",
+    "get_egress_policy",
+    "get_egress_read_only_tools",
     "get_firewall",
     "get_loop_breaker",
     "get_pii_engine",

@@ -336,3 +336,43 @@ def test_default_pii_redacts_eu_national_ids(monkeypatch):
     out = engines.get_pii_engine().redact("codice fiscale RSSMRA80A01H501U and DNI 12345678Z")
     assert "RSSMRA80A01H501U" not in out["redacted_text"]
     assert "12345678Z" not in out["redacted_text"]
+
+
+# ── Egress policy factory ────────────────────────────────────────────────────
+
+
+class TestEgressPolicyFactory:
+    def test_returns_a_policy_built_from_config(self, tmp_path, monkeypatch):
+        from admina.domains.agent_security.egress import analyze
+        from admina.engines import get_egress_policy
+
+        (tmp_path / "admina.yaml").write_text(
+            "schema_version: 1\n"
+            "domains:\n"
+            "  agent_security:\n"
+            "    egress:\n"
+            "      allow: [api.openai.com]\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        policy = get_egress_policy()
+        assert policy is not None
+        assert policy.evaluate(analyze({"url": "https://api.openai.com/v1"}), "enforce").allowed
+
+    def test_returns_none_when_disabled(self, tmp_path, monkeypatch):
+        from admina.engines import get_egress_policy
+
+        (tmp_path / "admina.yaml").write_text(
+            "schema_version: 1\ndomains:\n  agent_security:\n    egress: {enabled: false}\n"
+        )
+        monkeypatch.chdir(tmp_path)
+        assert get_egress_policy() is None
+
+    def test_unreadable_config_yields_an_empty_policy_not_a_crash(self, monkeypatch):
+        from admina.engines import get_egress_policy
+
+        def _boom():
+            raise OSError("no config")
+
+        monkeypatch.setattr("admina.core.config.load_config", _boom)
+        policy = get_egress_policy()
+        assert policy is not None
