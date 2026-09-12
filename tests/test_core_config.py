@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import textwrap
 
+import pytest
+
 from admina.core.config import (
     AdminaConfig,
     _build_from_env,
@@ -269,6 +271,49 @@ class TestEgressConfig:
         assert eg.fanin_window_seconds == 900
         assert eg.fanin_min_agents == 3
         assert eg.quarantine_ttl_seconds == 3600
+
+    def test_empty_section_is_not_a_silent_total_block(self, tmp_path):
+        """ "egress:" with nothing under it parses as None, not as {}.
+
+        The next .get() then raises, and the factory's broad except turns
+        that into an empty allowlist — which under enforce refuses every
+        destination, with nothing in the config to explain why. Stubbing a
+        section is the natural first step of a rollout, so it must yield the
+        defaults, not a fleet-wide outage.
+        """
+        (tmp_path / "admina.yaml").write_text(
+            textwrap.dedent(
+                """
+                schema_version: 1
+                domains:
+                  agent_security:
+                    egress:
+                """
+            )
+        )
+        eg = load_config(search_paths=[str(tmp_path)]).agent_security.egress
+        assert eg.enabled is True
+        assert eg.allow == []
+        assert eg.read_only_tools == []
+        assert eg.fanin_window_seconds == 3600
+
+    @pytest.mark.parametrize("section", ["proxy", "firewall", "loop_breaker"])
+    def test_other_empty_agent_security_sections_do_not_crash(self, tmp_path, section):
+        """Same null-section shape; for these three it was an outright crash."""
+        (tmp_path / "admina.yaml").write_text(
+            textwrap.dedent(
+                f"""
+                schema_version: 1
+                domains:
+                  agent_security:
+                    {section}:
+                """
+            )
+        )
+        cfg = load_config(search_paths=[str(tmp_path)]).agent_security
+        assert cfg.proxy.port == 8080
+        assert cfg.firewall.enabled is True
+        assert cfg.loop_breaker.window_size == 10
 
     def test_existing_agent_security_config_is_unaffected(self, tmp_path):
         """Adding egress must not disturb firewall/loop_breaker parsing."""

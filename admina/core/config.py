@@ -333,10 +333,15 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
 
     # agent_security
     as_raw = domains.get("agent_security", {})
-    px_raw = as_raw.get("proxy", {})
-    fw_raw = as_raw.get("firewall", {})
-    lb_raw = as_raw.get("loop_breaker", {})
-    eg_raw = as_raw.get("egress", {})
+    # ``or {}``: a section written with nothing under it ("egress:") parses
+    # as None, and the next .get() would raise. For egress that exception is
+    # swallowed by the factory's broad except and downgraded to an empty
+    # allowlist, which under enforce blocks every destination with no sign of
+    # why; for the other three it is an outright crash.
+    px_raw = as_raw.get("proxy") or {}
+    fw_raw = as_raw.get("firewall") or {}
+    lb_raw = as_raw.get("loop_breaker") or {}
+    eg_raw = as_raw.get("egress") or {}
     eg_fanin = eg_raw.get("fanin", {}) or {}
     agent_sec = AgentSecurityConfig(
         enabled=as_raw.get("enabled", True),
