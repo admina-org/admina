@@ -153,6 +153,20 @@ class LoopBreakerConfig:
 
 
 @dataclass
+class EgressConfig:
+    """Destination-based egress control settings."""
+
+    enabled: bool = True
+    allow: list[str] = field(default_factory=list)
+    read_only_tools: list[str] = field(default_factory=list)
+    # Parsed now, consumed by the coordination detector.
+    coordination_declared: list[str] = field(default_factory=list)
+    fanin_window_seconds: int = 3600
+    fanin_min_agents: int = 5
+    quarantine_ttl_seconds: int = 86400
+
+
+@dataclass
 class AgentSecurityConfig:
     """Agent-security domain."""
 
@@ -160,6 +174,7 @@ class AgentSecurityConfig:
     proxy: ProxyConfig = field(default_factory=ProxyConfig)
     firewall: FirewallConfig = field(default_factory=FirewallConfig)
     loop_breaker: LoopBreakerConfig = field(default_factory=LoopBreakerConfig)
+    egress: EgressConfig = field(default_factory=EgressConfig)
 
 
 @dataclass
@@ -321,6 +336,8 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
     px_raw = as_raw.get("proxy", {})
     fw_raw = as_raw.get("firewall", {})
     lb_raw = as_raw.get("loop_breaker", {})
+    eg_raw = as_raw.get("egress", {})
+    eg_fanin = eg_raw.get("fanin", {}) or {}
     agent_sec = AgentSecurityConfig(
         enabled=as_raw.get("enabled", True),
         proxy=ProxyConfig(
@@ -338,6 +355,15 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
             window_size=lb_raw.get("window_size", 10),
             similarity_threshold=lb_raw.get("similarity_threshold", 0.85),
             max_consecutive=lb_raw.get("max_consecutive", 3),
+        ),
+        egress=EgressConfig(
+            enabled=eg_raw.get("enabled", True),
+            allow=list(eg_raw.get("allow") or []),
+            read_only_tools=list(eg_raw.get("read_only_tools") or []),
+            coordination_declared=list(eg_raw.get("coordination_declared") or []),
+            fanin_window_seconds=int(eg_fanin.get("window_seconds", 3600)),
+            fanin_min_agents=int(eg_fanin.get("min_agents", 5)),
+            quarantine_ttl_seconds=int(eg_raw.get("quarantine_ttl_seconds", 86400)),
         ),
     )
 

@@ -230,3 +230,60 @@ class TestLoadConfig:
         yaml_file.write_text("schema_version: 3\n")
         cfg = load_config(search_paths=[str(tmp_path)])
         assert cfg.schema_version == 3
+
+
+class TestEgressConfig:
+    def test_defaults_are_empty_and_enabled(self, tmp_path):
+        cfg = load_config(search_paths=[str(tmp_path)])
+        eg = cfg.agent_security.egress
+        assert eg.enabled is True
+        assert eg.allow == []
+        assert eg.read_only_tools == []
+        assert eg.fanin_window_seconds == 3600
+        assert eg.fanin_min_agents == 5
+        assert eg.quarantine_ttl_seconds == 86400
+
+    def test_parsed_from_yaml(self, tmp_path):
+        (tmp_path / "admina.yaml").write_text(
+            textwrap.dedent(
+                """
+                schema_version: 1
+                domains:
+                  agent_security:
+                    egress:
+                      allow:
+                        - api.openai.com
+                        - "*.corp.internal"
+                        - 10.0.0.0/8
+                      read_only_tools: [docs_search]
+                      coordination_declared: [queue.internal]
+                      fanin: {window_seconds: 900, min_agents: 3}
+                      quarantine_ttl_seconds: 3600
+                """
+            )
+        )
+        eg = load_config(search_paths=[str(tmp_path)]).agent_security.egress
+        assert eg.allow == ["api.openai.com", "*.corp.internal", "10.0.0.0/8"]
+        assert eg.read_only_tools == ["docs_search"]
+        assert eg.coordination_declared == ["queue.internal"]
+        assert eg.fanin_window_seconds == 900
+        assert eg.fanin_min_agents == 3
+        assert eg.quarantine_ttl_seconds == 3600
+
+    def test_existing_agent_security_config_is_unaffected(self, tmp_path):
+        """Adding egress must not disturb firewall/loop_breaker parsing."""
+        (tmp_path / "admina.yaml").write_text(
+            textwrap.dedent(
+                """
+                schema_version: 1
+                domains:
+                  agent_security:
+                    firewall: {heuristic_threshold: 0.9}
+                    loop_breaker: {window_size: 20}
+                """
+            )
+        )
+        sec = load_config(search_paths=[str(tmp_path)]).agent_security
+        assert sec.firewall.heuristic_threshold == 0.9
+        assert sec.loop_breaker.window_size == 20
+        assert sec.egress.allow == []
