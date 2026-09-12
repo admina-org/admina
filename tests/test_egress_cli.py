@@ -58,6 +58,38 @@ class TestSuggestAllowlist:
         assert result.exit_code == 0
         assert "No egress observations" in result.output
 
+    def test_empty_output_names_the_memory_backend_as_the_usual_cause(self, tmp_path):
+        """FORENSIC_BACKEND defaults to 'memory', which writes nothing to disk.
+
+        Without that hint the operator reads "no observations" as "no egress
+        happened", when in fact nothing was ever persisted to read back.
+        """
+        result = CliRunner().invoke(
+            app, ["egress", "suggest-allowlist", "--forensic-dir", str(tmp_path)]
+        )
+        assert "FORENSIC_BACKEND" in result.output
+        assert "filesystem" in result.output
+
+    def test_forensic_dir_defaults_to_the_environment(self, tmp_path, monkeypatch):
+        """`admina doctor` reads FORENSIC_BASE_DIR; this command must agree."""
+        _record(tmp_path, "a.json", ["api.openai.com"])
+        monkeypatch.setenv("FORENSIC_BASE_DIR", str(tmp_path))
+        result = CliRunner().invoke(app, ["egress", "suggest-allowlist"])
+        assert result.exit_code == 0
+        assert "api.openai.com" in result.output
+
+    def test_explicit_flag_overrides_the_environment(self, tmp_path, monkeypatch):
+        other = tmp_path / "other"
+        other.mkdir()
+        _record(tmp_path, "a.json", ["from-the-env.example"])
+        _record(other, "b.json", ["from-the-flag.example"])
+        monkeypatch.setenv("FORENSIC_BASE_DIR", str(tmp_path))
+        result = CliRunner().invoke(
+            app, ["egress", "suggest-allowlist", "--forensic-dir", str(other)]
+        )
+        assert "from-the-flag.example" in result.output
+        assert "from-the-env.example" not in result.output
+
     def test_output_states_that_promotion_is_a_human_decision(self, tmp_path):
         _record(tmp_path, "a.json", ["api.openai.com"])
         out = (

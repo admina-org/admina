@@ -74,6 +74,44 @@ domains:
       window_size: 10
       similarity_threshold: 0.85
       max_consecutive: 3
+    egress:
+      # Destination control over tool calls. Admina reads the tool-call
+      # ARGUMENTS, not what the tool actually dials — a tool that assembles
+      # a URL from parts is not covered (see MODEL_CARD.md).
+      enabled: true
+      # Reaction mode is a SEPARATE env var, ADMINA_EGRESS_MODE:
+      #   observe  → record destinations, never block (DEFAULT)
+      #   enforce  → default-deny: anything not in `allow` is blocked, and
+      #              so is any call whose destination cannot be determined
+      # ADMINA_GOVERNANCE_MODE is a ceiling: under observe/dry-run the
+      # egress stage never blocks whatever ADMINA_EGRESS_MODE says.
+      #
+      # Roll out observe-first, then build the list from real traffic:
+      #   admina egress suggest-allowlist --since 7d
+      # (needs FORENSIC_BACKEND=filesystem; the default `memory` keeps no
+      # records to read back). Promotion is always a human act — review
+      # every candidate before pasting it here.
+      #
+      # Entry forms: exact host, "*.suffix" wildcard, CIDR. No path rules:
+      # a path is not a security boundary any more than a method is.
+      allow: []
+      # allow:
+      #   - api.openai.com
+      #   - "*.corp.internal"
+      #   - 10.0.0.0/8
+      # Tools you declare non-mutating. A call carrying a query string is
+      # classified payload-bearing (write_shaped) by default — a search API
+      # is the predictable case; list it here to silence that.
+      read_only_tools: []
+      # read_only_tools: [docs_search]
+      # Consumed by the coordination detector (not yet shipped): the
+      # destinations where many agents writing to one place is DECLARED and
+      # therefore expected.
+      coordination_declared: []
+      fanin:
+        window_seconds: 3600
+        min_agents: 5
+      quarantine_ttl_seconds: 86400
     # GuardrailsAI content validation (optional plugin)
     domains:
       guardrailsai:

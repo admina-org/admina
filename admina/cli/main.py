@@ -1503,12 +1503,17 @@ def egress() -> None:
 )
 @click.option(
     "--forensic-dir",
-    default=".admina/forensic",
-    help="Directory holding forensic records (the filesystem store's base_dir).",
+    default=None,
+    help=(
+        "Directory holding forensic records (the filesystem store's base_dir). "
+        "Defaults to $FORENSIC_BASE_DIR, then .admina/forensic."
+    ),
 )
-def suggest_allowlist(since: int, forensic_dir: str) -> None:
+def suggest_allowlist(since: int, forensic_dir: str | None) -> None:
     """Print a candidate allowlist from destinations seen in observe mode."""
-    base = Path(forensic_dir)
+    # Same source `admina doctor` reads for the filesystem store; the flag
+    # stays an explicit override.
+    base = Path(forensic_dir or os.environ.get("FORENSIC_BASE_DIR") or ".admina/forensic")
     cutoff = time.time() - since * 86400
     seen: set[str] = set()
     for path in sorted(base.rglob("*.json")) if base.is_dir() else []:
@@ -1540,6 +1545,11 @@ def suggest_allowlist(since: int, forensic_dir: str) -> None:
     if not seen:
         click.echo(f"No egress observations found in {base} for the last {since} day(s).")
         click.echo("Run with ADMINA_EGRESS_MODE=observe to collect them.")
+        click.echo(
+            "Observations are read back from forensic records, and FORENSIC_BACKEND "
+            "defaults to 'memory' — set FORENSIC_BACKEND=filesystem and "
+            "FORENSIC_BASE_DIR for anything to be written."
+        )
         return
 
     click.echo("# Candidate allowlist from observed traffic.")
