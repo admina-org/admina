@@ -1495,7 +1495,12 @@ def egress() -> None:
 
 
 @egress.command("suggest-allowlist")
-@click.option("--since", type=int, default=7, help="Only consider records from the last N days.")
+@click.option(
+    "--since",
+    type=click.IntRange(min=0),
+    default=7,
+    help="Only consider records from the last N days.",
+)
 @click.option(
     "--forensic-dir",
     default=".admina/forensic",
@@ -1506,15 +1511,26 @@ def suggest_allowlist(since: int, forensic_dir: str) -> None:
     base = Path(forensic_dir)
     cutoff = time.time() - since * 86400
     seen: set[str] = set()
-    for path in sorted(base.glob("*.json")) if base.is_dir() else []:
+    for path in sorted(base.rglob("*.json")) if base.is_dir() else []:
         try:
             if path.stat().st_mtime < cutoff:
                 continue
             record = json.loads(path.read_text())
         except (OSError, ValueError):
             continue
-        check = (record.get("checks") or {}).get("egress") or {}
-        for dest in check.get("destinations") or []:
+        # Handle both wrapped (ForensicBlackBox) and flat (test) record shapes
+        if not isinstance(record, dict):
+            continue
+        event = record.get("event", record)
+        if not isinstance(event, dict):
+            continue
+        check = event.get("checks") or {}
+        if not isinstance(check, dict):
+            continue
+        egress = check.get("egress") or {}
+        if not isinstance(egress, dict):
+            continue
+        for dest in egress.get("destinations") or []:
             if isinstance(dest, str) and dest:
                 seen.add(dest)
 

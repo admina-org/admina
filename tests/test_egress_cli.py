@@ -1,11 +1,15 @@
 import json
+import os
+import time
 
 from click.testing import CliRunner
 
 from admina.cli.main import app
+from admina.domains.compliance.forensic import ForensicBlackBox
 
 
 def _record(tmp_path, name, dests, write_shaped=True):
+    """Helper to create a flat test record (for dedup/sort/empty tests)."""
     (tmp_path / name).write_text(
         json.dumps(
             {
@@ -71,3 +75,101 @@ class TestSuggestAllowlist:
         )
         assert result.exit_code == 0
         assert "api.openai.com" in result.output
+
+    def test_wrapped_record_from_real_forensic_blackbox(self, tmp_path):
+        """Test against real ForensicBlackBox record shape (wrapped under 'event')."""
+        fb = ForensicBlackBox(filesystem_dir=str(tmp_path))
+        fb.record(
+            {
+                "checks": {
+                    "egress": {
+                        "status": "resolved",
+                        "destinations": ["api.anthropic.com", "api.openai.com"],
+                        "write_shaped": True,
+                        "allowed": True,
+                    }
+                }
+            }
+        )
+        result = CliRunner().invoke(
+            app, ["egress", "suggest-allowlist", "--forensic-dir", str(tmp_path)]
+        )
+        assert result.exit_code == 0
+        assert "api.anthropic.com" in result.output
+        assert "api.openai.com" in result.output
+
+    def test_since_excludes_old_records(self, tmp_path):
+        """Test that --since filters records by modification time."""
+        _record(tmp_path, "recent.json", ["api.openai.com"])
+        old_file = tmp_path / "old.json"
+        _record(tmp_path, "old.json", ["very-old-api.com"])
+        # Set modification time to 10 days ago
+        old_mtime = time.time() - (10 * 86400)
+        os.utime(str(old_file), (old_mtime, old_mtime))
+
+        # With --since 7, old file excluded
+        result = CliRunner().invoke(
+            app,
+            [
+                "egress",
+                "suggest-allowlist",
+                "--forensic-dir",
+                str(tmp_path),
+                "--since",
+                "7",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "api.openai.com" in result.output
+        assert "very-old-api.com" not in result.output
+
+    def test_since_includes_old_records_with_larger_window(self, tmp_path):
+        """Test that --since includes records when window is large enough."""
+        _record(tmp_path, "recent.json", ["api.openai.com"])
+        old_file = tmp_path / "old.json"
+        _record(tmp_path, "old.json", ["very-old-api.com"])
+        # Set modification time to 10 days ago
+        old_mtime = time.time() - (10 * 86400)
+        os.utime(str(old_file), (old_mtime, old_mtime))
+
+        # With --since 11, old file included
+        result = CliRunner().invoke(
+            app,
+            [
+                "egress",
+                "suggest-allowlist",
+                "--forensic-dir",
+                str(tmp_path),
+                "--since",
+                "11",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "api.openai.com" in result.output
+        assert "very-old-api.com" in result.output
+
+    def test_non_dict_record_is_skipped(self, tmp_path):
+        """Test that non-dict records (e.g., [1,2,3]) are skipped without crash."""
+        (tmp_path / "array.json").write_text(json.dumps([1, 2, 3]))
+        _record(tmp_path, "good.json", ["api.openai.com"])
+        result = CliRunner().invoke(
+            app, ["egress", "suggest-allowlist", "--forensic-dir", str(tmp_path)]
+        )
+        assert result.exit_code == 0
+        assert "api.openai.com" in result.output
+
+    def test_malformed_nested_shapes_are_skipped(self, tmp_path):
+        """Test that unexpected nested shapes are skipped gracefully."""
+        # Record with checks not being a dict
+        (tmp_path / "bad_checks.json").write_text(json.dumps({"event": {"checks": "not a dict"}}))
+        # Record with egress not being a dict
+        (tmp_path / "bad_egress.json").write_text(
+            json.dumps({"event": {"checks": {"egress": [1, 2, 3]}}})
+        )
+        _record(tmp_path, "good.json", ["api.openai.com"])
+        result = CliRunner().invoke(
+            app, ["egress", "suggest-allowlist", "--forensic-dir", str(tmp_path)]
+        )
+        assert result.exit_code == 0
+        assert "api.openai.com" in result.output
+        assert "[1, 2, 3]" not in result.output
