@@ -119,3 +119,19 @@ class TestModeComposition:
     def test_explicit_argument_beats_the_environment(self, monkeypatch):
         monkeypatch.setenv("ADMINA_EGRESS_MODE", "observe")
         assert resolve_egress_mode("enforce", "enforce") == "enforce"
+
+    @pytest.mark.parametrize("governance", ["Observe", " observe ", "OBSERVE", "Dry-Run"])
+    def test_governance_mode_is_normalised_like_the_egress_mode(self, governance, monkeypatch):
+        """The §5.4 ceiling must not be defeated by capitalisation.
+
+        `GovernedModel.__init__` stores `mode` verbatim and never validates
+        it, so a caller writing mode="Observe" reaches here unchanged. If
+        only `egress_mode` is normalised, that caller gets enforcing egress
+        while believing it is observing.
+        """
+        monkeypatch.setenv("ADMINA_EGRESS_MODE", "enforce")
+        assert resolve_egress_mode(governance) == "observe"
+
+    def test_enforce_is_still_normalised_and_still_enforces(self, monkeypatch):
+        monkeypatch.setenv("ADMINA_EGRESS_MODE", "enforce")
+        assert resolve_egress_mode("Enforce") == "enforce"

@@ -315,7 +315,13 @@ class EgressDecision:
 
 
 class EgressPolicy:
-    """Destination allowlist plus a quarantine set refreshed out of band."""
+    """Destination allowlist, plus a quarantine set with no production caller.
+
+    Nothing in the shipped proxy, SDK or CLI calls :meth:`set_quarantine`:
+    in a real deployment the set is always empty and the quarantine branch
+    of :meth:`evaluate` cannot fire. It is reserved for a future
+    out-of-band consumer.
+    """
 
     def __init__(self, allow: list[str], quarantine: frozenset[str] = frozenset()) -> None:
         self._exact: set[str] = set()
@@ -419,7 +425,13 @@ def resolve_egress_mode(governance_mode: str, egress_mode: str | None = None) ->
     egress never blocks, whatever the egress mode says. Otherwise the egress
     mode decides, defaulting to "observe" so that upgrading a deployment that
     already runs enforce does not silently turn on default-deny.
+
+    Both arguments are normalised the same way. ``GovernedModel`` stores its
+    ``mode`` verbatim, so ``GovernedModel(mode="Observe")`` must lower the
+    ceiling exactly as ``"observe"`` does — otherwise the §5.4 ceiling is
+    defeated by capitalisation.
     """
+    governance_mode = (governance_mode or "").strip().lower()
     if governance_mode in ("observe", "dry-run", "dry_run"):
         return "observe"
     value = egress_mode if egress_mode is not None else os.environ.get("ADMINA_EGRESS_MODE", "")
