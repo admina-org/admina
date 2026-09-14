@@ -1,0 +1,82 @@
+# Copyright © 2025–2026 Stefano Noferi & Admina contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""
+Admina — Content fingerprints — Agent Security domain
+
+Sketches used to tell whether text one agent sent somewhere later turns up in
+another agent's input. Comparison has to survive reformatting, so this is
+shingled MinHash rather than a digest of the whole string.
+
+Nothing here stores or can reconstruct the text. A sketch is a bounded set of
+64-bit HMAC values over word shingles: the key makes them incomparable across
+deployments and defeats a dictionary attack on common phrases, and the
+truncation to a fixed number of minima discards the rest.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import os
+import re
+
+__all__ = ["SHINGLE_WORDS", "SKETCH_SIZE", "load_fingerprint_key", "overlap", "sketch"]
+
+# Words per shingle. Shorter shingles match unrelated prose; longer ones stop
+# surviving the light reformatting an agent applies when quoting text.
+SHINGLE_WORDS = 5
+
+# Minima kept per sketch. Bounds both memory in Redis and comparison cost.
+SKETCH_SIZE = 64
+
+_WORD_RX = re.compile(r"[A-Za-z0-9_]+")
+
+
+def load_fingerprint_key() -> bytes | None:
+    """Read the deployment fingerprint key, or None when it is not configured.
+
+    Follows the ADMINA_FORENSIC_STATE_KEY precedent. When this returns None the
+    caller must disable echo confirmation rather than fall back to unkeyed
+    hashes, which would be dictionary-attackable and comparable across
+    deployments.
+    """
+    raw = os.environ.get("ADMINA_EGRESS_FINGERPRINT_KEY", "").strip()
+    return raw.encode() if raw else None
+
+
+def sketch(text: str, key: bytes) -> frozenset[int]:
+    """Return a bounded set of keyed hashes over the text's word shingles."""
+    words = _WORD_RX.findall(text.lower())
+    if len(words) < SHINGLE_WORDS:
+        return frozenset()
+    values = sorted(
+        int.from_bytes(
+            hmac.new(
+                key,
+                " ".join(words[i : i + SHINGLE_WORDS]).encode(),
+                hashlib.sha256,
+            ).digest()[:8],
+            "big",
+        )
+        for i in range(len(words) - SHINGLE_WORDS + 1)
+    )
+    return frozenset(values[:SKETCH_SIZE])
+
+
+def overlap(a: frozenset[int], b: frozenset[int]) -> float:
+    """Jaccard overlap of two sketches. Empty sketches never match."""
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
