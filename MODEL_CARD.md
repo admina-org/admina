@@ -427,18 +427,24 @@ included. Wiring it is a separate change, not a configuration option.
 
 ### What it does
 
-`admina/proxy/main.py` feeds the egress check and a 2000-character tail of
-the call's *payload* into `CoordinationDetector.observe()` for every MCP
-tool call that reaches the egress stage — one not already short-circuited
-by an earlier governance check (loop breaker, firewall) and with egress
-control enabled (`"egress" in pipeline_result.checks`). The payload is
-`egress.payload_text()`: the string values the egress stage already treats
-as payload-bearing, without the keys, the tool name or the JSON-RPC
-envelope around them, which are identical on every call to a given tool
-and would make two agents using one tool look like an echo of each other.
-A call carrying no payload text is not fingerprinted at all. Two phases
-run in order, each gated on the destination not being in the operator's
-`coordination_declared` set:
+`admina/proxy/main.py` feeds the egress check and the call's *payload
+fields* into `CoordinationDetector.observe()` for every MCP tool call that
+reaches the egress stage — one not already short-circuited by an earlier
+governance check (loop breaker, firewall) and with egress control enabled
+(`"egress" in pipeline_result.checks`). The payload is
+`egress.payload_fields()`: the string values the egress stage already
+treats as payload-bearing, without the keys, the tool name or the JSON-RPC
+envelope around them, and **each value kept separate**, at most two of them
+(the longest), each cut to its last 2000 characters. Both halves of that
+matter, and for one reason: the echo signal has to be computed over text
+that varies with the message, and anything constant across a fleet's calls
+manufactures similarity. Argument names, the tool name and the envelope are
+constant, so they are excluded; a header block, a bearer token, a content
+type and a trace id are constant too, so joining them into one text is
+excluded as well — concatenated they form a run of shared words that no
+single field contained. A call carrying no payload text is not
+fingerprinted at all. Two phases run in order, each gated on the
+destination not being in the operator's `coordination_declared` set:
 
 1. **Fan-in trigger (always on).** `FanInCounter` counts distinct agent
    ids making write-shaped, egress-allowed calls to one destination across
@@ -448,11 +454,25 @@ run in order, each gated on the destination not being in the operator's
    (default 5, floor 2) distinct agents, the verdict escalates to
    `suspected` and is logged. Nothing is blocked yet.
 2. **Echo confirmation (keyed).** Only once `ADMINA_EGRESS_FINGERPRINT_KEY`
-   is set: each call's content tail is reduced to a bounded set of keyed
-   shingle hashes (`fingerprint.py`) and checked against sketches other
-   agents already sent toward the same destination. A match against
-   another agent's earlier output escalates the verdict to `confirmed` and
-   adds the destination to the quarantine set.
+   is set: each payload field is reduced on its own to a bounded set of
+   keyed shingle hashes (`fingerprint.py`) and checked against the fields
+   other agents already sent toward the same destination. A match needs
+   both conditions and they are measured at different scopes: at least
+   `MIN_SHARED_SHINGLES` (12) shared shingles **within one pair of
+   fields** — one coherent run of text, never a union of separate fields —
+   and a containment coefficient of at least 0.4 **over the whole payload**
+   of each of the two calls, so a short constant field that every agent
+   sends cannot match at 1.0 on its own. A field whose own sketch cannot
+   reach the 12-shingle floor is not stored at all: it could never
+   contribute to a match, and leaving it out keeps short constants — a
+   bearer token, a content type — out of the echo store entirely. Shingles
+   the *reading* agent has already sent toward the same destination in this
+   window are discounted from its own side before matching, because text an
+   agent repeats across its own calls is its boilerplate and not something
+   it read from a peer; what the *stored* agent repeats is never discounted,
+   since that would let an agent launder a message by sending it twice. A
+   match against another agent's earlier output escalates the verdict to
+   `confirmed` and adds the destination to the quarantine set.
 
 A `confirmed` destination is refused for write-shaped calls fleet-wide
 **under `ADMINA_EGRESS_MODE=enforce`**; under the default `observe` the
@@ -468,11 +488,14 @@ An armed quarantine writes its own record to the forensic chain, naming
 the destination, the number of agents counted and the peer whose content
 matched, and emits a `policy_violation` event on the governance bus.
 
-Self-confirmation is blocked by two independent mechanisms, not one:
+Self-confirmation is blocked by three independent mechanisms, not one:
 `FanInCounter` counts distinct `agent_id`s, so repeated calls from a single
-agent never inflate the fan-in count on their own, and `EchoStore.confirm`
+agent never inflate the fan-in count on their own; `EchoStore.confirm`
 separately discards any match against the same `agent_id` that produced
-the sketch being matched against.
+the sketch being matched against; and it discounts from the reading agent's
+own side every shingle that agent has already sent toward the destination
+in the window, so an agent's own repeated text cannot be evidence even
+against a different agent's copy of it.
 
 Replayed on every test run against a 7-trace labelled corpus
 (`admina/redteam/corpora/coordination.jsonl`, exercised by
@@ -526,14 +549,30 @@ does not participate in the Python/Rust recall baseline in §9.
   and confirm. The same footer on 60-word bodies scores 0.26 and does not.
   A destination whose agents all append one signature is the shape to
   watch, and `coordination_declared` is the answer for it.
+- **A whole argument that a fleet sends unchanged is the same limitation
+  one level up.** Keeping payload fields separate stops short constants —
+  a header block, a content type, a trace id — from pooling into a run long
+  enough to clear the shingle floor, because no one of them reaches it. It
+  does not help when a *single* constant field clears the floor by itself:
+  a 250-word instruction template sent as its own argument beside a 30-word
+  message measures 48 shared shingles at 0.623 containment and confirms.
+  Telling that apart from an echo needs more than one call to look at, and
+  the detector does exactly that much: from an agent's second call to the
+  destination in the window onward, the constant is in that agent's own
+  history and is discounted, and the same fleet measures `suspected`. The
+  exposure is each agent's first call in a 2–4 hour window, and it narrows
+  as messages get longer — the same 16-token constant beside 30-word
+  messages scores 0.356 and does not confirm. `coordination_declared` is
+  the answer for a destination whose tool carries one.
 - **Detection is retrospective by construction.** The fan-in trigger needs
   `fanin_min_agents` distinct agents against one destination before it can
   conclude anything at all, so the calls that establish that count are
   themselves never flagged — a new channel always gets a bounded number of
   free calls, never zero, before a `suspected` verdict becomes possible.
 - **Content sketches are bounded and keyed, never plaintext.** A sketch is
-  a set of up to 512 keyed 64-bit HMAC values over 5-word shingles of the
-  last 2000 characters of payload a call carried toward a destination;
+  a set of up to 512 keyed 64-bit HMAC values over 5-word shingles of one
+  payload field a call carried toward a destination, taken from that
+  field's last 2000 characters, with at most two fields per call;
   nothing in `fingerprint.py` stores or can reconstruct the source text.
   Outbound sketches live in a Redis set per destination, agent and bucket,
   the bucket sized at twice `fanin.window_seconds` (not an independently
@@ -541,14 +580,25 @@ does not participate in the Python/Rust recall baseline in §9.
   size — with the shipped default (`window_seconds: 3600`) that is 2 to 4
   hours — after which they age out regardless of activity.
 - **An agent's sketch storage is capped, and the cap is per agent.** Each
-  agent holds up to 1024 values per destination per bucket; a message that
+  agent holds up to 1024 values per destination per bucket; a call that
   does not fit that budget displaces the same agent's older sketches, so
   what an agent stores is always its most recent messages and no agent's
-  traffic can displace another's. Two ceilings above that do lose
-  detection, both logged at WARNING: a single sketch larger than the whole
-  budget is not stored, and at most 256 agents are indexed per destination
-  per bucket — an agent arriving after that is invisible to the echo phase
-  until the bucket rolls over.
+  traffic can displace another's. A call whose fields together exceed the
+  whole budget is not stored at all, logged at WARNING, and takes no slot
+  in the agent index.
+- **The agent index is an attacker-reachable limit, not a capacity one.**
+  `agent_id` is `X-Agent-Id`, a caller-supplied header the proxy does not
+  authenticate, and at most 256 ids are indexed per destination per bucket.
+  A flood of forged ids therefore fills a destination's index on purpose,
+  and no cap on an unauthenticated identifier space can prevent that. What
+  the cap does *not* do is lock a named agent out: an arriving agent
+  evicts an indexed one rather than being refused, every write re-indexes
+  its own writer, and the ids that stop writing are the ones that leave, so
+  echo confirmation keeps working for agents that keep sending. What is
+  lost while an index is full is certainty — some agent's sketches are no
+  longer readable — so the detector reports that destination as `degraded`
+  rather than `suspected` for calls that find no echo, and logs each
+  eviction at WARNING. A real echo still confirms while the index is full.
 - **Under `observe` the tracked keyspace is bounded only by the agents.**
   Fan-in and echo keys are named by destination, which comes from
   agent-supplied arguments. Under `enforce` an unlisted destination is
@@ -556,7 +606,18 @@ does not participate in the Python/Rust recall baseline in §9.
   keyspace; under `observe` every destination is "allowed", so an agent
   naming N hosts creates keys for N hosts, each held for 2-4 hours. Host
   length is bounded to 253 characters by the analyser's host pattern, so
-  this is memory amplification rather than key injection.
+  this is memory amplification rather than key injection. The per-destination
+  ceiling is 256 agents x 1024 values x 2 buckets — roughly 28 MB of echo
+  sketches for one destination, not the ~57 KB a single shared 1024-member
+  bucket held before the storage budget became per agent.
+- **The echo phase's coverage is exactly the egress stage's coverage.**
+  Both halves read the payload with the same walk and the same notion of a
+  payload-bearing value, including inside a subtree whose name declares a
+  destination (`{"webhook": {"url": ..., "text": ...}}`), so a call the
+  fan-in trigger counts is a call the echo phase can fingerprint. What
+  neither reaches is not fingerprinted either: arguments nested past the
+  six-level scan depth, and — from `fingerprint.py`'s ASCII-only word
+  regex — text in non-Latin scripts.
 - **A call the firewall or the loop breaker stops never reaches the
   detector.** `checks["egress"]` is only produced while the pipeline's
   action is still ALLOW, so a call blocked earlier is not counted. Under

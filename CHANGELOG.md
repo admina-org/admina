@@ -77,7 +77,13 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `suspected` once the threshold is crossed. If
   `ADMINA_EGRESS_FINGERPRINT_KEY` is set, a second phase compares keyed
   content shingles of what each call carries — the payload values, not the
-  request envelope — between agents; a match against another agent's prior
+  request envelope, and each value fingerprinted on its own rather than
+  joined, so that the header block, bearer token and content type a whole
+  fleet sends unchanged cannot pool into the run of shared text a match
+  requires — between agents; a match needs 12 shared shingles inside a
+  single pair of fields and 0.4 containment across the whole payload, and
+  discounts text the reading agent has already sent to that destination
+  itself. A match against another agent's prior
   output escalates the verdict to `confirmed` and quarantines the
   destination for write-shaped calls fleet-wide — every agent, not only
   the ones involved — until `quarantine_ttl_seconds` (default 86400) lapses
