@@ -33,9 +33,78 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-__all__ = ["FanInCounter"]
+from admina.domains.agent_security.fingerprint import matches
+
+__all__ = ["EchoStore", "FanInCounter"]
 
 logger = logging.getLogger("admina.coordination")
+
+
+class EchoStore:
+    """Outbound content sketches, matched against later inbound content.
+
+    Entries are ``<agent_id>:<timestamp>:<value>`` members in a per-destination
+    set. Storing the agent and the time inside the member is what lets the two
+    rules that give the verdict meaning be enforced at read time: a match
+    against the same agent is discarded, and the outbound sketch must predate
+    the inbound content.
+    """
+
+    def __init__(self, redis: Any, ttl_seconds: int, threshold: float = 0.4) -> None:
+        self._redis = redis
+        self._ttl = max(1, ttl_seconds)
+        self._threshold = threshold
+
+    def _key(self, destination: str) -> str:
+        return f"admina:egress:echo:{destination}"
+
+    async def record_outbound(
+        self, destination: str, agent_id: str, sketch_values: frozenset[int], now: float
+    ) -> None:
+        """Store one agent's outbound sketch. No-op without Redis or a sketch."""
+        if self._redis is None or not sketch_values:
+            return
+        key = self._key(destination)
+        try:
+            await self._redis.sadd(key, *(f"{agent_id}:{now}:{v}" for v in sketch_values))
+            await self._redis.expire(key, self._ttl)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Echo store unavailable, not recording outbound: %s", exc)
+
+    async def confirm(
+        self, destination: str, agent_id: str, inbound: frozenset[int], now: float
+    ) -> str | None:
+        """Return the other agent's id when inbound content echoes its output."""
+        if self._redis is None or not inbound:
+            return None
+        try:
+            members = await self._redis.smembers(self._key(destination))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Echo store unavailable, cannot confirm: %s", exc)
+            return None
+
+        by_agent: dict[str, set[int]] = {}
+        for member in members:
+            member_str = str(member)
+            # Parse from the right to handle agent IDs containing colons.
+            # agent_id:timestamp:value -> rsplit gives us three parts.
+            parts = member_str.rsplit(":", 2)
+            if len(parts) != 3:
+                continue
+            other, stamp, value = parts
+            if other == agent_id:
+                continue
+            try:
+                if float(stamp) > now:
+                    continue
+                by_agent.setdefault(other, set()).add(int(value))
+            except ValueError:
+                continue
+
+        for other, values in by_agent.items():
+            if matches(inbound, frozenset(values), self._threshold):
+                return other
+        return None
 
 
 class FanInCounter:
