@@ -288,20 +288,6 @@ class FanInCounter:
             logger.warning("Fan-in counter unavailable, cannot correlate: %s", exc)
             return 0
 
-    async def agents(self, destination: str, now: float) -> set[str]:
-        """Agent ids seen against a destination across both buckets."""
-        if self._redis is None:
-            return set()
-        current, previous = self._buckets(now)
-        found: set[str] = set()
-        try:
-            for bucket in (current, previous):
-                found |= set(await self._redis.smembers(self._key(destination, bucket)))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Fan-in counter unavailable, cannot list agents: %s", exc)
-            return set()
-        return found
-
 
 def _live_expiry(raw: Any, now: float) -> bool:
     """Whether a stored expiry field exists and is still in the future."""

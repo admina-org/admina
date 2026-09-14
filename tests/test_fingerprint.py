@@ -159,3 +159,23 @@ class TestContainment:
         b = sketch(" ".join(f"bravo{i}" for i in range(200)) + " " + footer, _KEY)
         assert matches(a, b, threshold=0.4) is False
         assert matches(a, b, threshold=0.0) is True, "only the ratio separates them"
+
+
+class TestKeyLength:
+    def test_a_short_key_is_reported(self, monkeypatch, caplog):
+        """The key's whole purpose is to make the shingles of a common phrase
+        un-enumerable; a key of a few bytes does not."""
+        import logging
+
+        monkeypatch.setenv("ADMINA_EGRESS_FINGERPRINT_KEY", "s3cret")
+        with caplog.at_level(logging.WARNING, logger="admina.coordination"):
+            assert load_fingerprint_key() == b"s3cret"
+        assert any("dictionary attack" in rec.getMessage() for rec in caplog.records)
+
+    def test_a_long_enough_key_is_not_reported(self, monkeypatch, caplog):
+        import logging
+
+        monkeypatch.setenv("ADMINA_EGRESS_FINGERPRINT_KEY", "x" * 32)
+        with caplog.at_level(logging.WARNING, logger="admina.coordination"):
+            assert load_fingerprint_key() == b"x" * 32
+        assert caplog.records == []

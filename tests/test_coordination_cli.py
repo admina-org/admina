@@ -86,6 +86,15 @@ class TestQuarantineLift:
         assert r.exit_code == 0
         assert "not quarantined" in r.output.lower()
 
+    def test_the_destination_is_matched_as_the_store_holds_it(self, fake_redis):
+        """Destinations are stored lower-cased by the egress analyser; an
+        operator typing what a dashboard shows must not be told it was not
+        quarantined."""
+        fake_redis["redis"] = _Redis({"wiki.corp": "99999999999"})
+        r = CliRunner().invoke(app, ["egress", "quarantine", "lift", " WIKI.CORP "])
+        assert r.exit_code == 0
+        assert "Lifted" in r.output
+
     def test_lift_with_redis_down_reports_unavailability(self, fake_redis):
         fake_redis["redis"] = _FailingRedis()
         r = CliRunner().invoke(app, ["egress", "quarantine", "lift", "wiki.corp"])

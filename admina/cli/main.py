@@ -1621,6 +1621,11 @@ def quarantine_lift(destination: str, redis_url: str) -> None:
 
     from admina.domains.agent_security.coordination import QuarantineStore
 
+    # Destinations are stored as the egress analyser normalised them, which
+    # lower-cases every host. An operator reading WIKI.CORP off a dashboard
+    # would otherwise be told it was not quarantined.
+    destination = destination.strip().lower()
+
     async def _run():
         client = _quarantine_redis(redis_url)
         try:

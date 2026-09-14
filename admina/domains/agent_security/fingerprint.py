@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import os
 import re
 
@@ -62,6 +63,13 @@ MIN_SHARED_SHINGLES = 12
 
 _WORD_RX = re.compile(r"[A-Za-z0-9_]+")
 
+# Below this the key is short enough to enumerate, which is the one thing the
+# key exists to prevent. Reported, not enforced: refusing it would disable the
+# echo phase on a deployment that believes it is configured.
+_MIN_KEY_BYTES = 16
+
+logger = logging.getLogger("admina.coordination")
+
 
 def load_fingerprint_key() -> bytes | None:
     """Read the deployment fingerprint key, or None when it is not configured.
@@ -72,7 +80,16 @@ def load_fingerprint_key() -> bytes | None:
     deployments.
     """
     raw = os.environ.get("ADMINA_EGRESS_FINGERPRINT_KEY", "").strip()
-    return raw.encode() if raw else None
+    if not raw:
+        return None
+    if len(raw.encode()) < _MIN_KEY_BYTES:
+        logger.warning(
+            "ADMINA_EGRESS_FINGERPRINT_KEY is %d bytes; a key shorter than %d does not "
+            "defeat a dictionary attack on the shingles it protects",
+            len(raw.encode()),
+            _MIN_KEY_BYTES,
+        )
+    return raw.encode()
 
 
 def sketch(text: str, key: bytes) -> frozenset[int]:

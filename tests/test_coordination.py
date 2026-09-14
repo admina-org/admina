@@ -80,12 +80,6 @@ class TestFanInCounter:
         c = FanInCounter(None, window_seconds=3600)
         assert await c.record("wiki.corp", "a1", now=1000.0) == 0
 
-    async def test_agents_returns_the_union_of_both_buckets(self):
-        c = FanInCounter(FakeRedis(), window_seconds=100)
-        await c.record("wiki.corp", "a1", now=1000.0)
-        await c.record("wiki.corp", "a2", now=1150.0)
-        assert await c.agents("wiki.corp", now=1150.0) == {"a1", "a2"}
-
     async def test_an_agent_in_both_buckets_counts_once(self):
         """scard summed over buckets would double-count; the union must not."""
         c = FanInCounter(FakeRedis(), window_seconds=100)
