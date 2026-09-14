@@ -84,7 +84,11 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   containment across the whole payload, met either by one coherent run
   inside a single pair of fields or, for a tool that splits its message
   over several short arguments, by the two calls being near-copies of one
-  another (0.9 containment). Before anything is compared it discounts text
+  another — 0.9 containment over the smaller payload and 0.4 over the
+  larger, since containment alone says nothing about the larger side and a
+  call carrying only a shared template scores 1.0 against any call
+  carrying that template beside its own message. Before anything is
+  compared it discounts text
   that `min_agents - 1` distinct *other* agents have already sent toward
   that destination — a fleet's header block or instruction preamble is not
   one agent quoting another, and counting senders rather than calls is what
@@ -98,7 +102,13 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `ADMINA_EGRESS_MODE=enforce`; under the default `observe` it is recorded,
   logged, listed by `admina egress quarantine list` and written to the
   forensic chain with the agents and the matching peer, and the call
-  proceeds — the same mode gate the allowlist has. **Without that key, the detector never
+  proceeds — the same mode gate the allowlist has. Every verdict the
+  detector concludes, not only `confirmed`, leaves a forensic-chain record
+  marked `QUARANTINE` or `OBSERVE`, a `policy_violation` bus event and an
+  `admina_coordination_verdicts_total{status="…"}` counter on `/metrics`:
+  at the shipped fan-in defaults a same-text cascade across a whole fleet
+  reports `suspected` rather than quarantining, and the record is where
+  that detection is kept. **Without that key, the detector never
   escalates past `suspected`**: echo confirmation does not run at all
   rather than falling back to unkeyed, dictionary-attackable hashes.
   Destinations meant to receive coordinated writes are exempted via

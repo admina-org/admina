@@ -479,15 +479,24 @@ destination not being in the operator's `coordination_declared` set:
      since that would let an agent launder a message by sending it twice.
 
    What is left must then share at least `MIN_SHARED_SHINGLES` (12)
-   shingles in total, reach a containment coefficient of at least 0.4 over
-   the whole payload of each of the two calls, and be either one coherent
-   run — a single pair of fields meeting the 12-shingle floor by itself —
-   or so much of both payloads (0.9 containment) that the two calls are
-   copies of one another. The fields are never concatenated, here or in the
-   extractor, so no shared shingle is ever an artefact of two constants
-   sitting next to each other; counting separate fields' shares together
-   is allowed only at the copy ratio, where there is no room for a message
-   beside a shared template. A field below the 12-shingle floor is dropped
+   shingles in total, reach a containment coefficient of at least 0.4 —
+   the shared text as a fraction of the *smaller* of the two payloads,
+   measured over everything each call carried — and be either one coherent
+   run, a single pair of fields meeting the 12-shingle floor by itself, or
+   so much of *each* payload that the two calls are copies of one another:
+   0.9 of the smaller and 0.4 of the larger. The fields are never
+   concatenated, here or in the extractor, so no shared shingle is ever an
+   artefact of two constants sitting next to each other; counting separate
+   fields' shares together is allowed only at the copy ratio, and the
+   larger payload is bounded there separately because containment says
+   nothing about it. A call that is *nothing but* a shared template is the
+   degenerate small side of that test — it scores 1.0 against any call
+   carrying the same template, however much of its own message that call
+   also carries. Measured at the shipped defaults, a bare two-field release
+   notification against the same notification plus 80 words of the sender's
+   own build output shares 14 shingles at 1.000 containment and reports
+   `suspected`; the same pair with nothing beside the template reports
+   `confirmed`. A field below the 12-shingle floor is dropped
    before storage when the same call has a field above it — which is what
    keeps a bearer token or a content type out of the echo store — and kept
    only when no field in the call reaches the floor and the call's fields
@@ -506,9 +515,26 @@ silently start refusing calls. The quarantine holds until
 operator runs `admina egress quarantine lift <destination>`. Reads are
 never affected — the quarantine only ever gates `write_shaped` calls.
 
-An armed quarantine writes its own record to the forensic chain, naming
-the destination, the number of agents counted and the peer whose content
-matched, and emits a `policy_violation` event on the governance bus.
+Every verdict the detector concludes — `confirmed`, `suspected` and
+`degraded` alike — writes its own record to the forensic chain naming the
+destination, the number of agents counted and the peer whose content
+matched, emits a `policy_violation` event on the governance bus, and
+increments `admina_coordination_verdicts_total{status="…"}` on `/metrics`.
+The `confirmed` record is marked `QUARANTINE` at `critical`; the other two
+are marked `OBSERVE` and arm nothing. The point of recording the two that
+arm nothing is the cascade limitation below: at the shipped defaults a
+same-text cascade across a fleet is deliberately *not* quarantined, and
+without a record the detection it does make would survive only until the
+proxy's log rotated.
+
+The cost is one chain entry per governed call once a destination is past
+the fan-in threshold — the same per-call footing a `confirmed` verdict
+already had under `observe`. Measured over 20 governed write-shaped calls
+to one undeclared destination: **16 coordination records with Redis
+healthy** (the four calls below the fan-in threshold conclude nothing) and
+**20 with no Redis configured**, where every call is `degraded`. Listing
+the destination in `coordination_declared` suppresses both phases and with
+them the records.
 
 Self-confirmation is blocked by three independent mechanisms, not one:
 `FanInCounter` counts distinct `agent_id`s, so repeated calls from a single
@@ -539,8 +565,9 @@ does not participate in the Python/Rust recall baseline in §9.
   past `suspected`.** With no key configured, echo confirmation does not
   run at all — it is disabled outright rather than falling back to
   unkeyed hashes, which would be dictionary-attackable and comparable
-  across deployments. A key-less deployment gets a logged warning signal
-  and nothing more; no destination is ever quarantined.
+  across deployments. A key-less deployment gets `suspected` verdicts —
+  logged, recorded to the forensic chain and counted, like any other — and
+  nothing more; no destination is ever quarantined.
 - **Without Redis there is no detection at all, and the verdict is
   `degraded`, not `none`** — the two must not be read as the same thing.
   `FanInCounter.record` returns 0 on any Redis failure, and `observe()`
@@ -593,8 +620,13 @@ does not participate in the Python/Rust recall baseline in §9.
     same text, it has `min_agents - 1` senders behind it at exactly that
     moment — which is indistinguishable from a fleet constant, because it
     is the same observation. Measured at the shipped defaults: nine agents
-    passing one 30-word quote between them report `suspected` on every
-    call, never `confirmed`. What is still confirmed is any channel
+    passing one 30-word quote between them report `none` on the first
+    `min_agents - 1` calls — the free window every new channel gets — and
+    `suspected` on every call from the fan-in threshold onward, never
+    `confirmed`. Each of those `suspected` verdicts leaves a forensic
+    record, a bus event and a metric, which is the whole of what "the
+    detection is kept, the automatic enforcement is not" means here.
+    What is still confirmed is any channel
     narrower than the fan-in threshold — two of five agents sharing a text
     while the others send their own content confirms on the second, which
     is all an armed quarantine needs, and a channel that passes new text
@@ -620,6 +652,22 @@ does not participate in the Python/Rust recall baseline in §9.
   attack, used to defeat the authorship discount entirely and confirm a
   fleet constant on call after call. Rotation cannot defeat the ubiquity
   discount, because it raises the sender count rather than lowering it.
+  Forgery nevertheless runs in the *fabricating* direction too, and that
+  direction is attacker-reachable rather than a property of capacity:
+  **five requests carrying five made-up `X-Agent-Id` values, two of them
+  sharing one text, arm a fleet-wide write quarantine on any destination
+  the fleet is allowed to write to.** Measured at the shipped defaults,
+  five forged ids *all* sending the same text report `suspected` and
+  quarantine nothing — the ubiquity discount does its job — while three
+  forged ids sending their own text plus two sharing one report
+  `confirmed` on the fifth call. Under `enforce` every subsequent
+  legitimate attempt renews the TTL, so the block holds for as long as the
+  fleet keeps trying: denial of service against a destination, bought with
+  five headers. Authenticating `agent_id` is proxy-wide and outside this
+  control; until it exists, `coordination_declared` and `admina egress
+  quarantine lift` are the operator's answers, and the shipped
+  `ADMINA_EGRESS_MODE=observe` is what keeps the fabricated verdict from
+  refusing anything.
 - **Detection is retrospective by construction.** The fan-in trigger needs
   `fanin_min_agents` distinct agents against one destination before it can
   conclude anything at all, so the calls that establish that count are
@@ -670,11 +718,13 @@ does not participate in the Python/Rust recall baseline in §9.
   524,288 sketch values, and it is bounded by the agent cap rather than by
   the number of ids that arrive, because an eviction deletes the evicted
   agent's key. Measured end to end, 10,000 rotating ids writing to one
-  destination leave **257 keys and 4.6 MB** — the same figure as 1,000 ids.
-  A member's size follows the agent id, which `admina/proxy/main.py`
-  truncates at 128 characters: 60 bytes per member with a 16-character id,
-  172 with the 128-character maximum, so the ceiling is 31 MB to 90 MB of
-  echo sketches for one destination.
+  destination leave **257 keys** — 256 agent keys plus the bucket index,
+  the same count as 1,000 ids — holding 53,504 members. A member's size
+  follows the agent id, which `admina/proxy/main.py` truncates at 128
+  characters, so the same run measures 2.9 MB at a 16-character id, 4.0 MB
+  at a UUID and 8.9 MB at the 128-character maximum: 54 to 166 bytes per
+  member, and a ceiling of 28 MB to 87 MB of echo sketches for one
+  destination.
 - **The echo phase reads the payload with the egress stage's own walk, and
   then keeps less of it.** Both halves use the same notion of a
   payload-bearing value, including inside a subtree whose name declares a
