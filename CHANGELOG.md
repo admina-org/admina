@@ -80,10 +80,17 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   request envelope, and each value fingerprinted on its own rather than
   joined, so that the header block, bearer token and content type a whole
   fleet sends unchanged cannot pool into the run of shared text a match
-  requires — between agents; a match needs 12 shared shingles inside a
-  single pair of fields and 0.4 containment across the whole payload, and
-  discounts text the reading agent has already sent to that destination
-  itself. A match against another agent's prior
+  requires — between agents; a match needs 12 shared shingles and 0.4
+  containment across the whole payload, met either by one coherent run
+  inside a single pair of fields or, for a tool that splits its message
+  over several short arguments, by the two calls being near-copies of one
+  another (0.9 containment). Before anything is compared it discounts text
+  that `min_agents - 1` distinct *other* agents have already sent toward
+  that destination — a fleet's header block or instruction preamble is not
+  one agent quoting another, and counting senders rather than calls is what
+  keeps an agent from making its own message ambient by repeating it — and
+  text the reading agent has sent there itself. A match against another
+  agent's prior
   output escalates the verdict to `confirmed` and quarantines the
   destination for write-shaped calls fleet-wide — every agent, not only
   the ones involved — until `quarantine_ttl_seconds` (default 86400) lapses
