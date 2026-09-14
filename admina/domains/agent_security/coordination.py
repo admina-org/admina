@@ -253,7 +253,12 @@ class QuarantineStore:
         try:
             existing = await self._redis.hgetall(self.KEY)
             if destination in existing:
-                await self._redis.hset(self.KEY, destination, now + self._ttl)
+                try:
+                    expiry = float(existing[destination])
+                    if expiry > now:
+                        await self._redis.hset(self.KEY, destination, now + self._ttl)
+                except (TypeError, ValueError):
+                    pass
         except Exception as exc:  # noqa: BLE001
             logger.warning("Cannot renew quarantine for %r: %s", destination, exc)
 
@@ -267,7 +272,13 @@ class QuarantineStore:
             return False
 
     async def current(self, now: float) -> frozenset[str]:
-        """Destinations still quarantined. Empty when Redis is unavailable."""
+        """Destinations still quarantined. Empty when Redis is unavailable.
+
+        Purges expired entries encountered during read. The refresh task calls
+        this every ~5s on every replica; purging is idempotent so concurrent
+        purges converge. This bounds hash growth and removes the resurrection
+        surface at its source rather than only at renew()'s check.
+        """
         if self._redis is None:
             return frozenset()
         try:
@@ -280,6 +291,11 @@ class QuarantineStore:
             try:
                 if float(expiry) > now:
                     live.add(str(destination))
+                else:
+                    try:
+                        await self._redis.hdel(self.KEY, destination)
+                    except Exception:  # noqa: BLE001
+                        pass
             except (TypeError, ValueError):
                 continue
         return frozenset(live)
