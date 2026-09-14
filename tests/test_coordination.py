@@ -1,7 +1,7 @@
 import pytest
-from _fakes import FakeRedis
+from _fakes import FakeRedis, FakeRedisHash
 
-from admina.domains.agent_security.coordination import EchoStore, FanInCounter
+from admina.domains.agent_security.coordination import EchoStore, FanInCounter, QuarantineStore
 from admina.domains.agent_security.fingerprint import sketch
 
 _KEY = b"k"
@@ -255,3 +255,50 @@ class TestEchoStore:
         # Confirm should return None because matches enforces both floor and ratio.
         result = await s.confirm("wiki.corp", "a2", inbound, now=1100.0)
         assert result is None, f"Expected None (matches enforces floor), got {result}"
+
+
+@pytest.mark.anyio
+class TestQuarantineStore:
+    async def test_an_added_destination_is_current(self):
+        q = QuarantineStore(FakeRedisHash(), ttl_seconds=86400)
+        await q.add("wiki.corp", now=1000.0)
+        assert await q.current(now=1000.0) == frozenset({"wiki.corp"})
+
+    async def test_it_expires_after_the_ttl(self):
+        q = QuarantineStore(FakeRedisHash(), ttl_seconds=100)
+        await q.add("wiki.corp", now=1000.0)
+        assert await q.current(now=1200.0) == frozenset()
+
+    async def test_renewal_extends_it(self):
+        """Attempts renew — a quarantine suppresses the successes."""
+        q = QuarantineStore(FakeRedisHash(), ttl_seconds=100)
+        await q.add("wiki.corp", now=1000.0)
+        await q.renew("wiki.corp", now=1090.0)
+        assert await q.current(now=1150.0) == frozenset({"wiki.corp"})
+
+    async def test_renewing_an_absent_destination_does_not_create_it(self):
+        q = QuarantineStore(FakeRedisHash(), ttl_seconds=100)
+        await q.renew("wiki.corp", now=1000.0)
+        assert await q.current(now=1000.0) == frozenset()
+
+    async def test_lift_removes_it(self):
+        q = QuarantineStore(FakeRedisHash(), ttl_seconds=86400)
+        await q.add("wiki.corp", now=1000.0)
+        assert await q.lift("wiki.corp") is True
+        assert await q.current(now=1000.0) == frozenset()
+
+    async def test_lifting_an_absent_destination_reports_false(self):
+        q = QuarantineStore(FakeRedisHash(), ttl_seconds=86400)
+        assert await q.lift("wiki.corp") is False
+
+    async def test_redis_failure_yields_an_empty_set_not_an_exception(self):
+        r = FakeRedisHash()
+        q = QuarantineStore(r, ttl_seconds=86400)
+        await q.add("wiki.corp", now=1000.0)
+        r.fail = True
+        assert await q.current(now=1000.0) == frozenset()
+
+    async def test_no_redis_at_all_yields_an_empty_set(self):
+        q = QuarantineStore(None, ttl_seconds=86400)
+        await q.add("wiki.corp", now=1000.0)
+        assert await q.current(now=1000.0) == frozenset()

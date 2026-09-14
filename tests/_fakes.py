@@ -36,3 +36,27 @@ class FakeRedis:
             raise FakeRedisError("redis down")
         self.ttls[key] = seconds
         return True
+
+
+class FakeRedisHash(FakeRedis):
+    """Adds the hash operations the quarantine store needs."""
+
+    def __init__(self):
+        super().__init__()
+        self.hashes: dict[str, dict[str, str]] = {}
+
+    async def hset(self, key, field, value):
+        if self.fail:
+            raise OSError("redis down")
+        self.hashes.setdefault(key, {})[field] = str(value)
+        return 1
+
+    async def hgetall(self, key):
+        if self.fail:
+            raise OSError("redis down")
+        return dict(self.hashes.get(key, {}))
+
+    async def hdel(self, key, field):
+        if self.fail:
+            raise OSError("redis down")
+        return 1 if self.hashes.get(key, {}).pop(field, None) is not None else 0

@@ -36,7 +36,7 @@ from typing import Any
 
 from admina.domains.agent_security.fingerprint import matches
 
-__all__ = ["EchoStore", "FanInCounter"]
+__all__ = ["EchoStore", "FanInCounter", "QuarantineStore"]
 
 logger = logging.getLogger("admina.coordination")
 
@@ -217,3 +217,69 @@ class FanInCounter:
             logger.warning("Fan-in counter unavailable, cannot list agents: %s", exc)
             return set()
         return found
+
+
+class QuarantineStore:
+    """Destinations that may not receive payload-bearing calls.
+
+    One Redis hash of destination to expiry timestamp. Expiry is evaluated on
+    read rather than delegated to a key TTL because every entry lives in the
+    same hash, and because the refresh task needs to see the whole set at once.
+    """
+
+    KEY = "admina:egress:quarantine"
+
+    def __init__(self, redis: Any, ttl_seconds: int) -> None:
+        self._redis = redis
+        self._ttl = max(1, ttl_seconds)
+
+    async def add(self, destination: str, now: float) -> None:
+        if self._redis is None:
+            return
+        try:
+            await self._redis.hset(self.KEY, destination, now + self._ttl)
+            logger.warning(
+                "Destination %r quarantined for writes until %.0f (undeclared coordination)",
+                destination,
+                now + self._ttl,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Cannot record quarantine for %r: %s", destination, exc)
+
+    async def renew(self, destination: str, now: float) -> None:
+        """Extend an existing quarantine. Never creates one."""
+        if self._redis is None:
+            return
+        try:
+            existing = await self._redis.hgetall(self.KEY)
+            if destination in existing:
+                await self._redis.hset(self.KEY, destination, now + self._ttl)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Cannot renew quarantine for %r: %s", destination, exc)
+
+    async def lift(self, destination: str) -> bool:
+        if self._redis is None:
+            return False
+        try:
+            return bool(await self._redis.hdel(self.KEY, destination))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Cannot lift quarantine for %r: %s", destination, exc)
+            return False
+
+    async def current(self, now: float) -> frozenset[str]:
+        """Destinations still quarantined. Empty when Redis is unavailable."""
+        if self._redis is None:
+            return frozenset()
+        try:
+            entries = await self._redis.hgetall(self.KEY)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Cannot read quarantine set: %s", exc)
+            return frozenset()
+        live: set[str] = set()
+        for destination, expiry in entries.items():
+            try:
+                if float(expiry) > now:
+                    live.add(str(destination))
+            except (TypeError, ValueError):
+                continue
+        return frozenset(live)
