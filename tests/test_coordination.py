@@ -1,5 +1,5 @@
 import pytest
-from _fakes import FakeRedis, FakeRedisHash
+from _fakes import FakeRedis, FakeRedisError, FakeRedisHash
 
 from admina.domains.agent_security.coordination import (
     CoordinationDetector,
@@ -439,3 +439,120 @@ class TestCoordinationDetector:
         )
         await d.observe("a9", _check(allowed=False), _ECHOED, now=1090.0)
         assert "wiki.corp" in await q.current(now=1150.0)
+
+    async def test_a_declared_destination_still_renews_an_existing_quarantine(self):
+        """Declaring a destination exempts it from being flagged, not from renewal.
+
+        Renewal must run unconditionally, before the declared check, so an
+        existing quarantine entry is never dropped merely because its
+        destination sits in the declared set. Checked strictly *after* the
+        original expiry (1100), since a check at or before that timestamp
+        cannot distinguish "renewed" from "simply hasn't expired yet".
+        """
+        r = FakeRedisHash()
+        q = QuarantineStore(r, ttl_seconds=100)
+        await q.add("queue.internal", now=1000.0)  # expires at 1100 unless renewed
+        d = CoordinationDetector(
+            fanin=FanInCounter(r, window_seconds=3600),
+            echo=EchoStore(r, ttl_seconds=7200),
+            quarantine=q,
+            declared=frozenset({"queue.internal"}),
+            min_agents=3,
+            fingerprint_key=b"k",
+        )
+        v = await d.observe("a1", _check(dest="queue.internal"), _ECHOED, now=1050.0)
+        assert v.status == "declared"
+        assert "queue.internal" in await q.current(now=1110.0)
+
+    async def test_a_confirmed_destination_does_not_starve_another_of_renewal(self):
+        """A destination processed after one that confirms must still be renewed.
+
+        Reproduces the multi-destination bug directly: the early ``return`` on
+        ``confirmed`` used to skip every destination named after the one that
+        confirmed, including its ``quarantine.renew()``. Checked strictly
+        *after* the pre-existing quarantine's original expiry (1100), since a
+        check at or before that timestamp cannot distinguish "renewed" from
+        "simply hasn't expired yet".
+        """
+        r = FakeRedisHash()
+        q = QuarantineStore(r, ttl_seconds=100)
+        await q.add("second.dest", now=1000.0)  # expires at 1100 unless renewed
+        d = CoordinationDetector(
+            fanin=FanInCounter(r, window_seconds=3600),
+            echo=EchoStore(r, ttl_seconds=7200),
+            quarantine=q,
+            declared=frozenset(),
+            min_agents=3,
+            fingerprint_key=b"k",
+        )
+        single = _check(dest="first.dest")
+        await d.observe("a1", single, _ECHOED, now=1000.0)
+        await d.observe("a2", single, "something else entirely here", now=1010.0)
+        both = {
+            "status": "resolved",
+            "destinations": ["first.dest", "second.dest"],
+            "write_shaped": True,
+            "allowed": True,
+        }
+        v = await d.observe("a3", both, _ECHOED, now=1020.0)
+        assert v.status == "confirmed"
+        assert v.destination == "first.dest"
+        assert "second.dest" in await q.current(now=1110.0)
+
+    async def test_a_suspected_destination_is_not_masked_by_a_declared_one(self):
+        """A later declared destination must not silently overwrite an earlier verdict."""
+        d = _detector(FakeRedisHash(), declared=frozenset({"declared.dest"}))
+        check = {
+            "status": "resolved",
+            "destinations": ["suspected.dest", "declared.dest"],
+            "write_shaped": True,
+            "allowed": True,
+        }
+        for agent in ("a1", "a2", "a3"):
+            v = await d.observe(agent, check, f"unrelated text for {agent} alone", now=1000.0)
+        assert v.status == "suspected"
+        assert v.destination == "suspected.dest"
+
+    async def test_a_degraded_destination_is_not_masked_by_a_healthy_one(self):
+        """A healthy destination that turns suspected must not mask a store outage.
+
+        ``healthy.dest`` must actually reach "suspected" within the same call
+        for this to reproduce anything: a healthy destination that stays
+        below the fan-in threshold never touches the verdict either way, so
+        it could not distinguish the old overwrite bug from the fix.
+        """
+
+        class _PartialFailRedis(FakeRedisHash):
+            """Fails fan-in operations for one destination only.
+
+            Simulates a Redis shard outage that affects a single destination
+            while the rest of the store stays healthy, so the two
+            destinations can be told apart in one observe() call.
+            """
+
+            def __init__(self, broken_destination):
+                super().__init__()
+                self._broken = broken_destination
+
+            async def scard(self, key):
+                if self._broken in key:
+                    raise FakeRedisError("redis down for this destination")
+                return await super().scard(key)
+
+            async def sadd(self, key, *values):
+                if self._broken in key:
+                    raise FakeRedisError("redis down for this destination")
+                return await super().sadd(key, *values)
+
+        r = _PartialFailRedis("broken.dest")
+        d = _detector(r)
+        check = {
+            "status": "resolved",
+            "destinations": ["broken.dest", "healthy.dest"],
+            "write_shaped": True,
+            "allowed": True,
+        }
+        for agent in ("a1", "a2", "a3"):
+            v = await d.observe(agent, check, f"unrelated text for {agent} alone", now=1000.0)
+        assert v.status == "degraded"
+        assert v.destination == "broken.dest"

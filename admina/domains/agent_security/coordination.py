@@ -323,6 +323,13 @@ class CoordinationVerdict:
     peer: str | None = None
 
 
+# Severity order for picking one verdict when a call names several
+# destinations (e.g. one tool call producing several URLs). A real detection
+# or a store outage must never be masked by a milder or merely-informational
+# result on another destination processed in the same call.
+_VERDICT_SEVERITY = {"none": 0, "declared": 1, "suspected": 2, "degraded": 3, "confirmed": 4}
+
+
 class CoordinationDetector:
     """Finds undeclared coordination and arms the quarantine set.
 
@@ -355,27 +362,38 @@ class CoordinationDetector:
     async def observe(
         self, agent_id: str, egress_check: dict, content_tail: str, now: float
     ) -> CoordinationVerdict:
-        """Record one governed call and report what it implies."""
+        """Record one governed call and report what it implies.
+
+        A call can name several destinations at once (one tool call can
+        produce several URLs). Every destination's side effects — renewal,
+        fan-in, echo, quarantine — run unconditionally: none is skipped
+        because an earlier destination in the same call already confirmed,
+        and none silently overwrites a stronger verdict already found on an
+        earlier destination. The verdict returned is the most severe one
+        seen across all of this call's destinations, not the last one
+        processed.
+        """
         destinations = [d for d in (egress_check.get("destinations") or []) if isinstance(d, str)]
         if not destinations:
             return CoordinationVerdict()
 
-        verdict = CoordinationVerdict()
+        best = CoordinationVerdict()
         for destination in destinations:
             # An attempt renews an existing quarantine even when the policy
-            # refused it: the block suppresses the successes that would
-            # otherwise be the renewal signal.
+            # refused it, and even when another destination in this same
+            # call already confirmed: either one suppresses the successes
+            # that would otherwise be the renewal signal.
             await self._quarantine.renew(destination, now)
 
             if destination in self._declared:
-                verdict = CoordinationVerdict(status="declared", destination=destination)
+                best = self._stronger(best, CoordinationVerdict("declared", destination))
                 continue
             if not egress_check.get("write_shaped") or not egress_check.get("allowed"):
                 continue
 
             count = await self._fanin.record(destination, agent_id, now)
             if count == 0:
-                verdict = CoordinationVerdict(status="degraded", destination=destination)
+                best = self._stronger(best, CoordinationVerdict("degraded", destination))
                 continue
 
             outbound = sketch(content_tail, self._key) if self._key else frozenset()
@@ -388,6 +406,18 @@ class CoordinationDetector:
                 continue
             if peer is not None:
                 await self._quarantine.add(destination, now)
-                return CoordinationVerdict("confirmed", destination, count, peer)
-            verdict = CoordinationVerdict("suspected", destination, count)
-        return verdict
+                best = self._stronger(
+                    best, CoordinationVerdict("confirmed", destination, count, peer)
+                )
+                continue
+            best = self._stronger(best, CoordinationVerdict("suspected", destination, count))
+        return best
+
+    @staticmethod
+    def _stronger(
+        current: CoordinationVerdict, candidate: CoordinationVerdict
+    ) -> CoordinationVerdict:
+        """Whichever of the two verdicts ranks higher in severity; ties keep `current`."""
+        if _VERDICT_SEVERITY[candidate.status] > _VERDICT_SEVERITY[current.status]:
+            return candidate
+        return current
