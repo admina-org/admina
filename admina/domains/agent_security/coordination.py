@@ -43,20 +43,29 @@ logger = logging.getLogger("admina.coordination")
 class EchoStore:
     """Outbound content sketches, matched against later inbound content.
 
-    Entries are ``<agent_id>:<timestamp>:<value>`` members in a per-destination
-    set. Storing the agent and the time inside the member is what lets the two
-    rules that give the verdict meaning be enforced at read time: a match
-    against the same agent is discarded, and the outbound sketch must predate
-    the inbound content.
+    Entries are ``<agent_id>:<timestamp>:<value>`` members in buckets per
+    destination and time window. Storing the agent and the time inside the
+    member is what lets the two rules that give the verdict meaning be
+    enforced at read time: a match against the same agent is discarded, and
+    the outbound sketch must predate the inbound content.
+
+    Each message is matched individually against the inbound sketch. This
+    prevents false positives where unrelated messages are pooled to meet the
+    MIN_SHARED_SHINGLES floor that guarantees containment of one coherent text.
     """
 
     def __init__(self, redis: Any, ttl_seconds: int, threshold: float = 0.4) -> None:
         self._redis = redis
-        self._ttl = max(1, ttl_seconds)
+        self._window = max(1, ttl_seconds)
         self._threshold = threshold
+        self._cap = 1024  # Members per bucket before clamping.
 
-    def _key(self, destination: str) -> str:
-        return f"admina:egress:echo:{destination}"
+    def _buckets(self, now: float) -> tuple[int, int]:
+        current = int(now // self._window)
+        return current, current - 1
+
+    def _key(self, destination: str, bucket: int) -> str:
+        return f"admina:egress:echo:{destination}:{bucket}"
 
     async def record_outbound(
         self, destination: str, agent_id: str, sketch_values: frozenset[int], now: float
@@ -64,10 +73,13 @@ class EchoStore:
         """Store one agent's outbound sketch. No-op without Redis or a sketch."""
         if self._redis is None or not sketch_values:
             return
-        key = self._key(destination)
+        current, _ = self._buckets(now)
+        key = self._key(destination, current)
         try:
-            await self._redis.sadd(key, *(f"{agent_id}:{now}:{v}" for v in sketch_values))
-            await self._redis.expire(key, self._ttl)
+            current_count = await self._redis.scard(key)
+            if current_count < self._cap:
+                await self._redis.sadd(key, *(f"{agent_id}:{now}:{v}" for v in sketch_values))
+            await self._redis.expire(key, self._window * 2)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Echo store unavailable, not recording outbound: %s", exc)
 
@@ -77,14 +89,19 @@ class EchoStore:
         """Return the other agent's id when inbound content echoes its output."""
         if self._redis is None or not inbound:
             return None
+        current, previous = self._buckets(now)
         try:
-            members = await self._redis.smembers(self._key(destination))
+            members_combined: set[str] = set()
+            for bucket in (current, previous):
+                members_combined |= set(await self._redis.smembers(self._key(destination, bucket)))
         except Exception as exc:  # noqa: BLE001
             logger.warning("Echo store unavailable, cannot confirm: %s", exc)
             return None
 
-        by_agent: dict[str, set[int]] = {}
-        for member in members:
+        # Group by (agent_id, timestamp) to keep messages separate.
+        # Each write is one coherent message; match each individually.
+        by_message: dict[tuple[str, float], set[int]] = {}
+        for member in members_combined:
             member_str = str(member)
             # Parse from the right to handle agent IDs containing colons.
             # agent_id:timestamp:value -> rsplit gives us three parts.
@@ -95,13 +112,14 @@ class EchoStore:
             if other == agent_id:
                 continue
             try:
-                if float(stamp) > now:
+                timestamp = float(stamp)
+                if timestamp > now:
                     continue
-                by_agent.setdefault(other, set()).add(int(value))
+                by_message.setdefault((other, timestamp), set()).add(int(value))
             except ValueError:
                 continue
 
-        for other, values in by_agent.items():
+        for (other, _), values in by_message.items():
             if matches(inbound, frozenset(values), self._threshold):
                 return other
         return None

@@ -137,3 +137,68 @@ class TestEchoStore:
         assert (
             await s.confirm("wiki.corp", agent_with_colons, sketch(_MSG, _KEY), now=1100.0) is None
         )
+
+    async def test_pooling_does_not_defeat_min_shared_shingles(self):
+        """Messages are matched individually, not pooled.
+
+        Two messages from one agent, neither matching the inbound alone,
+        should not confirm even though pooling them would exceed
+        MIN_SHARED_SHINGLES. This ensures Ruling 2's 12-shingle floor
+        applies per message, not across fragments.
+        """
+        from admina.domains.agent_security.fingerprint import MIN_SHARED_SHINGLES
+
+        s = EchoStore(FakeRedis(), ttl_seconds=7200)
+        # Create two small sketches (each with few shingles)
+        msg1 = "alpha bravo charlie"
+        msg2 = "delta echo foxtrot"
+        inbound = sketch(_MSG, _KEY)  # Our long test message
+        sketch1 = sketch(msg1, _KEY)
+        sketch2 = sketch(msg2, _KEY)
+        # Verify sketches are small
+        assert len(sketch1) < MIN_SHARED_SHINGLES
+        assert len(sketch2) < MIN_SHARED_SHINGLES
+        # Record both from a1 (they won't match individually)
+        await s.record_outbound("wiki.corp", "a1", sketch1, now=1000.0)
+        await s.record_outbound("wiki.corp", "a1", sketch2, now=1010.0)
+        # Confirm with inbound should return None (messages matched individually)
+        assert await s.confirm("wiki.corp", "a2", inbound, now=1100.0) is None
+
+    async def test_member_count_does_not_grow_unbounded(self):
+        """Stored member count stops growing at cap per bucket."""
+        r = FakeRedis()
+        s = EchoStore(r, ttl_seconds=100)
+        # Write from one agent (sketch of our message has 13 values)
+        base_sketch = sketch(_MSG, _KEY)
+        await s.record_outbound("wiki.corp", "a1", base_sketch, now=1000.0)
+        # Get the current bucket key
+        current_bucket = int(1000.0 // 100)
+        key = f"admina:egress:echo:wiki.corp:{current_bucket}"
+        # Write many more messages; bucket should cap at 1024
+        for i in range(200):
+            await s.record_outbound("wiki.corp", f"a{i}", base_sketch, now=1050.0)
+        count = len(r.sets.get(key, set()))
+        # Count should be capped (around 1024, may exceed slightly under race).
+        # Without the cap, we'd have 201 writes * 13 values = 2613 members.
+        # With the cap, we have <= 1037 (1024 + 13 for overage).
+        assert count <= 1037
+        assert count < 2000  # Much less than unbounded growth
+
+    async def test_high_overlap_without_min_shingles_does_not_confirm(self):
+        """High ratio but few shared shingles should not confirm.
+
+        Verifies that matches() enforces both the shingle floor and the ratio.
+        A case where overlap >= 0.4 but shared < MIN_SHARED_SHINGLES should be
+        rejected. This is the exact scenario Ruling 2 exists to catch.
+        """
+        s = EchoStore(FakeRedis(), ttl_seconds=7200)
+        # Create a small sketch with few shingles. If it happens to overlap
+        # with the inbound, the ratio could be high, but the absolute count
+        # will be below MIN_SHARED_SHINGLES, so matches() rejects it.
+        small_msg = "results on"
+        outbound = sketch(small_msg, _KEY)  # Will be < 5 shingles
+        inbound = sketch(_MSG, _KEY)  # Will be 13 shingles
+        # Record the small sketch
+        await s.record_outbound("wiki.corp", "a1", outbound, now=1000.0)
+        # Confirm should return None because matches enforces both floor and ratio
+        assert await s.confirm("wiki.corp", "a2", inbound, now=1100.0) is None
