@@ -50,6 +50,7 @@ __all__ = [
     "EchoStore",
     "FanInCounter",
     "QuarantineStore",
+    "common_sender_floor",
     "refresh_quarantine_once",
 ]
 
@@ -67,6 +68,28 @@ logger = logging.getLogger("admina.coordination")
 _CONFIRM_KEY_BATCH = 16
 
 
+def common_sender_floor(min_agents: int) -> int:
+    """Distinct senders that make a shingle a destination's ambient content.
+
+    One short of the fan-in threshold, and it cannot be more. The first call
+    that can confirm anything is the one that brings a destination to
+    ``min_agents`` distinct agents, so a constant every agent carries has
+    exactly ``min_agents - 1`` other senders behind it at that moment. A
+    floor above that lets the fleet's constant through on the call that
+    crosses the threshold, which is the one call an identity-keyed rule
+    cannot cover either.
+
+    The consequence in the other direction is stated in the model card: text
+    that this many agents have already sent stops being matchable, so a
+    channel that reaches that many agents *below* the fan-in threshold — in
+    the free window the detector is documented to have — is not confirmed
+    afterwards on that text. At the floor of ``min_agents = 2`` there is no
+    room between "one peer sent it" and "the fleet sends it", and the rule
+    can only be the minimum, 2.
+    """
+    return max(2, min_agents - 1)
+
+
 class EchoStore:
     """Outbound content sketches, matched against later inbound content.
 
@@ -82,6 +105,15 @@ class EchoStore:
     match is one coherent run of text is trivially met by pooling texts that
     were never together — two unrelated messages, or a header block, a
     content type and a bearer token that every agent in a fleet sends.
+
+    Text that many of a destination's agents send is discounted before
+    anything is matched. Whatever a fleet attaches to its calls by
+    construction — a runtime's header block, a tool's instruction preamble, a
+    signature — is not evidence that one agent read another's message, and
+    the only thing that separates it from a quotation is how widely it
+    recurs. Counting senders rather than calls is what keeps this from
+    becoming an evasion: an agent cannot make its own message ubiquitous by
+    repeating it.
 
     The storage budget is per agent, not per destination. A single set per
     destination is a resource every agent writing there shares, so whichever
@@ -111,6 +143,7 @@ class EchoStore:
         threshold: float = 0.4,
         cap: int = 2 * SKETCH_SIZE,
         agent_cap: int = 256,
+        common_min_agents: int = 4,
     ) -> None:
         self._redis = redis
         self._window = max(1, ttl_seconds)
@@ -119,10 +152,18 @@ class EchoStore:
         # one call always fits after the eviction in record_outbound, so the
         # message an agent just sent is always the one that is kept.
         self._cap = cap
-        # Agents indexed per destination per bucket. Bounds both the fan-out
-        # of confirm()'s union and the total memory a destination can hold,
-        # which is agent_cap x cap values.
+        # Agents indexed per destination per bucket. Bounds the fan-out of
+        # confirm()'s union, and — because an agent evicted from the index
+        # has its sketches deleted with it — the total memory a destination
+        # can hold, which is agent_cap x cap values.
         self._agent_cap = agent_cap
+        # Distinct senders that make a shingle this destination's ambient
+        # content rather than one agent's message. The default is one short
+        # of the shipped fanin.min_agents, which is the most the rule can ask
+        # for and still see the boilerplate before the first confirmation:
+        # the call that first crosses the fan-in threshold is the Nth agent,
+        # so the constant it carries has at most N-1 other senders behind it.
+        self._common_min = max(2, common_min_agents)
 
     @staticmethod
     def _callid(sketches: Sequence[frozenset[int]]) -> str:
@@ -142,7 +183,7 @@ class EchoStore:
         # Cannot collide with a _key(): that one ends in an integer bucket.
         return f"admina:egress:echo:{destination}:{bucket}:agents"
 
-    async def _register(self, index_key: str, agent_id: str) -> bool:
+    async def _register(self, destination: str, bucket: int, agent_id: str) -> bool:
         """Index the agent against the bucket. True when the index was full.
 
         ``agent_id`` is whatever the caller put in the ``X-Agent-Id`` header,
@@ -155,10 +196,21 @@ class EchoStore:
         sketches are no longer readable — which is why the caller reports the
         destination as `degraded` rather than as "no echo found" while it
         lasts.
+
+        The evicted agent's sketches are deleted with its index entry. The
+        index is what confirm() reads the keys back through, so an evicted
+        agent's key is unreachable from the moment it leaves: leaving it to
+        expire on its own would hold two to four hours of sketches nothing
+        can ever read, once per identifier, on a keyspace an unauthenticated
+        header names. Deleting it is what keeps the destination's footprint
+        bounded by agent_cap rather than by the number of ids that arrive.
         """
+        index_key = self._index_key(destination, bucket)
         saturated = await self._redis.scard(index_key) >= self._agent_cap
         if saturated and not await self._redis.sismember(index_key, agent_id):
-            await self._redis.spop(index_key)
+            evicted = await self._redis.spop(index_key)
+            if evicted is not None:
+                await self._redis.delete(self._key(destination, str(evicted), bucket))
             logger.warning(
                 "Echo store index for %r is full at %d agents; evicting one to record %r. "
                 "Agent ids come from a caller-supplied header, so a flood of forged ids "
@@ -221,10 +273,9 @@ class EchoStore:
             return False
         current, _ = self._buckets(now)
         key = self._key(destination, agent_id, current)
-        index_key = self._index_key(destination, current)
         callid = self._callid(sketches)
         try:
-            saturated = await self._register(index_key, agent_id)
+            saturated = await self._register(destination, current, agent_id)
             stored = await self._redis.scard(key)
             if self._cap - stored < total:
                 await self._redis.delete(key)
@@ -300,6 +351,25 @@ class EchoStore:
                 continue
         return frozenset(values)
 
+    def _batches(self, peers: dict[str, list[str]]) -> list[list[str]]:
+        """Group the peers' keys into batches that never split an agent.
+
+        Batching bounds the uninterrupted stretch of synchronous parsing
+        between two yields of the event loop. Whole agents per batch is what
+        makes the sender count below exact: an agent has one key per bucket,
+        and a sender counted in two batches would count twice.
+        """
+        batches: list[list[str]] = []
+        batch: list[str] = []
+        for keys in peers.values():
+            if batch and len(batch) + len(keys) > _CONFIRM_KEY_BATCH:
+                batches.append(batch)
+                batch = []
+            batch.extend(keys)
+        if batch:
+            batches.append(batch)
+        return batches
+
     async def confirm(
         self,
         destination: str,
@@ -307,46 +377,84 @@ class EchoStore:
         inbound: Sequence[frozenset[int]],
         now: float,
     ) -> str | None:
-        """Return the other agent's id when inbound content echoes its output."""
+        """Return the other agent's id when inbound content echoes its output.
+
+        Runs in two passes over the destination's stored sketches. The first
+        counts, for each shingle the inbound call carries, how many distinct
+        other agents have already sent it here; the second matches, with
+        every shingle that reached :attr:`_common_min` senders removed from
+        both sides. Text that much of a destination's traffic carries is
+        that destination's ambient content — a runtime's header block, a
+        tool's instruction preamble, a footer — and a call that shares only
+        ambient content with a peer has not quoted the peer.
+
+        Measuring ubiquity rather than authorship is what makes this hold
+        when agent ids rotate. A rule that discounts what the *reader* has
+        sent before assumes an id is reused; a caller that presents a fresh
+        id per call has no history to discount, and a fleet-wide constant
+        then confirms on every call. Rotation cannot hide a constant from
+        this rule — it makes it commoner. What rotation can do is the
+        reverse, and it is stated in the model card: a caller that sends the
+        same text under _common_min forged ids makes that text ambient and
+        unmatchable, which no rule keyed on an unauthenticated header can
+        prevent.
+        """
         if self._redis is None or not inbound:
             return None
         current, previous = self._buckets(now)
         own_keys = [self._key(destination, agent_id, bucket) for bucket in (current, previous)]
         try:
-            peer_keys: list[str] = []
+            peers: dict[str, list[str]] = {}
             for bucket in (current, previous):
                 indexed = await self._redis.smembers(self._index_key(destination, bucket))
-                peer_keys.extend(
-                    self._key(destination, str(other), bucket)
-                    for other in indexed
-                    if str(other) != agent_id
-                )
+                for other in indexed:
+                    if str(other) != agent_id:
+                        peers.setdefault(str(other), []).append(
+                            self._key(destination, str(other), bucket)
+                        )
             own = await self._own_shingles(own_keys)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Echo store unavailable, cannot confirm: %s", exc)
             return None
 
         probe = [field - own for field in inbound]
-        probe = [field for field in probe if len(field) >= MIN_SHARED_SHINGLES]
-        if not probe:
+        probe_union = frozenset().union(*probe) if probe else frozenset()
+        if len(probe_union) < MIN_SHARED_SHINGLES:
             return None
 
-        for start in range(0, len(peer_keys), _CONFIRM_KEY_BATCH):
-            batch = peer_keys[start : start + _CONFIRM_KEY_BATCH]
+        senders: dict[int, int] = {}
+        # Only calls that could still reach the floor are kept for the second
+        # pass: the discount removes shingles and never adds any, so a call
+        # sharing too little now can never share enough later.
+        candidates: list[tuple[str, list[frozenset[int]]]] = []
+        for batch in self._batches(peers):
             try:
                 members = await self._redis.sunion(*batch)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Echo store unavailable, cannot confirm: %s", exc)
                 return None
             calls: dict[tuple[str, str], list[frozenset[int]]] = {}
+            seen: dict[str, set[int]] = {}
             for (other, callid, _), values in self._parse(members, agent_id, now).items():
                 calls.setdefault((other, callid), []).append(frozenset(values))
+                seen.setdefault(other, set()).update(probe_union & values)
+            for shared in seen.values():
+                for value in shared:
+                    senders[value] = senders.get(value, 0) + 1
             for (other, _), fields in calls.items():
-                if matches(probe, fields, self._threshold):
-                    return other
+                if len(probe_union & frozenset().union(*fields)) >= MIN_SHARED_SHINGLES:
+                    candidates.append((other, fields))
             # Hand the loop back between batches: this coroutine runs on the
             # proxy's own event loop and the parsing above is synchronous.
             await asyncio.sleep(0)
+
+        common = frozenset(value for value, count in senders.items() if count >= self._common_min)
+        live = [field - common for field in probe]
+        if len(frozenset().union(*live)) < MIN_SHARED_SHINGLES:
+            return None
+        for other, fields in candidates:
+            if matches(live, [field - common for field in fields], self._threshold):
+                return other
         return None
 
 
@@ -655,19 +763,7 @@ class CoordinationDetector:
                 best = self._stronger(best, CoordinationVerdict("degraded", destination))
                 continue
 
-            # A field whose sketch cannot reach the shingle floor on its own
-            # can never contribute to a match, so dropping it loses nothing
-            # and keeps short constants — a bearer token, a content type —
-            # out of the store entirely.
-            outbound = (
-                [
-                    values
-                    for values in (sketch(text, self._key) for text in texts)
-                    if len(values) >= MIN_SHARED_SHINGLES
-                ]
-                if self._key
-                else []
-            )
+            outbound = self._fingerprint(texts) if self._key else []
             peer = None
             if self._key and count >= self._min_agents:
                 peer = await self._echo.confirm(destination, agent_id, outbound, now)
@@ -690,6 +786,31 @@ class CoordinationDetector:
                 continue
             best = self._stronger(best, CoordinationVerdict("suspected", destination, count))
         return best
+
+    def _fingerprint(self, texts: Sequence[str]) -> list[frozenset[int]]:
+        """Sketch the fields of one call, dropping what cannot be evidence.
+
+        A field long enough to hold a quoted run is kept on its own. When no
+        field reaches the floor the fields are kept together instead, if the
+        call holds enough shingles between them: a tool that splits its
+        message over a title and a body — an issue, an email, a wiki page —
+        carries a quotation no single argument is long enough to carry, and
+        two agents making the same such call are the plainest coordination
+        signal there is. What those fields can then match is only the
+        near-duplicate case (see fingerprint.matches), so keeping them
+        does not let short constants add up to a match.
+
+        A short field beside a long one is still dropped, which is what
+        keeps a bearer token or a content type out of the store: beside a
+        message, a token is not what the call is about.
+        """
+        sketches = [values for values in (sketch(text, self._key) for text in texts) if values]
+        whole = [values for values in sketches if len(values) >= MIN_SHARED_SHINGLES]
+        if whole:
+            return whole
+        if sum(len(values) for values in sketches) >= MIN_SHARED_SHINGLES:
+            return sketches
+        return []
 
     @staticmethod
     def _stronger(

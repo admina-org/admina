@@ -148,6 +148,32 @@ class TestContainment:
         assert overlap(a, b) < 0.4
         assert matches([a], [b]) is False
 
+    def test_fields_add_up_only_when_the_two_calls_are_copies(self):
+        """The floor may be met across fields, and only at the copy ratio.
+
+        Two short arguments can hold a quoted run that neither is long
+        enough to hold alone — an issue title and body, an email subject and
+        body. Adding their shares up at the ordinary 0.4 ratio would confirm
+        any fleet that spreads a template over two arguments, so what buys
+        the recall is the near-duplicate ratio: practically all of both
+        payloads has to be the shared text.
+        """
+        head = sketch(" ".join(f"h{i}" for i in range(14)), _KEY)
+        tail = sketch(" ".join(f"t{i}" for i in range(14)), _KEY)
+        assert len(head) < MIN_SHARED_SHINGLES and len(tail) < MIN_SHARED_SHINGLES
+        assert len(head) + len(tail) >= MIN_SHARED_SHINGLES
+        assert matches([head, tail], [head, tail]) is True, "the same call, twice"
+
+        mine = sketch(" ".join(f"m{i}" for i in range(20)), _KEY)
+        yours = sketch(" ".join(f"y{i}" for i in range(20)), _KEY)
+        a, b = [head, tail, mine], [head, tail, yours]
+        shared = frozenset().union(*a) & frozenset().union(*b)
+        assert len(shared) >= MIN_SHARED_SHINGLES, "the floor is not what rejects this pair"
+        assert 0.4 <= overlap(frozenset().union(*a), frozenset().union(*b)) < 0.9, (
+            "nor is the 0.4 threshold"
+        )
+        assert matches(a, b) is False, "two calls sharing a template are not copies"
+
     def test_the_threshold_argument_is_what_rejects_it(self):
         """Names the condition under test, so the pair above cannot be read
         as a second test of the shingle floor."""

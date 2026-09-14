@@ -387,6 +387,93 @@ class TestEchoStore:
         # message, which a2 never sent, still confirms.
         assert await s.confirm("wiki.corp", "a2", [a1_message], now=1020.0) == "a1"
 
+    async def test_text_many_agents_have_sent_is_not_evidence(self):
+        """The discount that does not assume an agent id is stable.
+
+        An agent's own history can only recognise a fleet-wide constant when
+        the agent has a history — when its id is reused. Ubiquity needs no
+        id at all: text that as many agents send as it takes to trigger the
+        fan-in count is what the destination carries, not what one agent
+        read from another.
+        """
+        constant = sketch(_filler("const", words=40), _KEY)
+        s = EchoStore(FakeRedis(), ttl_seconds=7200, common_min_agents=4)
+        for i in range(4):
+            await s.record_outbound(
+                "wiki.corp", f"a{i}", [constant, sketch(_filler(f"m{i}"), _KEY)], now=1000.0 + i
+            )
+        # A reader with no history of its own: nothing to discount by author.
+        assert (
+            await s.confirm(
+                "wiki.corp", "fresh", [constant, sketch(_filler("own"), _KEY)], now=1100.0
+            )
+            is None
+        )
+        # The discount is of the constant, not of the echo phase: one agent's
+        # own message, which only that agent sent, is still evidence.
+        assert (
+            await s.confirm("wiki.corp", "fresh", [sketch(_filler("m0"), _KEY)], now=1100.0) == "a0"
+        )
+
+    async def test_three_senders_are_not_yet_enough_to_make_text_common(self):
+        """Pins the count, not merely that some discount exists.
+
+        Below the floor the same constant is still matchable, so a test that
+        only shows text going quiet cannot tell a working floor from one set
+        to zero.
+        """
+        constant = sketch(_filler("const", words=40), _KEY)
+        s = EchoStore(FakeRedis(), ttl_seconds=7200, common_min_agents=4)
+        for i in range(3):
+            await s.record_outbound(
+                "wiki.corp", f"a{i}", [constant, sketch(_filler(f"m{i}"), _KEY)], now=1000.0 + i
+            )
+        assert (
+            await s.confirm(
+                "wiki.corp", "fresh", [constant, sketch(_filler("own"), _KEY)], now=1100.0
+            )
+            is not None
+        )
+
+    async def test_one_agent_repeating_text_does_not_make_it_common(self):
+        """Senders are counted, never calls.
+
+        Counting calls would hand every agent the evasion the store is
+        bounded to prevent: send the message a few times and it becomes part
+        of the destination's furniture, after which no peer quoting it can
+        ever be confirmed.
+        """
+        repeated = sketch(_filler("repeated", words=40), _KEY)
+        s = EchoStore(FakeRedis(), ttl_seconds=7200, common_min_agents=4)
+        for i in range(6):
+            await s.record_outbound(
+                "wiki.corp", "a1", [repeated, sketch(_filler(f"n{i}"), _KEY)], now=1000.0 + i
+            )
+        assert await s.confirm("wiki.corp", "a2", [repeated], now=1100.0) == "a1"
+
+    async def test_an_evicted_agents_sketches_go_with_its_index_entry(self):
+        """The index is what the keys are read back through.
+
+        An agent evicted from it is unreachable, so its sketches are two to
+        four hours of storage nothing can ever read — bought with one forged
+        header value, once per id. Deleting them with the index entry is what
+        keeps a destination's footprint bounded by agent_cap instead of by
+        the number of ids that arrive.
+        """
+        r = FakeRedis()
+        s = EchoStore(r, ttl_seconds=7200, agent_cap=2)
+        for i in range(12):
+            await s.record_outbound(
+                "wiki.corp", f"forged-{i}", [sketch(_filler(f"m{i}"), _KEY)], now=1000.0
+            )
+        prefix = "admina:egress:echo:wiki.corp:"
+        keys = [k for k in r.sets if k.startswith(prefix) and not k.endswith(":agents")]
+        assert len(keys) == 2, f"12 ids left {len(keys)} keys behind a 2-agent index: {keys}"
+        # Bounded, not blinded: the agents still indexed remain matchable.
+        assert await s.confirm(
+            "wiki.corp", "reader", [sketch(_filler("m11"), _KEY)], now=1010.0
+        ) == ("forged-11")
+
     async def test_a_peers_repeated_text_is_not_discounted(self):
         """Only the reader's own history is discounted, never the peer's.
 
@@ -486,6 +573,25 @@ class TestEchoStore:
         # Confirm should return None because matches enforces both floor and ratio.
         result = await s.confirm("wiki.corp", "a2", [inbound], now=1100.0)
         assert result is None, f"Expected None (matches enforces floor), got {result}"
+
+
+class TestCommonSenderFloor:
+    def test_it_follows_the_fan_in_threshold(self):
+        """One short of it, because the call that first crosses the threshold
+        is the Nth agent: a constant every agent carries has N-1 other
+        senders behind it at exactly that moment, and a higher floor lets it
+        through on the one call no identity-keyed rule covers either."""
+        from admina.domains.agent_security.coordination import common_sender_floor
+
+        assert [common_sender_floor(n) for n in (5, 8, 20)] == [4, 7, 19]
+
+    def test_it_never_drops_below_two_senders(self):
+        """One sender is a peer with a message, which is the thing being
+        detected. At min_agents=2 the rule has no room and takes the
+        minimum."""
+        from admina.domains.agent_security.coordination import common_sender_floor
+
+        assert [common_sender_floor(n) for n in (2, 1, 0, -3)] == [2, 2, 2, 2]
 
 
 @pytest.mark.anyio
@@ -741,6 +847,134 @@ class TestCoordinationDetector:
         v = await d.observe("a2", _check(), _ECHOED, now=1020.0)
         assert v.status == "confirmed"
         assert v.peer == "a1"
+
+    async def test_a_fleet_constant_does_not_confirm_when_every_id_is_new(self):
+        """The case the self-discount cannot reach.
+
+        `X-Agent-Id` is caller-supplied, and a runtime that mints one per
+        session makes every call a first call — so the reader never has a
+        history to discount its own boilerplate by. Six ids, six different
+        messages, one constant argument that outweighs them: what has to
+        stop this is the constant's ubiquity, which id rotation raises
+        rather than hides.
+        """
+        constant = _filler("preamble", words=60)
+        d = _detector(FakeRedisHash(), min_agents=5)
+        statuses = []
+        for i in range(8):
+            v = await d.observe(
+                f"session-{i}-{i * 7919}", _check(), [constant, _filler(f"body{i}")], now=1000.0 + i
+            )
+            statuses.append(v.status)
+        assert "confirmed" not in statuses, statuses
+        assert statuses[-1] == "suspected", f"the fan-in trigger must still fire: {statuses}"
+
+    async def test_a_channel_every_agent_joins_is_not_confirmed(self):
+        """A recall cost, pinned so that moving it is a decision and not an accident.
+
+        "The agents that brought this destination to the fan-in threshold have
+        all sent this exact text" describes a fleet's instruction preamble and
+        a channel every agent has joined equally well; the two are the same
+        observation, and no rule that suppresses one can spare the other. The
+        floor is set to suppress, because the alternative confirms a fleet
+        constant once per destination per window on ordinary traffic. What is
+        still confirmed is any channel narrower than that — the call below
+        pins the boundary from both sides.
+        """
+        quote = _filler("quote", words=30)
+        d = _detector(FakeRedisHash(), min_agents=5)
+        joined = [
+            (await d.observe(f"agent-{i}", _check(), quote, now=1000.0 + i)).status
+            for i in range(8)
+        ]
+        assert "confirmed" not in joined, f"the floor moved: {joined}"
+        assert joined[-1] == "suspected", joined
+
+        # Two of five agents, the other three sending their own content: the
+        # same text, a narrower channel, still confirmed.
+        d = _detector(FakeRedisHash(), min_agents=5)
+        for i in range(3):
+            await d.observe(f"agent-{i}", _check(), _filler(f"own{i}"), now=1000.0 + i)
+        await d.observe("agent-3", _check(), quote, now=1010.0)
+        v = await d.observe("agent-4", _check(), quote, now=1020.0)
+        assert v.status == "confirmed", v.status
+        assert v.peer == "agent-3"
+
+    async def test_two_agents_making_the_identical_call_are_confirmed(self):
+        """The plainest coordination signal there is.
+
+        A tool that splits its message over a title and a body — an issue, an
+        email, a wiki page — can carry a quoted run that no single argument
+        is long enough to carry. Two agents posting the byte-identical call
+        is what a channel looks like when it is not even paraphrasing.
+        """
+        from admina.domains.agent_security.fingerprint import MIN_SHARED_SHINGLES
+
+        head, tail = _filler("head", words=14), _filler("tail", words=14)
+        assert len(sketch(head, _KEY)) < MIN_SHARED_SHINGLES, "no field reaches the floor alone"
+        assert len(sketch(tail, _KEY)) < MIN_SHARED_SHINGLES
+        r = FakeRedisHash()
+        d = _detector(r, min_agents=3)
+        await d.observe("a1", _check(), _filler("unrelated"), now=1000.0)
+        await d.observe("a2", _check(), [head, tail], now=1010.0)
+        v = await d.observe("a3", _check(), [head, tail], now=1020.0)
+        assert v.status == "confirmed", v.status
+        assert v.peer == "a2"
+
+    async def test_a_quote_split_across_two_fields_is_confirmed(self):
+        """The same run, whole on one side and split on the other.
+
+        Splitting a quotation over two arguments loses only the shingles
+        that spanned the split, so the two calls are still copies of each
+        other; requiring the floor inside one pair of fields made this
+        invisible in every direction.
+        """
+        head, tail = _filler("head", words=14), _filler("tail", words=14)
+        whole = f"{head} {tail}"
+        d = _detector(FakeRedisHash(), min_agents=3)
+        await d.observe("a1", _check(), _filler("unrelated"), now=1000.0)
+        await d.observe("a2", _check(), whole, now=1010.0)
+        v = await d.observe("a3", _check(), [head, tail], now=1020.0)
+        assert v.status == "confirmed", v.status
+        assert v.peer == "a2"
+
+    async def test_a_run_that_exists_only_across_a_field_boundary_is_not_a_match(self):
+        """What "never joined" has to mean now that fields are counted together.
+
+        The false positive that started this: four constant header values,
+        none of them a message, concatenated into sixteen consecutive words
+        every agent in a fleet sends. The shingles that run is made of exist
+        in neither field, so the fix is that the text is never concatenated —
+        not that the fields are kept in separate accounts.
+        """
+        from admina.domains.agent_security.egress import payload_fields
+        from admina.domains.agent_security.fingerprint import MIN_SHARED_SHINGLES, overlap
+
+        run_head = " ".join(f"hdr{i}" for i in range(8))
+        run_tail = " ".join(f"trc{i}" for i in range(8))
+
+        def params(tag):
+            return {
+                "name": "post_note",
+                "arguments": {
+                    "url": "https://wiki.corp/notes",
+                    "title": f"{_filler(tag, words=4)} {run_head}",
+                    "body": f"{run_tail} {_filler(tag + 'z', words=4)}",
+                },
+            }
+
+        a_fields, b_fields = payload_fields(params("a")), payload_fields(params("b"))
+        assert len(a_fields) == len(b_fields) == 2, (a_fields, b_fields)
+        joined_a, joined_b = sketch(" ".join(a_fields), _KEY), sketch(" ".join(b_fields), _KEY)
+        assert len(joined_a & joined_b) >= MIN_SHARED_SHINGLES, (
+            "concatenated, the two calls share a run long enough to confirm"
+        )
+        assert overlap(joined_a, joined_b) >= 0.4, "and it is not the ratio that would stop it"
+
+        d = _detector(FakeRedisHash(), min_agents=2)
+        await d.observe("a1", _check(), a_fields, now=1000.0)
+        v = await d.observe("a2", _check(), b_fields, now=1010.0)
+        assert v.status == "suspected", v.status
 
     async def test_a_declared_destination_is_never_flagged(self):
         """Designed and emergent coordination look identical; only this separates them."""

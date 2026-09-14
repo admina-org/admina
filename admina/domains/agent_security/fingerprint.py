@@ -43,6 +43,7 @@ __all__ = [
     "SHINGLE_WORDS",
     "SKETCH_SIZE",
     "MIN_SHARED_SHINGLES",
+    "NEAR_DUPLICATE",
     "load_fingerprint_key",
     "overlap",
     "sketch",
@@ -61,6 +62,17 @@ SKETCH_SIZE = 512
 # Shared shingles required to match. Szymkiewicz–Simpson overlap alone allows
 # false positives on boilerplate phrases; intersection size discriminates.
 MIN_SHARED_SHINGLES = 12
+
+# Containment at which two payloads stop being "similar" and become copies of
+# each other. A tool call that carries its message in several short arguments —
+# an issue title and body, an email subject and body — can hold a quoted run
+# that no single argument is long enough to carry on its own, so the run clears
+# the floor only when the arguments are counted together. Counting them
+# together is safe at this ratio and not at 0.4: at 0.9 practically all of the
+# smaller payload is the shared text, which is what one agent reposting
+# another's call looks like, while a template two calls share beside their own
+# content is a fraction of each.
+NEAR_DUPLICATE = 0.9
 
 _WORD_RX = re.compile(r"[A-Za-z0-9_]+")
 
@@ -133,25 +145,43 @@ def matches(
 
     Each argument is the sketches of one payload's *fields*, one entry per
     field, because a tool call carries several strings and they are not one
-    text. Returns True only if both:
+    text. The fields are never concatenated, here or anywhere upstream: a
+    shingle spans five words of one field, so no shared shingle is ever an
+    artefact of two constants sitting next to each other.
 
-    - a single pair of fields, one from each side, shares at least
-      MIN_SHARED_SHINGLES hashes — one coherent run of shared text, never a
-      union of separate fields, because short constants concatenated reach
-      the floor without any one of them being a message;
+    Returns True only if all of:
+
+    - the two payloads share at least MIN_SHARED_SHINGLES hashes in total;
     - the two payloads overlap by at least *threshold*: how much of the
       smaller of the two the shared text accounts for, measured over
-      everything each call carried.
+      everything each call carried;
+    - and the shared text is either one coherent run — a single pair of
+      fields, one from each side, meeting the floor by itself — or so much
+      of both payloads (NEAR_DUPLICATE) that the two calls are copies of
+      each other rather than two calls with something in common.
 
-    Both conditions are necessary, and each answers a different way of
-    faking an echo. Containment alone fires on boilerplate phrases, which
-    the per-field floor discriminates. The floor alone lets one short
-    constant field that every agent in a fleet sends — a header, a template,
-    a signature — match at 1.0, which containment over the whole payload
-    dilutes in proportion to how much real message surrounds it.
+    Each condition answers a different way of faking an echo. Containment
+    alone fires on boilerplate phrases, which the floor discriminates. The
+    floor alone lets one constant field that every agent in a fleet sends —
+    a header, a template, a signature — match at 1.0, which containment over
+    the whole payload dilutes in proportion to how much real message
+    surrounds it. And a floor met by adding up several short shares, at
+    ordinary containment, is met by any fleet that spreads its template over
+    several arguments — which is why adding them up needs the near-duplicate
+    ratio, where there is no room left for a message beside the template.
+
+    None of this can tell a fleet-wide constant from a quotation on its own;
+    that needs more than one call to look at, and is EchoStore.confirm()'s
+    job.
     """
     union_a = frozenset().union(*a_fields) if a_fields else frozenset()
     union_b = frozenset().union(*b_fields) if b_fields else frozenset()
-    if overlap(union_a, union_b) < threshold:
+    shared = union_a & union_b
+    if len(shared) < MIN_SHARED_SHINGLES:
         return False
-    return any(len(a & b) >= MIN_SHARED_SHINGLES for a in a_fields for b in b_fields)
+    containment = overlap(union_a, union_b)
+    if containment < threshold:
+        return False
+    if any(len(a & b) >= MIN_SHARED_SHINGLES for a in a_fields for b in b_fields):
+        return True
+    return containment >= NEAR_DUPLICATE

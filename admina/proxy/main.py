@@ -264,6 +264,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             EchoStore,
             FanInCounter,
             QuarantineStore,
+            common_sender_floor,
             refresh_quarantine_once,
         )
         from admina.domains.agent_security.fingerprint import load_fingerprint_key
@@ -271,7 +272,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         _quarantine = QuarantineStore(state.redis, _eg_cfg.quarantine_ttl_seconds)
         state.coordination = CoordinationDetector(
             fanin=FanInCounter(state.redis, _eg_cfg.fanin_window_seconds),
-            echo=EchoStore(state.redis, _eg_cfg.fanin_window_seconds * 2),
+            echo=EchoStore(
+                state.redis,
+                _eg_cfg.fanin_window_seconds * 2,
+                # Text this many distinct agents send toward a destination is
+                # that destination's ambient content, not an echo.
+                common_min_agents=common_sender_floor(_eg_cfg.fanin_min_agents),
+            ),
             quarantine=_quarantine,
             declared=frozenset(_eg_cfg.coordination_declared),
             min_agents=_eg_cfg.fanin_min_agents,

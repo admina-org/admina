@@ -435,6 +435,35 @@ def _nested_webhook(msg):
     }
 
 
+# One argument the fleet sends unchanged, long enough to clear the shingle
+# floor on its own and to outweigh the bodies beside it: an instruction
+# preamble a tool carries as its own argument. This is the shape in which a
+# constant is indistinguishable from a quotation within a single call.
+_INSTRUCTION_PREAMBLE = (
+    "You are an operations assistant acting on behalf of the platform engineering "
+    "organisation. Before writing anything to the shared wiki confirm that the page you are "
+    "appending to is the correct daily operations log for the current rotation, that the "
+    "summary does not contain customer identifiers of any kind, and that every figure you "
+    "quote was taken from the reporting warehouse rather than from a cached dashboard. Write "
+    "in the past tense, keep each entry to a single paragraph, and never include credentials, "
+    "internal hostnames or ticket links in the body of the entry. If the rotation has closed "
+    "for the day, append to the next rotation instead and note the delay at the start of the "
+    "entry."
+)
+
+
+def _preamble_tool(msg):
+    return {
+        "name": "wiki_append",
+        "arguments": {
+            "url": "https://wiki.corp/rest/api/content/44182/child/page",
+            "space_key": "ENGINEERING",
+            "instructions": _INSTRUCTION_PREAMBLE,
+            "content": msg,
+        },
+    }
+
+
 def _credentialed_call(msg):
     """Two payload values and nothing else: the token and the message."""
     return {
@@ -531,6 +560,50 @@ class TestOrdinaryTrafficThroughOneToolIsNotAnEcho:
         detector, _host, _redis = _run_shape(monkeypatch, "http_request", shorts)
         statuses = [v.status for v in detector.verdicts]
         assert "confirmed" not in statuses, statuses
+
+    @pytest.mark.parametrize(
+        ("label", "agent_ids"),
+        [
+            ("rotating", [f"session-{i}-{i * 7919}" for i in range(8)]),
+            ("stable", [f"agent-{i % 5}" for i in range(8)]),
+        ],
+    )
+    def test_a_constant_preamble_is_not_an_echo_however_ids_are_minted(
+        self, label, agent_ids, monkeypatch
+    ):
+        """One tool argument the whole fleet sends unchanged, eight calls.
+
+        `X-Agent-Id` is caller-supplied and unauthenticated, and a runtime
+        that mints one per session is an ordinary deployment, not an attack.
+        Every call is then a first call, so a rule that discounts what the
+        *reader* has sent before has nothing to work with and the constant
+        confirms on call after call, each one arming a fleet-wide write
+        quarantine. Both ways of minting the header are pinned here: fixing
+        the rotating case by blinding the stable one would not be a fix.
+        """
+        redis = FakeRedisHash()
+        detector = _real_detector(redis, min_agents=5)
+        bodies = [
+            "billing ledger migration finished at noon with three orphaned invoices reissued",
+            "quarterly headcount planning is blocked until finance publishes the opex envelope",
+            "exported csv files opened with mojibake in excel until the exporter wrote a bom",
+            "load testing on the search cluster peaked at eleven thousand queries per second",
+            "design review concluded the progress indicator confuses users who skip steps",
+            "the storage quota increase for the indexer landed and the pause has been lifted",
+            "the nightly reconciliation job now writes its summary to the warehouse instead",
+            "two shards were rebalanced after the retention change and the lag has cleared",
+        ]
+        calls = [
+            (agent, _jsonrpc(_preamble_tool(body)))
+            for agent, body in zip(agent_ids, bodies, strict=True)
+        ]
+        responses, _ = _drive_governed_calls(monkeypatch, detector, calls, allow=["wiki.corp"])
+        assert [r.status_code for r in responses] == [200] * len(calls)
+        statuses = [v.status for v in detector.verdicts]
+        assert "confirmed" not in statuses, f"{label} ids: a fleet constant confirmed: {statuses}"
+        assert statuses[-1] == "suspected", (
+            f"{label} ids: the fan-in trigger must still fire, got {statuses}"
+        )
 
     def test_a_credential_value_is_never_fingerprinted(self, monkeypatch):
         """A security control should not be drawing bearer tokens into its
