@@ -1,7 +1,12 @@
 import pytest
 from _fakes import FakeRedis, FakeRedisHash
 
-from admina.domains.agent_security.coordination import EchoStore, FanInCounter, QuarantineStore
+from admina.domains.agent_security.coordination import (
+    CoordinationDetector,
+    EchoStore,
+    FanInCounter,
+    QuarantineStore,
+)
 from admina.domains.agent_security.fingerprint import sketch
 
 _KEY = b"k"
@@ -331,3 +336,106 @@ class TestQuarantineStore:
         assert await q.current(now=1200.0) == frozenset()
         # Verify entries are actually gone from store, not just absent from return value
         assert len(r.hashes["admina:egress:quarantine"]) == 0
+
+
+_ECHOED = (
+    "task 42 completed, results are on ZZZ_Results_42, whoever takes 43"
+    " starts at column two in the shared spreadsheet"
+)
+
+
+def _check(dest="wiki.corp", write_shaped=True, allowed=True, status="resolved"):
+    return {
+        "status": status,
+        "destinations": [dest] if dest else [],
+        "write_shaped": write_shaped,
+        "allowed": allowed,
+    }
+
+
+def _detector(redis, *, declared=frozenset(), min_agents=3, key=b"k"):
+    return CoordinationDetector(
+        fanin=FanInCounter(redis, window_seconds=3600),
+        echo=EchoStore(redis, ttl_seconds=7200),
+        quarantine=QuarantineStore(redis, ttl_seconds=86400),
+        declared=declared,
+        min_agents=min_agents,
+        fingerprint_key=key,
+    )
+
+
+@pytest.mark.anyio
+class TestCoordinationDetector:
+    async def test_below_the_threshold_reports_none(self):
+        d = _detector(FakeRedisHash())
+        v = await d.observe("a1", _check(), _ECHOED, now=1000.0)
+        assert v.status == "none"
+
+    async def test_reaching_the_threshold_without_an_echo_is_suspected(self):
+        d = _detector(FakeRedisHash())
+        for agent in ("a1", "a2", "a3"):
+            v = await d.observe(agent, _check(), f"unrelated text for {agent} alone", now=1000.0)
+        assert v.status == "suspected"
+
+    async def test_an_echo_from_another_agent_confirms_and_quarantines(self):
+        r = FakeRedisHash()
+        d = _detector(r)
+        await d.observe("a1", _check(), _ECHOED, now=1000.0)
+        await d.observe("a2", _check(), "something else entirely here", now=1010.0)
+        v = await d.observe("a3", _check(), _ECHOED, now=1020.0)
+        assert v.status == "confirmed"
+        assert v.peer == "a1"
+        assert "wiki.corp" in await QuarantineStore(r, 86400).current(now=1020.0)
+
+    async def test_a_declared_destination_is_never_flagged(self):
+        """Designed and emergent coordination look identical; only this separates them."""
+        d = _detector(FakeRedisHash(), declared=frozenset({"queue.internal"}))
+        for agent in ("a1", "a2", "a3", "a4"):
+            v = await d.observe(agent, _check(dest="queue.internal"), _ECHOED, now=1000.0)
+        assert v.status == "declared"
+
+    async def test_reads_are_not_counted(self):
+        d = _detector(FakeRedisHash())
+        for agent in ("a1", "a2", "a3", "a4"):
+            v = await d.observe(agent, _check(write_shaped=False), _ECHOED, now=1000.0)
+        assert v.status == "none"
+
+    async def test_blocked_calls_are_not_counted_as_coordination(self):
+        d = _detector(FakeRedisHash())
+        for agent in ("a1", "a2", "a3", "a4"):
+            v = await d.observe(agent, _check(allowed=False), _ECHOED, now=1000.0)
+        assert v.status == "none"
+
+    async def test_a_call_with_no_destination_is_ignored(self):
+        d = _detector(FakeRedisHash())
+        v = await d.observe("a1", _check(status="no_egress", dest=""), _ECHOED, now=1000.0)
+        assert v.status == "none"
+
+    async def test_without_a_key_it_never_escalates_past_suspected(self):
+        """An unkeyed fallback would be dictionary-attackable, so echo is off."""
+        d = _detector(FakeRedisHash(), key=None)
+        for agent in ("a1", "a2", "a3"):
+            v = await d.observe(agent, _check(), _ECHOED, now=1000.0)
+        assert v.status == "suspected"
+
+    async def test_redis_down_reports_degraded_not_none(self):
+        r = FakeRedisHash()
+        r.fail = True
+        d = _detector(r)
+        v = await d.observe("a1", _check(), _ECHOED, now=1000.0)
+        assert v.status == "degraded"
+
+    async def test_an_attempt_renews_an_existing_quarantine(self):
+        r = FakeRedisHash()
+        q = QuarantineStore(r, ttl_seconds=100)
+        await q.add("wiki.corp", now=1000.0)
+        d = CoordinationDetector(
+            fanin=FanInCounter(r, window_seconds=3600),
+            echo=EchoStore(r, ttl_seconds=7200),
+            quarantine=q,
+            declared=frozenset(),
+            min_agents=3,
+            fingerprint_key=b"k",
+        )
+        await d.observe("a9", _check(allowed=False), _ECHOED, now=1090.0)
+        assert "wiki.corp" in await q.current(now=1150.0)

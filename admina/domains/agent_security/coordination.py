@@ -32,11 +32,18 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from dataclasses import dataclass
 from typing import Any
 
-from admina.domains.agent_security.fingerprint import matches
+from admina.domains.agent_security.fingerprint import matches, sketch
 
-__all__ = ["EchoStore", "FanInCounter", "QuarantineStore"]
+__all__ = [
+    "CoordinationDetector",
+    "CoordinationVerdict",
+    "EchoStore",
+    "FanInCounter",
+    "QuarantineStore",
+]
 
 logger = logging.getLogger("admina.coordination")
 
@@ -304,3 +311,83 @@ class QuarantineStore:
             except (TypeError, ValueError):
                 continue
         return frozenset(live)
+
+
+@dataclass
+class CoordinationVerdict:
+    """What one observation concluded about a destination."""
+
+    status: str = "none"
+    destination: str = ""
+    agents: int = 0
+    peer: str | None = None
+
+
+class CoordinationDetector:
+    """Finds undeclared coordination and arms the quarantine set.
+
+    A legitimate shared work queue and an emergent coordination channel look
+    identical from here — many agents, one destination, writes, content
+    passing between them. That is why this class judges *declaration*, not
+    intent: the ``declared`` set is the only thing that turns the same
+    fan-in-plus-echo signature from "suspected"/"confirmed" into "declared".
+
+    Never blocks. A confirmed verdict writes to the quarantine store, which
+    EgressPolicy reads on the inline path.
+    """
+
+    def __init__(
+        self,
+        fanin: FanInCounter,
+        echo: EchoStore,
+        quarantine: QuarantineStore,
+        declared: frozenset[str],
+        min_agents: int,
+        fingerprint_key: bytes | None,
+    ) -> None:
+        self._fanin = fanin
+        self._echo = echo
+        self._quarantine = quarantine
+        self._declared = declared
+        self._min_agents = max(2, min_agents)
+        self._key = fingerprint_key
+
+    async def observe(
+        self, agent_id: str, egress_check: dict, content_tail: str, now: float
+    ) -> CoordinationVerdict:
+        """Record one governed call and report what it implies."""
+        destinations = [d for d in (egress_check.get("destinations") or []) if isinstance(d, str)]
+        if not destinations:
+            return CoordinationVerdict()
+
+        verdict = CoordinationVerdict()
+        for destination in destinations:
+            # An attempt renews an existing quarantine even when the policy
+            # refused it: the block suppresses the successes that would
+            # otherwise be the renewal signal.
+            await self._quarantine.renew(destination, now)
+
+            if destination in self._declared:
+                verdict = CoordinationVerdict(status="declared", destination=destination)
+                continue
+            if not egress_check.get("write_shaped") or not egress_check.get("allowed"):
+                continue
+
+            count = await self._fanin.record(destination, agent_id, now)
+            if count == 0:
+                verdict = CoordinationVerdict(status="degraded", destination=destination)
+                continue
+
+            outbound = sketch(content_tail, self._key) if self._key else frozenset()
+            peer = None
+            if self._key and count >= self._min_agents:
+                peer = await self._echo.confirm(destination, agent_id, outbound, now)
+            await self._echo.record_outbound(destination, agent_id, outbound, now)
+
+            if count < self._min_agents:
+                continue
+            if peer is not None:
+                await self._quarantine.add(destination, now)
+                return CoordinationVerdict("confirmed", destination, count, peer)
+            verdict = CoordinationVerdict("suspected", destination, count)
+        return verdict
