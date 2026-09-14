@@ -292,8 +292,6 @@ class QuarantineStore:
         is one Redis round-trip, it requires both operations at an instant when
         the quarantine's TTL has just reached zero, and new evidence re-flags.
         """
-        if self._redis is None:
-            return frozenset()
         try:
             return await self._read_live(now)
         except Exception as exc:  # noqa: BLE001
@@ -303,6 +301,10 @@ class QuarantineStore:
     async def _read_live(self, now: float) -> frozenset[str]:
         """Read the hash and purge expired entries. Raises on a Redis failure.
 
+        Returns an empty set with no client configured — that is a
+        supported deployment (see admina/proxy/main.py's "Redis disabled"
+        log line), not a failure, and must not be reported as one.
+
         Factored out of :meth:`current` so :func:`refresh_quarantine_once` can
         tell "nothing is quarantined" apart from "the store could not be
         read" — the distinction :meth:`current`'s fail-open contract erases
@@ -310,6 +312,8 @@ class QuarantineStore:
         would otherwise be the wrong default for a caller that must not
         silently clear the policy's block list on a transient outage.
         """
+        if self._redis is None:
+            return frozenset()
         entries = await self._redis.hgetall(self.KEY)
         live: set[str] = set()
         for destination, expiry in entries.items():
@@ -339,10 +343,9 @@ async def refresh_quarantine_once(policy: Any, store: QuarantineStore, now: floa
     """
     try:
         quarantined = await store._read_live(now)  # noqa: SLF001
+        policy.set_quarantine(quarantined)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Quarantine refresh failed, keeping the last known set: %s", exc)
-        return
-    policy.set_quarantine(quarantined)
 
 
 @dataclass

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from unittest.mock import AsyncMock
 
 import pytest
@@ -93,6 +94,23 @@ class TestProxyWiring:
         write = analyze({"url": "https://wiki.corp/w?action=edit&text=a long enough payload"})
         assert policy.evaluate(write, "enforce").allowed is False
 
+    async def test_the_refresh_is_silent_with_no_redis_configured(self, caplog):
+        """No Redis configured is a supported deployment, not a failure.
+
+        Regression test: an earlier version of QuarantineStore._read_live
+        omitted the `self._redis is None` guard current() and every sibling
+        method has, so this raised AttributeError every cycle and logged a
+        "refresh failed" warning forever — for a deployment where nothing
+        had actually failed and there was never a set to keep.
+        """
+        from admina.domains.agent_security.coordination import refresh_quarantine_once
+
+        store = QuarantineStore(None, ttl_seconds=86400)
+        policy = EgressPolicy(allow=["wiki.corp"])
+        with caplog.at_level(logging.WARNING, logger="admina.coordination"):
+            await refresh_quarantine_once(policy, store, now=1000.0)
+        assert caplog.records == [], "no Redis client is not a refresh failure"
+
 
 class _RecordingCoordination:
     """Stands in for CoordinationDetector; records every observe() call."""
@@ -125,6 +143,84 @@ class _FakeLoopBreaker:
         return {"is_loop": False, "similarity": 0.0}
 
 
+def _drive_governed_call(monkeypatch, coordination):
+    """POST one write-shaped call through the real /mcp handler.
+
+    Returns ``(response, pipeline_result)``. ``pipeline_result`` is the
+    GovernanceResult mcp_proxy built, captured via a spy on ``run_pipeline``
+    so callers can inspect ``checks["coordination"]`` — written by the
+    fire-and-forget ``_observe()`` task, which is drained here before
+    returning so its mutation of ``pipeline_result.checks`` has landed.
+    """
+    from admina.proxy import main as proxy_main
+    from admina.proxy.multi_upstream import MultiUpstreamRouter
+    from admina.proxy.state import ProxyState
+
+    monkeypatch.setattr(proxy_main.settings, "ADMINA_API_KEY", "")
+    monkeypatch.setattr(proxy_main.settings, "ALLOW_UNAUTHENTICATED", True)
+    monkeypatch.setattr(proxy_main.settings, "PII_REDACTION_ENABLED", False)
+    monkeypatch.setattr(proxy_main.settings, "RATE_LIMIT_MAX_REQUESTS", 0)
+    monkeypatch.setattr(proxy_main.settings, "UPSTREAM_MCP_URL", "http://fake-upstream")
+    monkeypatch.setattr(proxy_main.settings, "GOVERNANCE_MODE", "enforce")
+
+    captured: dict = {}
+    original_run_pipeline = proxy_main.run_pipeline
+
+    async def _spy_run_pipeline(*args, **kwargs):
+        result = await original_run_pipeline(*args, **kwargs)
+        captured["result"] = result
+        return result
+
+    monkeypatch.setattr(proxy_main, "run_pipeline", _spy_run_pipeline)
+
+    mock_http = AsyncMock()
+    mock_http.post = AsyncMock(
+        return_value=httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {"ok": True}})
+    )
+
+    state = ProxyState(
+        firewall=_FakeFirewall(),
+        pii_redactor=None,
+        loop_breaker=_FakeLoopBreaker(),
+        egress_policy=EgressPolicy(allow=["wiki.corp"]),
+        coordination=coordination,
+        router=MultiUpstreamRouter(default_upstream="http://fake-upstream"),
+        http_client=mock_http,
+        redis=None,
+        clickhouse=None,
+        forensic_box=None,
+        governance_guards=[],
+        alert_channels=[],
+        auth_providers=[],
+    )
+    monkeypatch.setattr(proxy_main.app.state, "proxy", state, raising=False)
+
+    # 3000 chars of arguments guarantee content_str (the JSON-encoded body)
+    # is well past the 2000-char cap the tail must be clipped to.
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": "wiki_edit",
+            "arguments": {"url": "https://wiki.corp/w", "text": "x" * 3000},
+        },
+    }
+
+    async def go():
+        transport = httpx.ASGITransport(app=proxy_main.app, raise_app_exceptions=True)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post("/mcp", json=body, headers={"X-Agent-Id": "agent-7"})
+        # _observe() is fire-and-forget (_spawn); drain it before returning.
+        pending = [t for t in proxy_main._background_tasks if not t.done()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        return resp
+
+    resp = asyncio.run(go())
+    return resp, captured["result"]
+
+
 class TestCallSiteIsPinned:
     """Drives a real request through mcp_proxy to pin the call site itself.
 
@@ -139,65 +235,8 @@ class TestCallSiteIsPinned:
     """
 
     def test_a_governed_call_reaches_the_detector_with_a_capped_tail(self, monkeypatch):
-        from admina.proxy import main as proxy_main
-        from admina.proxy.multi_upstream import MultiUpstreamRouter
-        from admina.proxy.state import ProxyState
-
-        monkeypatch.setattr(proxy_main.settings, "ADMINA_API_KEY", "")
-        monkeypatch.setattr(proxy_main.settings, "ALLOW_UNAUTHENTICATED", True)
-        monkeypatch.setattr(proxy_main.settings, "PII_REDACTION_ENABLED", False)
-        monkeypatch.setattr(proxy_main.settings, "RATE_LIMIT_MAX_REQUESTS", 0)
-        monkeypatch.setattr(proxy_main.settings, "UPSTREAM_MCP_URL", "http://fake-upstream")
-        monkeypatch.setattr(proxy_main.settings, "GOVERNANCE_MODE", "enforce")
-
-        mock_http = AsyncMock()
-        mock_http.post = AsyncMock(
-            return_value=httpx.Response(
-                200, json={"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
-            )
-        )
-
         fake_coordination = _RecordingCoordination()
-        state = ProxyState(
-            firewall=_FakeFirewall(),
-            pii_redactor=None,
-            loop_breaker=_FakeLoopBreaker(),
-            egress_policy=EgressPolicy(allow=["wiki.corp"]),
-            coordination=fake_coordination,
-            router=MultiUpstreamRouter(default_upstream="http://fake-upstream"),
-            http_client=mock_http,
-            redis=None,
-            clickhouse=None,
-            forensic_box=None,
-            governance_guards=[],
-            alert_channels=[],
-            auth_providers=[],
-        )
-        monkeypatch.setattr(proxy_main.app.state, "proxy", state, raising=False)
-
-        # 3000 chars of arguments guarantee content_str (the JSON-encoded
-        # body) is well past the 2000-char cap the tail must be clipped to.
-        body = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "wiki_edit",
-                "arguments": {"url": "https://wiki.corp/w", "text": "x" * 3000},
-            },
-        }
-
-        async def go():
-            transport = httpx.ASGITransport(app=proxy_main.app, raise_app_exceptions=True)
-            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-                resp = await client.post("/mcp", json=body, headers={"X-Agent-Id": "agent-7"})
-            # _observe() is fire-and-forget (_spawn); drain it before asserting.
-            pending = [t for t in proxy_main._background_tasks if not t.done()]
-            if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
-            return resp
-
-        resp = asyncio.run(go())
+        resp, _pipeline_result = _drive_governed_call(monkeypatch, fake_coordination)
         assert resp.status_code == 200
 
         assert len(fake_coordination.calls) == 1, "state.coordination.observe() was never called"
@@ -205,3 +244,23 @@ class TestCallSiteIsPinned:
         assert call["agent_id"] == "agent-7"
         assert "wiki.corp" in call["destinations"]
         assert len(call["content_tail"]) == 2000, "the tail must be capped at 2000 chars"
+
+
+class TestCoordinationChecksShape:
+    """``checks["coordination"]`` is a brief-mandated "Produces" item.
+
+    It is written by a fire-and-forget background task, after the HTTP
+    response has already gone out, so nothing else in the request path
+    reads it — a renamed key or a dropped field would pass the rest of the
+    suite silently.
+    """
+
+    def test_the_verdict_is_recorded_with_the_documented_shape(self, monkeypatch):
+        fake_coordination = _RecordingCoordination()
+        _resp, pipeline_result = _drive_governed_call(monkeypatch, fake_coordination)
+
+        checks = pipeline_result.checks["coordination"]
+        assert set(checks) == {"status", "destination", "agents"}
+        assert isinstance(checks["status"], str)
+        assert isinstance(checks["destination"], str)
+        assert isinstance(checks["agents"], int)

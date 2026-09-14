@@ -30,7 +30,7 @@ import re
 import secrets as _secrets
 import time
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -416,6 +416,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # Shutdown
     if state.quarantine_refresh is not None:
         state.quarantine_refresh.cancel()
+        with suppress(asyncio.CancelledError):
+            await state.quarantine_refresh
     if state.redis:
         await state.redis.close()
     if state.http_client:
