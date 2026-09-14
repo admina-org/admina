@@ -407,12 +407,100 @@ included. Wiring it is a separate change, not a configuration option.
   fail-closed, consistent with default-deny — and a warning is logged
   naming the parse error. If every destination is suddenly blocked, check
   the logs for this warning before assuming the allowlist itself is wrong.
-- **The quarantine hook has no production caller today.**
-  `EgressPolicy.set_quarantine()` exists and is exercised in tests, but
-  nothing in the shipped proxy, SDK, or CLI ever calls it, so the
-  quarantine set is always empty in a real deployment and the
-  quarantine branch in `evaluate()` cannot fire. It is reserved for a
-  future consumer, not a live mechanism.
+- **The quarantine hook now has a live caller.** `EgressPolicy.set_quarantine()`
+  is invoked every 5 seconds by `refresh_quarantine_once`, fed by the
+  coordination detector below (§5c) through `admina/proxy/main.py`'s
+  startup loop. The quarantine branch in `evaluate()` fires in any
+  deployment that runs the MCP proxy with Redis configured; what feeds it,
+  and what does not, is §5c's subject.
+
+---
+
+## 5c. Coordination Detector
+
+### What it does
+
+`admina/proxy/main.py` feeds every governed MCP tool call's egress check
+and a 2000-character tail of its content into
+`CoordinationDetector.observe()`. Two phases run in order, each gated on
+the destination not being in the operator's `coordination_declared` set:
+
+1. **Fan-in trigger (always on).** `FanInCounter` counts distinct agent
+   ids making write-shaped, egress-allowed calls to one destination inside
+   a rolling `fanin.window_seconds` (default 3600s). Once a destination
+   crosses `fanin.min_agents` (default 5, floor 2) distinct agents, the
+   verdict escalates to `suspected` and is logged. Nothing is blocked yet.
+2. **Echo confirmation (keyed).** Only once `ADMINA_EGRESS_FINGERPRINT_KEY`
+   is set: each call's content tail is reduced to a bounded set of keyed
+   shingle hashes (`fingerprint.py`) and checked against sketches other
+   agents already sent toward the same destination. A match against
+   another agent's earlier output escalates the verdict to `confirmed` and
+   adds the destination to the quarantine set.
+
+A `confirmed` destination is refused for write-shaped calls fleet-wide
+until `quarantine_ttl_seconds` (default 86400s) lapses without renewal, or
+an operator runs `admina egress quarantine lift <destination>`;
+`admina egress quarantine list` shows what is currently blocked. Reads are
+never affected — the quarantine only ever gates `write_shaped` calls.
+
+Self-confirmation is blocked by two independent mechanisms, not one:
+`FanInCounter` counts distinct `agent_id`s, so repeated calls from a single
+agent never inflate the fan-in count on their own, and `EchoStore.confirm`
+separately discards any match against the same `agent_id` that produced
+the sketch being matched against.
+
+Replayed on every test run against a 7-trace labelled corpus
+(`admina/redteam/corpora/coordination.jsonl`, exercised by
+`tests/test_coordination_corpus.py`) covering confirmed coordination,
+fan-in-only "suspected" traces, and declared/benign negative controls. This
+is a small, hand-built corpus exercising the two-phase design's core
+distinctions — it is not a comprehensive adversarial evaluation, and it
+does not participate in the Python/Rust recall baseline in §9.
+
+### Known limitations
+
+- **It finds undeclared coordination, not malicious coordination.** A
+  legitimate shared work queue and an emergent coordination channel
+  produce the identical fan-in-plus-echo signature — many agents, one
+  destination, overlapping content. `coordination_declared` is the only
+  thing that tells them apart; anything meeting the same shape that is not
+  listed there is flagged exactly as a genuine covert channel would be.
+- **Without `ADMINA_EGRESS_FINGERPRINT_KEY` the detector never escalates
+  past `suspected`.** With no key configured, echo confirmation does not
+  run at all — it is disabled outright rather than falling back to
+  unkeyed hashes, which would be dictionary-attackable and comparable
+  across deployments. A key-less deployment gets a logged warning signal
+  and nothing more; no destination is ever quarantined.
+- **Without Redis there is no detection at all, and the verdict is
+  `degraded`, not `none`** — the two must not be read as the same thing.
+  `FanInCounter.record` returns 0 on any Redis failure, and `observe()`
+  reports `degraded` for that case rather than silently reporting nothing
+  found. The egress allowlist itself is unaffected by any of this: it is
+  operator configuration evaluated in-process, with no Redis dependency.
+- **Only the MCP proxy path feeds the detector.** `admina/proxy/main.py`
+  is the only caller of `CoordinationDetector.observe()`. The
+  OpenAI-compatible gateway (`/v1/chat/completions`), `POST
+  /api/v1/validate`, and the SDK primitives (`GovernedModel`,
+  `GovernedAgent`) never call it, so multi-agent coordination conducted
+  through any of those surfaces is invisible to this control — the same
+  asymmetry §5b documents for the egress stage itself, one layer up.
+- **A quarantine is fleet-wide for writes.** `QuarantineStore` keeps one
+  shared destination-to-expiry hash; a single `confirmed` verdict costs
+  *every* agent write access to that destination, not just the agents
+  that triggered it, until the TTL lapses or an operator lifts it.
+- **Detection is retrospective by construction.** The fan-in trigger needs
+  `fanin_min_agents` distinct agents against one destination before it can
+  conclude anything at all, so the calls that establish that count are
+  themselves never flagged — a new channel always gets a bounded number of
+  free calls, never zero, before a `suspected` verdict becomes possible.
+- **Content sketches are bounded and keyed, never plaintext.** A sketch is
+  a set of up to 512 keyed 64-bit HMAC values over 5-word shingles of the
+  last 2000 characters sent to a destination; nothing in `fingerprint.py`
+  stores or can reconstruct the source text. Outbound sketches live in a
+  per-destination Redis set sized at twice `fanin.window_seconds` (not an
+  independently configurable value) and are matchable for roughly one to
+  two times that size — with the shipped default (`window_seconds: 3600`)
+  that is 2 to 4 hours — after which they age out regardless of activity.
 
 ---
 

@@ -94,7 +94,10 @@ Grafana baseline.
   the HTTP method, shared by all five governed surfaces. Default-deny under
   `ADMINA_EGRESS_MODE=enforce`, with an observe-first rollout and an
   `admina egress suggest-allowlist` command to build the allowlist from
-  observed traffic.
+  observed traffic. A cross-agent coordination detector, fed from the MCP
+  proxy path only, escalates undeclared multi-agent fan-in on one
+  destination to a fleet-wide write quarantine once keyed content confirms
+  it.
 - Emission of the streaming-request metadata shaped in 0.11 onto the
   OpenTelemetry GenAI semantic conventions (`gen_ai.request.model`,
   `gen_ai.usage.*`, `gen_ai.response.finish_reasons`,

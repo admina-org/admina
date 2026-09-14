@@ -24,10 +24,10 @@ Nothing here stores or can reconstruct the text. A sketch is a bounded set of
 deployments and defeats a dictionary attack on common phrases.
 
 Limitations: len(sketch(...)) reveals approximate word count for texts under
-~68 words (not plaintext, but not zero-knowledge). The word regex is ASCII-only;
+~516 words (not plaintext, but not zero-knowledge). The word regex is ASCII-only;
 text in non-Latin scripts tokenizes to nothing and yields an empty sketch, so
 such content is invisible to the detector. Truncation to SKETCH_SIZE degrades
-the comparison for texts longer than ~400 words; callers must bound their input.
+the comparison for texts longer than ~516 words; callers must bound their input.
 """
 
 from __future__ import annotations

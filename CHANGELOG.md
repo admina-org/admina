@@ -69,6 +69,29 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   persists nothing — an observation window intended to produce an allowlist
   needs `FORENSIC_BACKEND=filesystem` (with `FORENSIC_BASE_DIR`) or `=s3`
   set before it starts.
+- **Cross-agent coordination detector.** A two-phase check that finds
+  agents writing to a destination the operator never declared. An
+  always-on fan-in trigger counts distinct agent ids making write-shaped
+  calls to one destination (`domains.agent_security.egress.fanin`:
+  `window_seconds`, default 3600; `min_agents`, default 5) and reports
+  `suspected` once the threshold is crossed. If
+  `ADMINA_EGRESS_FINGERPRINT_KEY` is set, a second phase compares keyed
+  content shingles between agents; a match against another agent's prior
+  output escalates the verdict to `confirmed` and quarantines the
+  destination for write-shaped calls fleet-wide — every agent, not only
+  the ones involved — until `quarantine_ttl_seconds` (default 86400) lapses
+  or an operator lifts it. **Without that key, the detector never
+  escalates past `suspected`**: echo confirmation does not run at all
+  rather than falling back to unkeyed, dictionary-attackable hashes.
+  Destinations meant to receive coordinated writes are exempted via
+  `coordination_declared`. Two new CLI commands operate on the quarantine
+  set: `admina egress quarantine list` and `admina egress quarantine lift
+  <destination>`. **This feed is MCP-proxy-only**: like the egress stage
+  it rides on, only `admina/proxy/main.py` calls the detector — the
+  OpenAI-compatible gateway, `POST /api/v1/validate`, and the SDK
+  primitives do not feed it, so coordination conducted through those
+  surfaces is not seen. See `MODEL_CARD.md` §5c for the full limitations,
+  including behaviour with no Redis (`degraded`, not `none`).
 
 ## [0.11.1] — 2026-07-16
 

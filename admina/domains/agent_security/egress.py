@@ -314,10 +314,14 @@ class EgressDecision:
 class EgressPolicy:
     """Destination allowlist, plus the operator settings the stage reads.
 
-    The policy also holds a quarantine set, but nothing in the shipped
-    proxy, SDK or CLI calls :meth:`set_quarantine`: in a real deployment the
-    set is always empty and the quarantine branch of :meth:`evaluate` cannot
-    fire. It is reserved for a future out-of-band consumer.
+    The policy also holds a quarantine set. It starts empty; the
+    coordination detector (``admina.domains.agent_security.coordination``)
+    populates it when it confirms undeclared multi-agent coordination, and
+    ``admina/proxy/main.py``'s startup loop calls ``refresh_quarantine_once``
+    every 5 seconds to hand the live set to this policy via
+    :meth:`set_quarantine`, so the quarantine branch of :meth:`evaluate` does
+    fire in a deployment running that proxy with Redis configured. See
+    MODEL_CARD.md §5c for what feeds the detector and what does not.
 
     ``read_only_tools`` holds the tool names the operator has declared
     non-mutating. It is carried here rather than looked up per call so the
@@ -364,7 +368,12 @@ class EgressPolicy:
             logger.warning("Skipping malformed egress allow entry %r", entry)
 
     def set_quarantine(self, hosts: frozenset[str]) -> None:
-        """Replace the quarantine set. Called by the out-of-band refresh."""
+        """Replace the quarantine set.
+
+        Called every 5 seconds by ``refresh_quarantine_once``, invoked from
+        the quarantine refresh loop started in ``admina/proxy/main.py``'s
+        startup.
+        """
         self._quarantine = hosts
 
     def _is_allowed(self, host: str) -> bool:
