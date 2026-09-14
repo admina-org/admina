@@ -21,8 +21,13 @@ shingled MinHash rather than a digest of the whole string.
 
 Nothing here stores or can reconstruct the text. A sketch is a bounded set of
 64-bit HMAC values over word shingles: the key makes them incomparable across
-deployments and defeats a dictionary attack on common phrases, and the
-truncation to a fixed number of minima discards the rest.
+deployments and defeats a dictionary attack on common phrases.
+
+Limitations: len(sketch(...)) reveals approximate word count for texts under
+~68 words (not plaintext, but not zero-knowledge). The word regex is ASCII-only;
+text in non-Latin scripts tokenizes to nothing and yields an empty sketch, so
+such content is invisible to the detector. Truncation to SKETCH_SIZE degrades
+the comparison for texts longer than ~400 words; callers must bound their input.
 """
 
 from __future__ import annotations
@@ -32,14 +37,28 @@ import hmac
 import os
 import re
 
-__all__ = ["SHINGLE_WORDS", "SKETCH_SIZE", "load_fingerprint_key", "overlap", "sketch"]
+__all__ = [
+    "SHINGLE_WORDS",
+    "SKETCH_SIZE",
+    "MIN_SHARED_SHINGLES",
+    "load_fingerprint_key",
+    "overlap",
+    "sketch",
+    "matches",
+]
 
 # Words per shingle. Shorter shingles match unrelated prose; longer ones stop
 # surviving the light reformatting an agent applies when quoting text.
 SHINGLE_WORDS = 5
 
-# Minima kept per sketch. Bounds both memory in Redis and comparison cost.
-SKETCH_SIZE = 64
+# Minima kept per sketch. For a 2000-character tail (~263 shingles), truncation
+# does not degrade comparison. Larger texts would lose accuracy; callers must
+# bound their input. Also bounds memory in Redis and comparison cost.
+SKETCH_SIZE = 512
+
+# Shared shingles required to match. Szymkiewicz–Simpson overlap alone allows
+# false positives on boilerplate phrases; intersection size discriminates.
+MIN_SHARED_SHINGLES = 12
 
 _WORD_RX = re.compile(r"[A-Za-z0-9_]+")
 
@@ -76,7 +95,26 @@ def sketch(text: str, key: bytes) -> frozenset[int]:
 
 
 def overlap(a: frozenset[int], b: frozenset[int]) -> float:
-    """Jaccard overlap of two sketches. Empty sketches never match."""
+    """Szymkiewicz–Simpson overlap coefficient of two sketches.
+
+    Measures containment: the fraction of the smaller sketch that appears in
+    the larger. Empty sketches never match. Used with MIN_SHARED_SHINGLES to
+    avoid false positives on boilerplate.
+    """
     if not a or not b:
         return 0.0
-    return len(a & b) / len(a | b)
+    return len(a & b) / min(len(a), len(b))
+
+
+def matches(a: frozenset[int], b: frozenset[int], threshold: float = 0.4) -> bool:
+    """Whether two sketches indicate containment, not just similarity.
+
+    Returns True only if both:
+    - the sketches share at least MIN_SHARED_SHINGLES hashes (absolute count),
+    - their overlap exceeds threshold (default 0.4).
+
+    Both conditions are necessary: overlap alone allows false positives on
+    boilerplate phrases; intersection size discriminates them.
+    """
+    shared = a & b
+    return len(shared) >= MIN_SHARED_SHINGLES and overlap(a, b) >= threshold
