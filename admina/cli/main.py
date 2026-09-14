@@ -1563,6 +1563,65 @@ def suggest_allowlist(since: int, forensic_dir: str | None) -> None:
         click.echo(f"        - {dest}")
 
 
+def _quarantine_redis(url: str):
+    """Open an async Redis client. Isolated so tests can substitute it."""
+    import redis.asyncio as aioredis
+
+    return aioredis.from_url(url, decode_responses=True)
+
+
+@egress.group()
+def quarantine() -> None:
+    """Inspect and clear quarantined destinations."""
+
+
+@quarantine.command("list")
+@click.option(
+    "--redis-url",
+    default=lambda: os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+)
+def quarantine_list(redis_url: str) -> None:
+    """Show destinations currently refused for payload-bearing calls."""
+    import asyncio
+    import time
+
+    from admina.domains.agent_security.coordination import QuarantineStore
+
+    async def _run():
+        store = QuarantineStore(_quarantine_redis(redis_url), ttl_seconds=1)
+        return await store.current(time.time())
+
+    live = sorted(asyncio.run(_run()))
+    if not live:
+        click.echo("No destination is currently quarantined.")
+        return
+    click.echo("Quarantined for writes (reads are unaffected):")
+    for destination in live:
+        click.echo(f"  - {destination}")
+
+
+@quarantine.command("lift")
+@click.argument("destination")
+@click.option(
+    "--redis-url",
+    default=lambda: os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+)
+def quarantine_lift(destination: str, redis_url: str) -> None:
+    """Clear one destination's quarantine."""
+    import asyncio
+
+    from admina.domains.agent_security.coordination import QuarantineStore
+
+    async def _run():
+        store = QuarantineStore(_quarantine_redis(redis_url), ttl_seconds=1)
+        return await store.lift(destination)
+
+    if asyncio.run(_run()):
+        click.echo(f"Lifted quarantine on {destination}.")
+    else:
+        click.echo(f"{destination} was not quarantined.")
+
+
 @app.command()
 @click.option(
     "--output",
