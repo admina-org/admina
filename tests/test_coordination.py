@@ -1145,3 +1145,96 @@ class TestCoordinationDetector:
             v = await d.observe(agent, check, f"unrelated text for {agent} alone", now=1000.0)
         assert v.status == "degraded"
         assert v.destination == "broken.dest"
+
+    async def test_the_containment_ratio_the_detector_ships_is_what_rejects_a_footer(self):
+        """The shipped 0.4, measured where the deployment reads it.
+
+        `EchoStore(threshold=0.4)` is the live value: nothing passes
+        `threshold` to it, and `confirm()` hands `self._threshold` to
+        `matches()`. A test that calls `matches()` and lets the argument
+        default pins a number no deployment reads — set the store's 0.4 to
+        0.0 and it stays green while two 200-word reports sharing a 27-word
+        corporate footer arm a fleet-wide write quarantine.
+
+        Both halves are here because only the pair names the ratio: the
+        floor is met identically in each (21 shared shingles), the ubiquity
+        discount cannot fire in either (one sender behind the footer, floor
+        4), and the single thing that differs is how much of the shorter
+        body the footer accounts for.
+        """
+        from admina.domains.agent_security.fingerprint import MIN_SHARED_SHINGLES, overlap
+
+        footer = (
+            "this message was generated automatically by the reporting service please do not"
+            " reply to it directly and instead open a ticket with the platform team"
+        )
+
+        async def run(body_words):
+            d = _detector(FakeRedisHash(), min_agents=5)
+            for i in range(3):
+                await d.observe(f"other-{i}", _check(), _filler(f"own{i}", 30), now=1000.0 + i)
+            a = f"{_filler('alpha', body_words)} {footer}"
+            b = f"{_filler('bravo', body_words)} {footer}"
+            await d.observe("a4", _check(), a, now=1010.0)
+            return await d.observe("a5", _check(), b, now=1020.0), sketch(a, _KEY), sketch(b, _KEY)
+
+        short, a30, b30 = await run(30)
+        long, a60, b60 = await run(60)
+
+        assert len(a30 & b30) >= MIN_SHARED_SHINGLES, "the floor is not what separates the two"
+        assert len(a60 & b60) == len(a30 & b30), "the same footer, shared identically"
+        assert overlap(a30, b30) >= 0.4 > overlap(a60, b60), "only the ratio separates them"
+        assert short.status == "confirmed", short.status
+        assert short.peer == "a4"
+        assert long.status == "suspected", (
+            f"the footer is {overlap(a60, b60):.3f} of the shorter body and confirmed anyway; "
+            "the threshold EchoStore ships is not the one being applied"
+        )
+
+    async def test_a_template_beside_a_message_is_not_a_copy_of_the_template_alone(self):
+        """Containment is measured over the smaller payload, so the larger one
+        needs its own bound.
+
+        Two short fields may add up to the shingle floor together only when
+        the two calls are copies. A call that is *nothing but* a shared
+        template is the degenerate small side of that test: it scores 1.000
+        containment against any call carrying the same template, however
+        much of its own message that call also carries. A release bot
+        posting the bare notification and a second one posting the same
+        notification with eighty words of build output is then a confirmed
+        echo, and under `enforce` the webhook is write-blocked fleet-wide.
+        """
+        from admina.domains.agent_security.fingerprint import MIN_SHARED_SHINGLES, overlap
+
+        title = "nightly build finished for service platform api in the eu west region"
+        body = "generated automatically by the release coordination service pipeline please ignore"
+
+        async def run(extra_words):
+            d = _detector(FakeRedisHash(), min_agents=5)
+            for i in range(3):
+                await d.observe(f"other-{i}", _check(), _filler(f"own{i}", 30), now=1000.0 + i)
+            bare = [title, body]
+            beside = [
+                f"{title} {_filler('out', extra_words)}",
+                f"{body} {_filler('log', extra_words)}",
+            ]
+            await d.observe("a4", _check(), bare, now=1010.0)
+            return await d.observe("a5", _check(), beside, now=1020.0), bare, beside
+
+        verdict, bare, beside = await run(40)
+        small = frozenset().union(*[sketch(text, _KEY) for text in bare])
+        large = frozenset().union(*[sketch(text, _KEY) for text in beside])
+        assert all(len(sketch(text, _KEY)) < MIN_SHARED_SHINGLES for text in bare), (
+            "neither template field reaches the floor alone; they are added up"
+        )
+        assert len(small & large) >= MIN_SHARED_SHINGLES, "the floor is not what rejects this pair"
+        assert overlap(small, large) == 1.0, "nor is containment over the smaller payload"
+        assert len(large) > 2 * len(small), "the larger call is mostly its own message"
+        assert verdict.status == "suspected", verdict.status
+
+        # The same pair with nothing beside the template: genuinely copies,
+        # and still confirmed. Without this the test above would pass if the
+        # near-duplicate path were simply deleted.
+        copies, _bare, _beside = await run(0)
+        assert copies.status == "confirmed", copies.status
+        assert copies.peer == "a4"

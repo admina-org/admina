@@ -7,6 +7,12 @@ from admina.domains.agent_security.fingerprint import (
 )
 
 _KEY = b"deployment-secret"
+# matches() has no default threshold: the value a deployment runs is
+# EchoStore's, and a default here would be a second place for it that nothing
+# reads. These unit tests therefore name the shipped value themselves; that it
+# is the value the detector applies is pinned end to end in
+# tests/test_coordination.py, not here.
+_SHIPPED_THRESHOLD = 0.4
 _TEXT = (
     "task 42 completed, the results are on ZZZ_Results_42, "
     "whoever picks up 43 should start from the second column"
@@ -85,7 +91,7 @@ class TestContainment:
             + "\n\n"
             + " ".join(f"filler{i}" for i in range(100))
         )
-        assert matches([sketch(message, _KEY)], [sketch(page, _KEY)]) is True
+        assert matches([sketch(message, _KEY)], [sketch(page, _KEY)], _SHIPPED_THRESHOLD) is True
         assert overlap(sketch(message, _KEY), sketch(page, _KEY)) > 0.6
 
     def test_boilerplate_phrase_does_not_match(self):
@@ -104,7 +110,7 @@ class TestContainment:
         # Overlap may be high but intersection is small
         assert overlap(sketch(text_a, _KEY), sketch(text_b, _KEY)) >= 0.5
         assert shared < 12  # Below MIN_SHARED_SHINGLES
-        assert matches([sketch(text_a, _KEY)], [sketch(text_b, _KEY)]) is False
+        assert matches([sketch(text_a, _KEY)], [sketch(text_b, _KEY)], _SHIPPED_THRESHOLD) is False
 
     def test_tail_truncation_does_not_fire_for_spec_input(self):
         """SKETCH_SIZE=512 does not truncate in-spec input.
@@ -146,7 +152,7 @@ class TestContainment:
 
         assert len(a & b) >= MIN_SHARED_SHINGLES, "the floor is not what rejects this pair"
         assert overlap(a, b) < 0.4
-        assert matches([a], [b]) is False
+        assert matches([a], [b], _SHIPPED_THRESHOLD) is False
 
     def test_fields_add_up_only_when_the_two_calls_are_copies(self):
         """The floor may be met across fields, and only at the copy ratio.
@@ -162,7 +168,9 @@ class TestContainment:
         tail = sketch(" ".join(f"t{i}" for i in range(14)), _KEY)
         assert len(head) < MIN_SHARED_SHINGLES and len(tail) < MIN_SHARED_SHINGLES
         assert len(head) + len(tail) >= MIN_SHARED_SHINGLES
-        assert matches([head, tail], [head, tail]) is True, "the same call, twice"
+        assert matches([head, tail], [head, tail], _SHIPPED_THRESHOLD) is True, (
+            "the same call, twice"
+        )
 
         mine = sketch(" ".join(f"m{i}" for i in range(20)), _KEY)
         yours = sketch(" ".join(f"y{i}" for i in range(20)), _KEY)
@@ -172,7 +180,9 @@ class TestContainment:
         assert 0.4 <= overlap(frozenset().union(*a), frozenset().union(*b)) < 0.9, (
             "nor is the 0.4 threshold"
         )
-        assert matches(a, b) is False, "two calls sharing a template are not copies"
+        assert matches(a, b, _SHIPPED_THRESHOLD) is False, (
+            "two calls sharing a template are not copies"
+        )
 
     def test_the_threshold_argument_is_what_rejects_it(self):
         """Names the condition under test, so the pair above cannot be read

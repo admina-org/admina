@@ -72,6 +72,12 @@ MIN_SHARED_SHINGLES = 12
 # smaller payload is the shared text, which is what one agent reposting
 # another's call looks like, while a template two calls share beside their own
 # content is a fraction of each.
+#
+# This bounds the *smaller* payload only, because that is the side containment
+# is measured over, and a call that is nothing but a shared template is the
+# degenerate small side: it scores 1.0 against any call carrying that template,
+# however much of its own message that call also carries. The larger side is
+# bounded separately, by the caller's own threshold (see matches()).
 NEAR_DUPLICATE = 0.9
 
 _WORD_RX = re.compile(r"[A-Za-z0-9_]+")
@@ -139,7 +145,7 @@ def overlap(a: frozenset[int], b: frozenset[int]) -> float:
 def matches(
     a_fields: Sequence[frozenset[int]],
     b_fields: Sequence[frozenset[int]],
-    threshold: float = 0.4,
+    threshold: float,
 ) -> bool:
     """Whether two payloads indicate containment, not just similarity.
 
@@ -157,8 +163,9 @@ def matches(
       everything each call carried;
     - and the shared text is either one coherent run — a single pair of
       fields, one from each side, meeting the floor by itself — or so much
-      of both payloads (NEAR_DUPLICATE) that the two calls are copies of
-      each other rather than two calls with something in common.
+      of *each* payload that the two calls are copies of each other rather
+      than two calls with something in common: NEAR_DUPLICATE of the
+      smaller and *threshold* of the larger.
 
     Each condition answers a different way of faking an echo. Containment
     alone fires on boilerplate phrases, which the floor discriminates. The
@@ -168,11 +175,26 @@ def matches(
     surrounds it. And a floor met by adding up several short shares, at
     ordinary containment, is met by any fleet that spreads its template over
     several arguments — which is why adding them up needs the near-duplicate
-    ratio, where there is no room left for a message beside the template.
+    ratio.
+
+    That ratio needs the second half to mean what it says. Containment is
+    Szymkiewicz–Simpson, so it is measured over the smaller payload and says
+    nothing at all about the larger one: a call that carries a shared
+    template and nothing else scores 1.0 against a call carrying the same
+    template beside eighty words of its own message, which is a fleet
+    sharing a canned notification and not one agent reposting another's
+    call. Requiring the shared text to be *threshold* of the larger payload
+    too is what leaves no room for a message beside a shared template. Two
+    calls that really are copies are unaffected, because on those the two
+    payloads are the same size.
 
     None of this can tell a fleet-wide constant from a quotation on its own;
     that needs more than one call to look at, and is EchoStore.confirm()'s
     job.
+
+    *threshold* has no default on purpose: the value that ships lives in
+    EchoStore, which is what the proxy constructs, and a default here would
+    be a second place for it that no deployment reads.
     """
     union_a = frozenset().union(*a_fields) if a_fields else frozenset()
     union_b = frozenset().union(*b_fields) if b_fields else frozenset()
@@ -184,4 +206,6 @@ def matches(
         return False
     if any(len(a & b) >= MIN_SHARED_SHINGLES for a in a_fields for b in b_fields):
         return True
-    return containment >= NEAR_DUPLICATE
+    return containment >= NEAR_DUPLICATE and len(shared) >= threshold * max(
+        len(union_a), len(union_b)
+    )
