@@ -43,6 +43,7 @@ __all__ = [
     "EchoStore",
     "FanInCounter",
     "QuarantineStore",
+    "refresh_quarantine_once",
 ]
 
 logger = logging.getLogger("admina.coordination")
@@ -294,10 +295,22 @@ class QuarantineStore:
         if self._redis is None:
             return frozenset()
         try:
-            entries = await self._redis.hgetall(self.KEY)
+            return await self._read_live(now)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Cannot read quarantine set: %s", exc)
             return frozenset()
+
+    async def _read_live(self, now: float) -> frozenset[str]:
+        """Read the hash and purge expired entries. Raises on a Redis failure.
+
+        Factored out of :meth:`current` so :func:`refresh_quarantine_once` can
+        tell "nothing is quarantined" apart from "the store could not be
+        read" — the distinction :meth:`current`'s fail-open contract erases
+        for its own callers (a plain empty result either way), and which
+        would otherwise be the wrong default for a caller that must not
+        silently clear the policy's block list on a transient outage.
+        """
+        entries = await self._redis.hgetall(self.KEY)
         live: set[str] = set()
         for destination, expiry in entries.items():
             try:
@@ -311,6 +324,25 @@ class QuarantineStore:
             except (TypeError, ValueError):
                 continue
         return frozenset(live)
+
+
+async def refresh_quarantine_once(policy: Any, store: QuarantineStore, now: float) -> None:
+    """Hand the current quarantine set to the policy. Never raises.
+
+    On failure the policy keeps the set it already has: a block list is the
+    conservative thing to retain when the store cannot be read. This is why
+    it reads through :meth:`QuarantineStore._read_live` rather than
+    :meth:`QuarantineStore.current`: ``current()`` fails open to an empty set
+    for callers that treat "unavailable" the same as "nothing is quarantined"
+    (a defensible default there), but a refresh loop must not confuse the
+    two — doing so would clear every quarantine on a transient Redis outage.
+    """
+    try:
+        quarantined = await store._read_live(now)  # noqa: SLF001
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Quarantine refresh failed, keeping the last known set: %s", exc)
+        return
+    policy.set_quarantine(quarantined)
 
 
 @dataclass

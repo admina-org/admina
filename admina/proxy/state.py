@@ -50,6 +50,8 @@ class ProxyState:
     pii_redactor: Any = None
     loop_breaker: Any = None
     egress_policy: Any = None
+    coordination: Any = None
+    quarantine_refresh: Any = None
 
     # Subsystems
     forensic_box: ForensicBlackBox | None = None

@@ -253,6 +253,38 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     else:
         logger.info("Redis disabled (REDIS_URL is empty or non-redis scheme)")
 
+    # ── Coordination detector — feeds EgressPolicy's quarantine set ────
+    # The event bus carries no agent_id (see admina/core/event_bus.py), so
+    # the detector is fed here, the same way the forensic store, ClickHouse
+    # and the alert channels already are: by the caller that holds identity.
+    _eg_cfg = _admina_config.agent_security.egress if _admina_config else None
+    if state.egress_policy is not None and _eg_cfg is not None:
+        from admina.domains.agent_security.coordination import (
+            CoordinationDetector,
+            EchoStore,
+            FanInCounter,
+            QuarantineStore,
+            refresh_quarantine_once,
+        )
+        from admina.domains.agent_security.fingerprint import load_fingerprint_key
+
+        _quarantine = QuarantineStore(state.redis, _eg_cfg.quarantine_ttl_seconds)
+        state.coordination = CoordinationDetector(
+            fanin=FanInCounter(state.redis, _eg_cfg.fanin_window_seconds),
+            echo=EchoStore(state.redis, _eg_cfg.fanin_window_seconds * 2),
+            quarantine=_quarantine,
+            declared=frozenset(_eg_cfg.coordination_declared),
+            min_agents=_eg_cfg.fanin_min_agents,
+            fingerprint_key=load_fingerprint_key(),
+        )
+
+        async def _refresh_loop() -> None:
+            while True:
+                await refresh_quarantine_once(state.egress_policy, _quarantine, time.time())
+                await asyncio.sleep(5)
+
+        state.quarantine_refresh = _spawn(_refresh_loop())
+
     # Forensic backend: filesystem (default) | s3 (boto3 generic) | memory.
     # MinIO servers are supported through the s3 backend (they speak the S3
     # API); the legacy minio-SDK backend was removed in 0.9.5.
@@ -382,6 +414,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     yield
 
     # Shutdown
+    if state.quarantine_refresh is not None:
+        state.quarantine_refresh.cancel()
     if state.redis:
         await state.redis.close()
     if state.http_client:
@@ -1386,6 +1420,33 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
             ),
         )
     )
+
+    # ─── Coordination detector (fire-and-forget) ───────────────
+    # Never blocks: a confirmed verdict arms EgressPolicy's quarantine set,
+    # which is what makes the next payload-bearing call to that destination
+    # refuse. The tail is capped at 2000 chars — fingerprinting the whole
+    # conversation would be quadratic and would match an agent against its
+    # own past (see fingerprint.py's SKETCH_SIZE note).
+    if state.coordination is not None and "egress" in pipeline_result.checks:
+
+        async def _observe() -> None:
+            verdict = await state.coordination.observe(
+                agent_id, pipeline_result.checks["egress"], content_str[-2000:], time.time()
+            )
+            pipeline_result.checks["coordination"] = {
+                "status": verdict.status,
+                "destination": verdict.destination,
+                "agents": verdict.agents,
+            }
+            if verdict.status in ("suspected", "confirmed", "degraded"):
+                logger.warning(
+                    "Coordination %s on %r (%d agents)",
+                    verdict.status,
+                    verdict.destination,
+                    verdict.agents,
+                )
+
+        _spawn(_observe())
 
     # ─── Respond based on governance decision ─────────────────
     if action == GovernanceAction.BLOCK:
