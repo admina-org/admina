@@ -1,6 +1,12 @@
 """Minimal fakes for testing — not a test module itself."""
 
 
+class FakeRedisError(Exception):
+    """Custom error to test broad exception handling."""
+
+    pass
+
+
 class FakeRedis:
     """Minimal async stand-in: the four operations the counter uses."""
 
@@ -11,22 +17,22 @@ class FakeRedis:
 
     async def sadd(self, key, *values):
         if self.fail:
-            raise OSError("redis down")
+            raise FakeRedisError("redis down")
         self.sets.setdefault(key, set()).update(values)
         return len(values)
 
     async def scard(self, key):
         if self.fail:
-            raise OSError("redis down")
+            raise FakeRedisError("redis down")
         return len(self.sets.get(key, ()))
 
     async def smembers(self, key):
         if self.fail:
-            raise OSError("redis down")
+            raise FakeRedisError("redis down")
         return set(self.sets.get(key, ()))
 
     async def expire(self, key, seconds):
         if self.fail:
-            raise OSError("redis down")
+            raise FakeRedisError("redis down")
         self.ttls[key] = seconds
         return True

@@ -64,19 +64,26 @@ class FanInCounter:
         Returns 0 when Redis is unavailable. The caller treats that as "cannot
         conclude" and reports a degraded status — it must never be read as
         "no coordination".
+
+        The cap bounds memory growth: once the current bucket reaches cap distinct
+        agents, further writes are skipped. Concurrent writers can cause the set to
+        exceed cap slightly under a race; this bound is acceptable against unbounded
+        growth. Precision beyond cap is lost to the clamped return anyway.
         """
         if self._redis is None:
             return 0
         current, previous = self._buckets(now)
         try:
             key = self._key(destination, current)
-            await self._redis.sadd(key, agent_id)
+            current_count = await self._redis.scard(key)
+            if current_count < self._cap:
+                await self._redis.sadd(key, agent_id)
             await self._redis.expire(key, self._window * 2)
             seen: set[str] = set()
             for bucket in (current, previous):
                 seen |= set(await self._redis.smembers(self._key(destination, bucket)))
             return min(len(seen), self._cap)
-        except (OSError, RuntimeError, ValueError) as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("Fan-in counter unavailable, cannot correlate: %s", exc)
             return 0
 
@@ -89,7 +96,7 @@ class FanInCounter:
         try:
             for bucket in (current, previous):
                 found |= set(await self._redis.smembers(self._key(destination, bucket)))
-        except (OSError, RuntimeError, ValueError) as exc:
+        except Exception as exc:  # noqa: BLE001
             logger.warning("Fan-in counter unavailable, cannot list agents: %s", exc)
             return set()
         return found
