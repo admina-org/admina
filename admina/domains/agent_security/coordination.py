@@ -30,12 +30,19 @@ owns it.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from admina.domains.agent_security.fingerprint import SKETCH_SIZE, matches, sketch
+from admina.domains.agent_security.fingerprint import (
+    MIN_SHARED_SHINGLES,
+    SKETCH_SIZE,
+    matches,
+    sketch,
+)
 
 __all__ = [
     "CoordinationDetector",
@@ -49,19 +56,32 @@ __all__ = [
 logger = logging.getLogger("admina.coordination")
 
 
+# Echo keys unioned and parsed in one go before confirm() yields the event
+# loop. confirm() runs on the proxy's own loop (main.py schedules _observe()
+# with asyncio.create_task), so the quantity that matters is not the total
+# work but the longest stretch of it that no other request can interrupt:
+# at the store's ceiling of agent_cap x cap values a single pass would hold
+# the loop for hundreds of milliseconds. Sixteen keys of a full budget is a
+# few milliseconds per batch, and a batch never splits a call's members
+# because every member of a call lives in one key.
+_CONFIRM_KEY_BATCH = 16
+
+
 class EchoStore:
     """Outbound content sketches, matched against later inbound content.
 
-    Entries are ``<agent_id>:<timestamp>:<msgid>:<value>`` members in one set
-    per destination, *agent* and time window. The agent and msgid
+    Entries are ``<agent_id>:<timestamp>:<callid>-<field>:<value>`` members in
+    one set per destination, *agent* and time window. The agent and callid
     (content-derived hash) are what let the two rules that give the verdict
     meaning be enforced at read time: a match against the same agent is
     discarded, and the outbound sketch must predate the inbound content.
 
-    Each distinct message is matched individually against the inbound sketch.
-    This prevents false positives where unrelated messages are pooled to meet
-    the MIN_SHARED_SHINGLES floor that guarantees containment of one coherent
-    text.
+    Each distinct message is matched individually against the inbound
+    content, and within a message each *field* of the payload is kept
+    separate. Both are the same rule: the shingle floor that guarantees a
+    match is one coherent run of text is trivially met by pooling texts that
+    were never together — two unrelated messages, or a header block, a
+    content type and a bearer token that every agent in a fleet sends.
 
     The storage budget is per agent, not per destination. A single set per
     destination is a resource every agent writing there shares, so whichever
@@ -73,8 +93,8 @@ class EchoStore:
     displace an agent's sketches its own.
 
     Reading them back needs the agents' ids, so each bucket also carries an
-    index set of the agents that wrote to it, capped at *agent_cap*; confirm()
-    reads the two indexes and unions the keys they name in one round trip.
+    index set of the agents that wrote to it, holding *agent_cap* ids; confirm()
+    reads the two indexes and unions the keys they name in bounded batches.
     Being an index of *this* store's buckets rather than the fan-in counter's
     (whose window is half as long) keeps the matchable period where the
     docstring below says it is.
@@ -96,7 +116,7 @@ class EchoStore:
         self._window = max(1, ttl_seconds)
         self._threshold = threshold
         # Values per agent per bucket. Two maximal sketches: large enough that
-        # one sketch always fits after the eviction in record_outbound, so the
+        # one call always fits after the eviction in record_outbound, so the
         # message an agent just sent is always the one that is kept.
         self._cap = cap
         # Agents indexed per destination per bucket. Bounds both the fan-out
@@ -105,10 +125,10 @@ class EchoStore:
         self._agent_cap = agent_cap
 
     @staticmethod
-    def _msgid(sketch_values: frozenset[int]) -> str:
-        """Derive a short content-based message id from the sketch."""
-        sorted_values = sorted(sketch_values)
-        h = hashlib.sha256(str(sorted_values).encode()).digest()
+    def _callid(sketches: Sequence[frozenset[int]]) -> str:
+        """Derive a short content-based call id from the call's field sketches."""
+        combined = sorted(v for values in sketches for v in values)
+        h = hashlib.sha256(str(combined).encode()).digest()
         return h.hex()[:8]
 
     def _buckets(self, now: float) -> tuple[int, int]:
@@ -123,24 +143,55 @@ class EchoStore:
         return f"admina:egress:echo:{destination}:{bucket}:agents"
 
     async def _register(self, index_key: str, agent_id: str) -> bool:
-        """Index the agent against the bucket. False when the index is full."""
-        if await self._redis.scard(index_key) >= self._agent_cap and not (
-            await self._redis.sismember(index_key, agent_id)
-        ):
-            return False
+        """Index the agent against the bucket. True when the index was full.
+
+        ``agent_id`` is whatever the caller put in the ``X-Agent-Id`` header,
+        so the index is fillable on purpose. Making room for the arriving
+        agent rather than refusing it means forged ids cannot lock a named
+        agent out of the echo phase for the life of the bucket: every write
+        re-registers its writer, so an agent that keeps sending is re-indexed
+        on its next call and the ids that stop sending are the ones that
+        leave. What a full index does cost is certainty — some agent's
+        sketches are no longer readable — which is why the caller reports the
+        destination as `degraded` rather than as "no echo found" while it
+        lasts.
+        """
+        saturated = await self._redis.scard(index_key) >= self._agent_cap
+        if saturated and not await self._redis.sismember(index_key, agent_id):
+            await self._redis.spop(index_key)
+            logger.warning(
+                "Echo store index for %r is full at %d agents; evicting one to record %r. "
+                "Agent ids come from a caller-supplied header, so a flood of forged ids "
+                "reaches this state deliberately",
+                index_key,
+                self._agent_cap,
+                agent_id,
+            )
         await self._redis.sadd(index_key, agent_id)
         await self._redis.expire(index_key, self._window * 2)
-        return True
+        return saturated
 
     async def record_outbound(
-        self, destination: str, agent_id: str, sketch_values: frozenset[int], now: float
-    ) -> None:
-        """Store one agent's outbound sketch. No-op without Redis or a sketch.
+        self,
+        destination: str,
+        agent_id: str,
+        sketches: Sequence[frozenset[int]],
+        now: float,
+    ) -> bool:
+        """Store one call's per-field sketches. No-op without Redis or a sketch.
 
-        Writes all values of the sketch or none. Partial writes are dropped to
+        Returns whether a later negative result from :meth:`confirm` can be
+        read as "no echo". False means something the echo phase needed is
+        missing — the store is unreachable, this call's content was too large
+        to record, or the destination's agent index is full and some agent's
+        sketches are therefore unreadable — and the caller reports `degraded`
+        instead of `suspected`. True with no sketches to store is not a
+        degradation: a call carrying no matchable text is the ordinary case.
+
+        Writes all values of the call or none. Partial writes are dropped to
         avoid creating unsearchable fragments (too few shingles to ever match).
 
-        When the agent's own budget cannot hold the sketch, its older sketches
+        When the agent's own budget cannot hold the call, its older sketches
         for this bucket are dropped and the current message is written whole.
         Keeping the older ones instead would leave the agent's most recent
         message — the one another agent is about to echo — unmatchable, and
@@ -151,34 +202,31 @@ class EchoStore:
         is the only path to a quarantine, so a sketch that is not stored is
         confirmation that cannot happen.
         """
-        if self._redis is None or not sketch_values:
-            return
+        if self._redis is None:
+            return False
+        if not sketches:
+            return True
+        total = sum(len(values) for values in sketches)
+        if total > self._cap:
+            # Checked before the agent is indexed: a call that will store
+            # nothing must not take a slot in a bounded index either.
+            logger.warning(
+                "Call of %d sketch values exceeds the %d-value echo budget per agent; %r's "
+                "content toward %r is not recorded and cannot confirm an echo",
+                total,
+                self._cap,
+                agent_id,
+                destination,
+            )
+            return False
         current, _ = self._buckets(now)
         key = self._key(destination, agent_id, current)
         index_key = self._index_key(destination, current)
-        msgid = self._msgid(sketch_values)
+        callid = self._callid(sketches)
         try:
-            if not await self._register(index_key, agent_id):
-                logger.warning(
-                    "Echo store index for %r holds %d agents; %r's content is not recorded "
-                    "for this window and cannot confirm an echo",
-                    destination,
-                    self._agent_cap,
-                    agent_id,
-                )
-                return
-            if len(sketch_values) > self._cap:
-                logger.warning(
-                    "Sketch of %d values exceeds the %d-value echo budget per agent; %r's "
-                    "content toward %r is not recorded and cannot confirm an echo",
-                    len(sketch_values),
-                    self._cap,
-                    agent_id,
-                    destination,
-                )
-                return
+            saturated = await self._register(index_key, agent_id)
             stored = await self._redis.scard(key)
-            if self._cap - stored < len(sketch_values):
+            if self._cap - stored < total:
                 await self._redis.delete(key)
                 logger.info(
                     "Echo budget of %d values for %r on %r is full; dropping its older "
@@ -187,55 +235,118 @@ class EchoStore:
                     agent_id,
                     destination,
                 )
-            members = [f"{agent_id}:{now}:{msgid}:{v}" for v in sketch_values]
+            members = [
+                f"{agent_id}:{now}:{callid}-{index}:{value}"
+                for index, values in enumerate(sketches)
+                for value in values
+            ]
             await self._redis.sadd(key, *members)
             await self._redis.expire(key, self._window * 2)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Echo store unavailable, not recording outbound: %s", exc)
+            return False
+        return not saturated
+
+    @staticmethod
+    def _parse(members: Any, agent_id: str, now: float) -> dict[tuple[str, str, str], set[int]]:
+        """Group raw members into ``(agent, callid, field) -> sketch values``.
+
+        Members written by *agent_id* itself are dropped: an agent echoing
+        itself is not coordination, and the caller handles its own history
+        separately.
+        """
+        grouped: dict[tuple[str, str, str], set[int]] = {}
+        for member in members:
+            # Parse from the right to handle agent IDs containing colons.
+            # agent_id:timestamp:callid-field:value -> rsplit gives four parts.
+            parts = str(member).rsplit(":", 3)
+            if len(parts) != 4:
+                continue
+            other, stamp, message, value = parts
+            if other == agent_id:
+                continue
+            callid, _, fieldno = message.rpartition("-")
+            try:
+                if float(stamp) > now:
+                    continue
+                grouped.setdefault((other, callid, fieldno), set()).add(int(value))
+            except ValueError:
+                continue
+        return grouped
+
+    async def _own_shingles(self, keys: Sequence[str]) -> frozenset[int]:
+        """Every shingle this agent has already sent to this destination.
+
+        Text an agent repeats across its own calls is, by construction, not
+        evidence that it read another agent's message: it is that agent's own
+        boilerplate — a template, a signature, the header block its runtime
+        attaches. Discounting it is the only part of this design that can tell
+        a fleet-wide constant from a message, because telling them apart needs
+        more than one call to look at.
+
+        Only the *reader's* own history is discounted, never the stored peer's.
+        Discounting a peer's repeats would let an agent launder a coordination
+        message by sending it twice, which is the evasion this whole store is
+        bounded to prevent.
+        """
+        values: set[int] = set()
+        for member in await self._redis.sunion(*keys):
+            parts = str(member).rsplit(":", 3)
+            if len(parts) != 4:
+                continue
+            try:
+                values.add(int(parts[3]))
+            except ValueError:
+                continue
+        return frozenset(values)
 
     async def confirm(
-        self, destination: str, agent_id: str, inbound: frozenset[int], now: float
+        self,
+        destination: str,
+        agent_id: str,
+        inbound: Sequence[frozenset[int]],
+        now: float,
     ) -> str | None:
         """Return the other agent's id when inbound content echoes its output."""
         if self._redis is None or not inbound:
             return None
         current, previous = self._buckets(now)
+        own_keys = [self._key(destination, agent_id, bucket) for bucket in (current, previous)]
         try:
-            keys: list[str] = []
+            peer_keys: list[str] = []
             for bucket in (current, previous):
                 indexed = await self._redis.smembers(self._index_key(destination, bucket))
-                keys.extend(self._key(destination, str(other), bucket) for other in indexed)
-            members_combined: set[str] = (
-                {str(m) for m in await self._redis.sunion(*keys)} if keys else set()
-            )
+                peer_keys.extend(
+                    self._key(destination, str(other), bucket)
+                    for other in indexed
+                    if str(other) != agent_id
+                )
+            own = await self._own_shingles(own_keys)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Echo store unavailable, cannot confirm: %s", exc)
             return None
 
-        # Group by (agent_id, msgid) to keep distinct messages separate.
-        # Each distinct message is matched individually.
-        by_message: dict[tuple[str, str], set[int]] = {}
-        for member in members_combined:
-            member_str = str(member)
-            # Parse from the right to handle agent IDs containing colons.
-            # agent_id:timestamp:msgid:value -> rsplit gives us four parts.
-            parts = member_str.rsplit(":", 3)
-            if len(parts) != 4:
-                continue
-            other, stamp, msgid, value = parts
-            if other == agent_id:
-                continue
-            try:
-                timestamp = float(stamp)
-                if timestamp > now:
-                    continue
-                by_message.setdefault((other, msgid), set()).add(int(value))
-            except ValueError:
-                continue
+        probe = [field - own for field in inbound]
+        probe = [field for field in probe if len(field) >= MIN_SHARED_SHINGLES]
+        if not probe:
+            return None
 
-        for (other, _), values in by_message.items():
-            if matches(inbound, frozenset(values), self._threshold):
-                return other
+        for start in range(0, len(peer_keys), _CONFIRM_KEY_BATCH):
+            batch = peer_keys[start : start + _CONFIRM_KEY_BATCH]
+            try:
+                members = await self._redis.sunion(*batch)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Echo store unavailable, cannot confirm: %s", exc)
+                return None
+            calls: dict[tuple[str, str], list[frozenset[int]]] = {}
+            for (other, callid, _), values in self._parse(members, agent_id, now).items():
+                calls.setdefault((other, callid), []).append(frozenset(values))
+            for (other, _), fields in calls.items():
+                if matches(probe, fields, self._threshold):
+                    return other
+            # Hand the loop back between batches: this coroutine runs on the
+            # proxy's own event loop and the parsing above is synchronous.
+            await asyncio.sleep(0)
         return None
 
 
@@ -496,9 +607,20 @@ class CoordinationDetector:
         self._key = fingerprint_key
 
     async def observe(
-        self, agent_id: str, egress_check: dict, content_tail: str, now: float
+        self,
+        agent_id: str,
+        egress_check: dict,
+        payload: str | Sequence[str],
+        now: float,
     ) -> CoordinationVerdict:
         """Record one governed call and report what it implies.
+
+        *payload* is the call's payload-bearing fields, as
+        ``egress.payload_fields()`` returns them; a single string is read as
+        one field. Each field is fingerprinted on its own and stays separate
+        for the whole of its life in the echo store, because the shingle
+        floor that makes a match mean "one coherent run of shared text" is
+        met by any fleet-wide constant once a call's strings are joined.
 
         A call can name several destinations at once (one tool call can
         produce several URLs). Every destination's side effects — renewal,
@@ -509,6 +631,7 @@ class CoordinationDetector:
         seen across all of this call's destinations, not the last one
         processed.
         """
+        texts = [payload] if isinstance(payload, str) else list(payload)
         destinations = [d for d in (egress_check.get("destinations") or []) if isinstance(d, str)]
         if not destinations:
             return CoordinationVerdict()
@@ -532,11 +655,23 @@ class CoordinationDetector:
                 best = self._stronger(best, CoordinationVerdict("degraded", destination))
                 continue
 
-            outbound = sketch(content_tail, self._key) if self._key else frozenset()
+            # A field whose sketch cannot reach the shingle floor on its own
+            # can never contribute to a match, so dropping it loses nothing
+            # and keeps short constants — a bearer token, a content type —
+            # out of the store entirely.
+            outbound = (
+                [
+                    values
+                    for values in (sketch(text, self._key) for text in texts)
+                    if len(values) >= MIN_SHARED_SHINGLES
+                ]
+                if self._key
+                else []
+            )
             peer = None
             if self._key and count >= self._min_agents:
                 peer = await self._echo.confirm(destination, agent_id, outbound, now)
-            await self._echo.record_outbound(destination, agent_id, outbound, now)
+            conclusive = await self._echo.record_outbound(destination, agent_id, outbound, now)
 
             if count < self._min_agents:
                 continue
@@ -545,6 +680,13 @@ class CoordinationDetector:
                 best = self._stronger(
                     best, CoordinationVerdict("confirmed", destination, count, peer)
                 )
+                continue
+            if not conclusive:
+                # The echo phase could not see everything it needed to, so a
+                # negative result is not the same as no echo: say so instead
+                # of reporting `suspected`, which claims the content was
+                # looked at.
+                best = self._stronger(best, CoordinationVerdict("degraded", destination, count))
                 continue
             best = self._stronger(best, CoordinationVerdict("suspected", destination, count))
         return best

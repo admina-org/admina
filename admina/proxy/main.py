@@ -47,7 +47,7 @@ from admina import __version__
 from admina.core.event_bus import GovernanceEvent as BusGovernanceEvent
 from admina.core.event_bus import bus as governance_bus
 from admina.core.types import EventType, GovernanceAction, RiskLevel
-from admina.domains.agent_security.egress import payload_text, resolve_egress_mode
+from admina.domains.agent_security.egress import payload_fields, resolve_egress_mode
 from admina.domains.compliance.forensic import ForensicBlackBox
 from admina.domains.compliance.otel import OTELGovernanceExporter
 from admina.domains.governance import (
@@ -1427,20 +1427,24 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
     # Never blocks: a confirmed verdict arms EgressPolicy's quarantine set,
     # which is what makes the next payload-bearing call to that destination
     # refuse. What is fingerprinted is the payload the call carries
-    # (`payload_text`), not the serialised request: the method, the tool name
-    # and every argument name are identical on every call to the same tool,
-    # so a sketch taken over them measures the shape of the API and matches
-    # every other caller of it. A call carrying no payload text yields "",
-    # and the echo phase skips it. The tail is capped at 2000 chars —
-    # fingerprinting the whole conversation would be quadratic and would
-    # match an agent against its own past (see fingerprint.py's SKETCH_SIZE
-    # note). The extraction runs inside the task, off the request path.
+    # (`payload_fields`), not the serialised request: the method, the tool
+    # name and every argument name are identical on every call to the same
+    # tool, so a sketch taken over them measures the shape of the API and
+    # matches every other caller of it. The fields are handed over separately
+    # and never joined, because a header block, a content type and a bearer
+    # token are constant across a fleet too and concatenating them rebuilds
+    # the same false match one level down. A call carrying no payload text
+    # yields [], and the echo phase skips it. Each field is capped at 2000
+    # chars — fingerprinting the whole conversation would be quadratic and
+    # would match an agent against its own past (see fingerprint.py's
+    # SKETCH_SIZE note). The extraction runs inside the task, off the
+    # request path.
     if state.coordination is not None and "egress" in pipeline_result.checks:
 
         async def _observe() -> None:
-            content_tail = payload_text(params)[-2000:]
+            payload = payload_fields(params)
             verdict = await state.coordination.observe(
-                agent_id, pipeline_result.checks["egress"], content_tail, time.time()
+                agent_id, pipeline_result.checks["egress"], payload, time.time()
             )
             if verdict.status not in ("suspected", "confirmed", "degraded"):
                 return

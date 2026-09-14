@@ -85,7 +85,7 @@ class TestContainment:
             + "\n\n"
             + " ".join(f"filler{i}" for i in range(100))
         )
-        assert matches(sketch(message, _KEY), sketch(page, _KEY)) is True
+        assert matches([sketch(message, _KEY)], [sketch(page, _KEY)]) is True
         assert overlap(sketch(message, _KEY), sketch(page, _KEY)) > 0.6
 
     def test_boilerplate_phrase_does_not_match(self):
@@ -104,7 +104,7 @@ class TestContainment:
         # Overlap may be high but intersection is small
         assert overlap(sketch(text_a, _KEY), sketch(text_b, _KEY)) >= 0.5
         assert shared < 12  # Below MIN_SHARED_SHINGLES
-        assert matches(sketch(text_a, _KEY), sketch(text_b, _KEY)) is False
+        assert matches([sketch(text_a, _KEY)], [sketch(text_b, _KEY)]) is False
 
     def test_tail_truncation_does_not_fire_for_spec_input(self):
         """SKETCH_SIZE=512 does not truncate in-spec input.
@@ -146,7 +146,7 @@ class TestContainment:
 
         assert len(a & b) >= MIN_SHARED_SHINGLES, "the floor is not what rejects this pair"
         assert overlap(a, b) < 0.4
-        assert matches(a, b) is False
+        assert matches([a], [b]) is False
 
     def test_the_threshold_argument_is_what_rejects_it(self):
         """Names the condition under test, so the pair above cannot be read
@@ -157,8 +157,8 @@ class TestContainment:
         )
         a = sketch(" ".join(f"alpha{i}" for i in range(200)) + " " + footer, _KEY)
         b = sketch(" ".join(f"bravo{i}" for i in range(200)) + " " + footer, _KEY)
-        assert matches(a, b, threshold=0.4) is False
-        assert matches(a, b, threshold=0.0) is True, "only the ratio separates them"
+        assert matches([a], [b], threshold=0.4) is False
+        assert matches([a], [b], threshold=0.0) is True, "only the ratio separates them"
 
 
 class TestKeyLength:

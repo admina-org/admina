@@ -47,6 +47,15 @@ class FakeRedis:
             union |= self.sets.get(name, set())
         return union
 
+    async def spop(self, key, count=None):
+        """Remove and return one arbitrary member, as redis-py's SPOP does."""
+        if self.fail:
+            raise FakeRedisError("redis down")
+        members = self.sets.get(key)
+        if not members:
+            return None
+        return members.pop()
+
     async def delete(self, *keys):
         if self.fail:
             raise FakeRedisError("redis down")

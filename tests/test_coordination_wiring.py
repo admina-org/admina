@@ -119,12 +119,12 @@ class _RecordingCoordination:
         self.calls: list[dict] = []
         self._verdict = verdict or CoordinationVerdict()
 
-    async def observe(self, agent_id, egress_check, content_tail, now):
+    async def observe(self, agent_id, egress_check, payload, now):
         self.calls.append(
             {
                 "agent_id": agent_id,
                 "destinations": list(egress_check.get("destinations") or []),
-                "content_tail": content_tail,
+                "payload": list(payload),
                 "now": now,
             }
         )
@@ -168,7 +168,7 @@ def _wiki_body(tool: str, message: str, extra: dict | None = None) -> dict:
     }
 
 
-def _drive_governed_calls(monkeypatch, coordination, calls, forensic_box=None):
+def _drive_governed_calls(monkeypatch, coordination, calls, forensic_box=None, allow=None):
     """POST each of *calls* through the real /mcp handler against one state.
 
     *calls* is a sequence of ``(agent_id, body)``. Returns
@@ -208,7 +208,7 @@ def _drive_governed_calls(monkeypatch, coordination, calls, forensic_box=None):
         firewall=_FakeFirewall(),
         pii_redactor=None,
         loop_breaker=_FakeLoopBreaker(),
-        egress_policy=EgressPolicy(allow=["wiki.corp"]),
+        egress_policy=EgressPolicy(allow=allow or ["wiki.corp"]),
         coordination=coordination,
         router=MultiUpstreamRouter(default_upstream="http://fake-upstream"),
         http_client=mock_http,
@@ -243,7 +243,7 @@ def _drive_governed_calls(monkeypatch, coordination, calls, forensic_box=None):
 def _drive_governed_call(monkeypatch, coordination, forensic_box=None):
     """One write-shaped call through the real /mcp handler.
 
-    3000 chars of payload guarantee the content tail is well past the
+    3000 chars of payload guarantee the payload field is well past the
     2000-char cap it must be clipped to.
     """
     body = {
@@ -283,7 +283,7 @@ class TestCallSiteIsPinned:
         call = fake_coordination.calls[0]
         assert call["agent_id"] == "agent-7"
         assert "wiki.corp" in call["destinations"]
-        assert len(call["content_tail"]) == 2000, "the tail must be capped at 2000 chars"
+        assert [len(f) for f in call["payload"]] == [2000], "each field capped at 2000 chars"
 
     def test_the_tail_is_the_payload_and_not_the_request_envelope(self, monkeypatch):
         """What is fingerprinted is the message, not the call that carried it.
@@ -295,10 +295,10 @@ class TestCallSiteIsPinned:
         """
         fake_coordination = _RecordingCoordination()
         _resp, _result = _drive_governed_call(monkeypatch, fake_coordination)
-        tail = fake_coordination.calls[0]["content_tail"]
-        assert tail == "x" * 2000, "the tail must be the payload value itself"
+        payload = fake_coordination.calls[0]["payload"]
+        assert payload == ["x" * 2000], "the field must be the payload value itself"
         for envelope_token in ("jsonrpc", "tools/call", "wiki_edit", "arguments", "wiki.corp"):
-            assert envelope_token not in tail
+            assert envelope_token not in "".join(payload)
 
 
 class _SpyDetector(CoordinationDetector):
@@ -350,48 +350,208 @@ def _real_detector(redis, min_agents):
     )
 
 
-class TestOrdinaryTrafficThroughOneToolIsNotAnEcho:
-    """Five agents, one verbose tool, five different messages.
+# A shared service-account key: constant across the fleet, and long enough
+# that its word tokens form shingles. Nothing stops it being extracted; what
+# stops it being stored is that six shingles cannot reach the floor a match
+# needs, so it can never be evidence of anything.
+_SERVICE_CREDENTIAL = "Bearer sk-corp-shared-service-account-2026-eu-west-1"
 
-    This is what a shared wiki looks like on an ordinary afternoon. The
-    fan-in trigger is supposed to notice it (`suspected`, which blocks
+
+# Five ordinary tool shapes. Every one of them carries values that are
+# identical on every call a fleet makes through it — a header block, a bearer
+# token, a content type, a space key — beside the one value that is the
+# message.
+def _http_request(msg):
+    return {
+        "name": "http_request",
+        "arguments": {
+            "url": "https://hooks.corp/v1/dispatch",
+            "method": "POST",
+            "headers": {
+                "user-agent": "AdminaAgentRuntime/2.4 (+https://example.invalid/agents)",
+                "authorization": _SERVICE_CREDENTIAL,
+                "content-type": "application/json; charset=utf-8",
+                "x-trace-context": "runtime-dispatch-pool-worker-eu-west-1",
+            },
+            "body": msg,
+        },
+    }
+
+
+def _wiki_append(msg):
+    return {
+        "name": "confluence_page_append_content",
+        "arguments": {
+            "url": "https://wiki.corp/rest/api/content/44182/child/page",
+            "space_key": "ENGINEERING",
+            "parent_page_id": "44182031",
+            "title": "Daily operations log",
+            "content_format": "storage",
+            "representation": "storage editor2 macro rendering enabled",
+            "content": msg,
+        },
+    }
+
+
+def _slack_post(msg):
+    return {
+        "name": "slack_post_message",
+        "arguments": {
+            "url": "https://slack.corp/api/chat.postMessage",
+            "channel": "C08ANALYTICSOPS",
+            "username": "admina-dispatch-bot",
+            "icon_emoji": ":robot_face: dispatch runtime",
+            "unfurl_links": False,
+            "text": msg,
+        },
+    }
+
+
+def _github_comment(msg):
+    return {
+        "name": "github_issue_comment",
+        "arguments": {
+            "endpoint": "https://api.github.corp/repos/platform/core/issues/412/comments",
+            "accept": "application/vnd.github.v3+json",
+            "user_agent": "octokit-rest.js/20.0.2 admina-agent-runtime worker",
+            "authorization": "token ghp_0123456789abcdefghijklmnopqrstuvwx",
+            "body": msg,
+        },
+    }
+
+
+def _nested_webhook(msg):
+    return {
+        "name": "webhook_dispatch",
+        "arguments": {
+            "webhook": {
+                "url": "https://hooks.corp/services/T0/B0/XXXX",
+                "text": msg,
+                "link_names": True,
+            },
+            "retry_policy": {"max_attempts": 3, "backoff": "exponential with jitter enabled"},
+            "content_type": "application/json; charset=utf-8",
+        },
+    }
+
+
+def _credentialed_call(msg):
+    """Two payload values and nothing else: the token and the message."""
+    return {
+        "name": "http_post",
+        "arguments": {
+            "url": "https://hooks.corp/v1/dispatch",
+            "authorization": _SERVICE_CREDENTIAL,
+            "body": msg,
+        },
+    }
+
+
+_TOOL_SHAPES = {
+    "http_request": (_http_request, "hooks.corp"),
+    "wiki_append": (_wiki_append, "wiki.corp"),
+    "slack_post": (_slack_post, "slack.corp"),
+    "github_comment": (_github_comment, "api.github.corp"),
+    "nested_webhook": (_nested_webhook, "hooks.corp"),
+}
+
+# Driven only by the credential test, so the five-shape matrix keeps naming
+# the five shapes the review asked for.
+_TOOL_SHAPES_EXTRA = {"credentialed": (_credentialed_call, "hooks.corp")}
+
+# A genuine echo: agent-4 quotes agent-0's message inside its own text.
+_QUOTED = (
+    "Picking this up from the earlier note, quoting it verbatim so the thread has it: "
+    + _DIFFERENT_MESSAGES[0]
+    + " I will take the follow-up on the eu-west shard."
+)
+
+
+def _jsonrpc(params):
+    return {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params}
+
+
+def _run_shape(monkeypatch, shape, messages):
+    build, host = {**_TOOL_SHAPES, **_TOOL_SHAPES_EXTRA}[shape]
+    redis = FakeRedisHash()
+    detector = _real_detector(redis, min_agents=5)
+    calls = [(f"agent-{i}", _jsonrpc(build(msg))) for i, msg in enumerate(messages)]
+    responses, _results = _drive_governed_calls(monkeypatch, detector, calls, allow=[host])
+    assert [r.status_code for r in responses] == [200] * len(messages)
+    return detector, host, redis
+
+
+class TestOrdinaryTrafficThroughOneToolIsNotAnEcho:
+    """Five agents, one tool, five different messages, five tool shapes.
+
+    This is what a shared destination looks like on an ordinary afternoon.
+    The fan-in trigger is supposed to notice it (`suspected`, which blocks
     nothing); the echo phase is supposed to find no echo, because there is
-    none. Fingerprinting the serialised request instead of the payload turns
-    the fixed part of the envelope — method, tool name, argument names, the
-    constant argument values — into the shared shingles the confirmation
-    rests on, and every pair of agents matches.
+    none. Anything constant across the fleet's calls manufactures the
+    similarity the echo phase reads as coordination: first the serialised
+    envelope, then — once that was stripped — the argument *values*, a
+    header block and a bearer token and a content type, joined into a run of
+    shared text that no single field contained. Both directions are pinned
+    here, for every shape, because a fix that stops confirming is not a fix.
     """
 
-    def test_five_agents_posting_different_messages_are_not_confirmed(self, monkeypatch):
-        detector = _real_detector(FakeRedisHash(), min_agents=5)
-        calls = [
-            (f"agent-{i}", _wiki_body("confluence_page_append_content", msg, _VERBOSE_ARGS))
-            for i, msg in enumerate(_DIFFERENT_MESSAGES)
-        ]
-        responses, _results = _drive_governed_calls(monkeypatch, detector, calls)
-
-        assert [r.status_code for r in responses] == [200] * 5
+    @pytest.mark.parametrize("shape", sorted(_TOOL_SHAPES))
+    def test_five_agents_posting_different_messages_are_not_confirmed(self, shape, monkeypatch):
+        detector, _host, _redis = _run_shape(monkeypatch, shape, _DIFFERENT_MESSAGES)
         statuses = [v.status for v in detector.verdicts]
-        assert "confirmed" not in statuses, f"ordinary traffic was confirmed: {statuses}"
+        assert "confirmed" not in statuses, f"{shape}: ordinary traffic was confirmed: {statuses}"
         assert statuses[-1] == "suspected", (
-            f"the fan-in trigger must still fire on five agents, got {statuses}"
+            f"{shape}: the fan-in trigger must still fire on five agents, got {statuses}"
         )
 
-    def test_a_genuine_echo_through_the_same_tool_still_confirms(self, monkeypatch):
+    @pytest.mark.parametrize("shape", sorted(_TOOL_SHAPES))
+    def test_a_genuine_echo_through_the_same_tool_still_confirms(self, shape, monkeypatch):
         """The fix narrows what is fingerprinted, not whether it detects."""
-        detector = _real_detector(FakeRedisHash(), min_agents=5)
-        echoed = list(_DIFFERENT_MESSAGES)
-        echoed[4] = _DIFFERENT_MESSAGES[0]  # agent-4 repeats what agent-0 wrote
-        calls = [
-            (f"agent-{i}", _wiki_body("confluence_page_append_content", msg, _VERBOSE_ARGS))
-            for i, msg in enumerate(echoed)
-        ]
-        _responses, _results = _drive_governed_calls(monkeypatch, detector, calls)
-
+        echoed = _DIFFERENT_MESSAGES[:4] + [_QUOTED]
+        detector, host, _redis = _run_shape(monkeypatch, shape, echoed)
         final = detector.verdicts[-1]
-        assert final.status == "confirmed", [v.status for v in detector.verdicts]
+        assert final.status == "confirmed", f"{shape}: {[v.status for v in detector.verdicts]}"
         assert final.peer == "agent-0"
-        assert final.destination == "wiki.corp"
+        assert final.destination == host
+
+    def test_a_short_status_line_fleet_is_not_confirmed(self, monkeypatch):
+        """The length band the constant-value false positive lived in.
+
+        Messages too short to clear the shingle floor on their own leave the
+        fleet's constant argument values as the only long run of shared text
+        in the call, which is what made twenty of twenty ordered pairs match.
+        """
+        shorts = [
+            "the quarterly revenue figures for the northern region have been finalised today",
+            "deployment of the search indexer is paused until the storage quota increases",
+            "three invoices in the eu-west shard were reissued under the new scheme",
+            "the onboarding wizard now shows completed sections instead of a percentage bar",
+            "load testing peaked at eleven thousand queries per second before latency rose",
+        ]
+        detector, _host, _redis = _run_shape(monkeypatch, "http_request", shorts)
+        statuses = [v.status for v in detector.verdicts]
+        assert "confirmed" not in statuses, statuses
+
+    def test_a_credential_value_is_never_fingerprinted(self, monkeypatch):
+        """A security control should not be drawing bearer tokens into its
+        echo store, keyed HMAC or not. Nothing below the shingle floor can
+        contribute to a match, so nothing below it is stored — and the
+        credential is extracted here, not filtered out by the field cap:
+        the call carries exactly two payload values and this is one of them.
+        """
+        from admina.domains.agent_security.fingerprint import sketch
+
+        _detector, _host, redis = _run_shape(monkeypatch, "credentialed", _DIFFERENT_MESSAGES)
+        stored = {
+            int(str(m).rsplit(":", 3)[3])
+            for members in redis.sets.values()
+            for m in members
+            if str(m).rsplit(":", 3)[-1].isdigit()
+        }
+        credential = sketch(_SERVICE_CREDENTIAL, b"deployment-secret")
+        assert stored, "the fleet's messages are stored"
+        assert credential, "the credential does form shingles; the floor is what excludes it"
+        assert not (stored & credential), "a credential value reached the echo store"
 
 
 class TestAnArmedQuarantineLeavesAnAuditRecord:

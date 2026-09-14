@@ -46,6 +46,33 @@ from admina.domains.agent_security.coordination import (
     FanInCounter,
     QuarantineStore,
 )
+from admina.domains.agent_security.egress import payload_fields
+
+# The corpus stores a trace's content as bare text, but the detector is never
+# handed bare text: the proxy hands it `egress.payload_fields()` of a tool
+# call. Replaying through a real envelope — one carrying the constant header
+# block, bearer token and content type every call to a tool carries — is what
+# makes these traces exercise the shipped extraction rather than a shortcut
+# around it.
+_HEADERS = {
+    "user-agent": "AdminaAgentRuntime/2.4 (+https://example.invalid/agents)",
+    "authorization": "Bearer sk-corp-shared-service-account-2026-eu-west-1",
+    "content-type": "application/json; charset=utf-8",
+    "x-trace-context": "runtime-dispatch-pool-worker-eu-west-1",
+}
+
+
+def _tool_call(destination, content):
+    return {
+        "name": "http_request",
+        "arguments": {
+            "url": f"https://{destination}/v1/dispatch",
+            "method": "POST",
+            "headers": dict(_HEADERS),
+            "body": content,
+        },
+    }
+
 
 CORPUS = pathlib.Path(__file__).parent.parent / "admina/redteam/corpora/coordination.jsonl"
 
@@ -79,7 +106,7 @@ async def _replay(trace, min_agents=3):
                 "write_shaped": event["write_shaped"],
                 "allowed": event["allowed"],
             },
-            event["content"],
+            payload_fields(_tool_call(event["destination"], event["content"])),
             now=1000.0 + event["t"],
         )
         worst = CoordinationDetector._stronger(worst, verdict)  # noqa: SLF001

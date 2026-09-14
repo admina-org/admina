@@ -37,6 +37,7 @@ import hmac
 import logging
 import os
 import re
+from collections.abc import Sequence
 
 __all__ = [
     "SHINGLE_WORDS",
@@ -123,15 +124,34 @@ def overlap(a: frozenset[int], b: frozenset[int]) -> float:
     return len(a & b) / min(len(a), len(b))
 
 
-def matches(a: frozenset[int], b: frozenset[int], threshold: float = 0.4) -> bool:
-    """Whether two sketches indicate containment, not just similarity.
+def matches(
+    a_fields: Sequence[frozenset[int]],
+    b_fields: Sequence[frozenset[int]],
+    threshold: float = 0.4,
+) -> bool:
+    """Whether two payloads indicate containment, not just similarity.
 
-    Returns True only if both:
-    - the sketches share at least MIN_SHARED_SHINGLES hashes (absolute count),
-    - their overlap exceeds threshold (default 0.4).
+    Each argument is the sketches of one payload's *fields*, one entry per
+    field, because a tool call carries several strings and they are not one
+    text. Returns True only if both:
 
-    Both conditions are necessary: overlap alone allows false positives on
-    boilerplate phrases; intersection size discriminates them.
+    - a single pair of fields, one from each side, shares at least
+      MIN_SHARED_SHINGLES hashes — one coherent run of shared text, never a
+      union of separate fields, because short constants concatenated reach
+      the floor without any one of them being a message;
+    - the two payloads overlap by at least *threshold*: how much of the
+      smaller of the two the shared text accounts for, measured over
+      everything each call carried.
+
+    Both conditions are necessary, and each answers a different way of
+    faking an echo. Containment alone fires on boilerplate phrases, which
+    the per-field floor discriminates. The floor alone lets one short
+    constant field that every agent in a fleet sends — a header, a template,
+    a signature — match at 1.0, which containment over the whole payload
+    dilutes in proportion to how much real message surrounds it.
     """
-    shared = a & b
-    return len(shared) >= MIN_SHARED_SHINGLES and overlap(a, b) >= threshold
+    union_a = frozenset().union(*a_fields) if a_fields else frozenset()
+    union_b = frozenset().union(*b_fields) if b_fields else frozenset()
+    if overlap(union_a, union_b) < threshold:
+        return False
+    return any(len(a & b) >= MIN_SHARED_SHINGLES for a in a_fields for b in b_fields)
