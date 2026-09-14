@@ -150,6 +150,40 @@ def instantiate_plugins(
     return instances
 
 
+def build_coordination_detector(redis: Any, egress_cfg: Any, quarantine: Any) -> Any:
+    """Build the coordination detector from the egress configuration.
+
+    Module-level rather than inline in :func:`lifespan` so that which
+    configured value reaches which constructor argument can be asserted. A
+    running proxy does not expose it: replacing either use of
+    ``fanin_min_agents`` below with a literal leaves a deployment's
+    ``fanin.min_agents`` disconnected from the detector, and every test that
+    builds a detector of its own would still pass.
+    """
+    from admina.domains.agent_security.coordination import (
+        CoordinationDetector,
+        EchoStore,
+        FanInCounter,
+        common_sender_floor,
+    )
+    from admina.domains.agent_security.fingerprint import load_fingerprint_key
+
+    return CoordinationDetector(
+        fanin=FanInCounter(redis, egress_cfg.fanin_window_seconds),
+        echo=EchoStore(
+            redis,
+            egress_cfg.fanin_window_seconds * 2,
+            # Text this many distinct agents send toward a destination is
+            # that destination's ambient content, not an echo.
+            common_min_agents=common_sender_floor(egress_cfg.fanin_min_agents),
+        ),
+        quarantine=quarantine,
+        declared=frozenset(egress_cfg.coordination_declared),
+        min_agents=egress_cfg.fanin_min_agents,
+        fingerprint_key=load_fingerprint_key(),
+    )
+
+
 # ── Startup / Shutdown ───────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
@@ -260,30 +294,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     _eg_cfg = _admina_config.agent_security.egress if _admina_config else None
     if state.egress_policy is not None and _eg_cfg is not None:
         from admina.domains.agent_security.coordination import (
-            CoordinationDetector,
-            EchoStore,
-            FanInCounter,
             QuarantineStore,
-            common_sender_floor,
             refresh_quarantine_once,
         )
-        from admina.domains.agent_security.fingerprint import load_fingerprint_key
 
         _quarantine = QuarantineStore(state.redis, _eg_cfg.quarantine_ttl_seconds)
-        state.coordination = CoordinationDetector(
-            fanin=FanInCounter(state.redis, _eg_cfg.fanin_window_seconds),
-            echo=EchoStore(
-                state.redis,
-                _eg_cfg.fanin_window_seconds * 2,
-                # Text this many distinct agents send toward a destination is
-                # that destination's ambient content, not an echo.
-                common_min_agents=common_sender_floor(_eg_cfg.fanin_min_agents),
-            ),
-            quarantine=_quarantine,
-            declared=frozenset(_eg_cfg.coordination_declared),
-            min_agents=_eg_cfg.fanin_min_agents,
-            fingerprint_key=load_fingerprint_key(),
-        )
+        state.coordination = build_coordination_detector(state.redis, _eg_cfg, _quarantine)
 
         async def _refresh_loop() -> None:
             while True:

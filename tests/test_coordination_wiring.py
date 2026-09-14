@@ -94,6 +94,50 @@ class TestProxyWiring:
         write = analyze({"url": "https://wiki.corp/w?action=edit&text=a long enough payload"})
         assert policy.evaluate(write, "enforce").allowed is False
 
+    async def test_the_configured_fan_in_threshold_reaches_both_places_it_is_used(self):
+        """`fanin.min_agents` is read twice, and neither read was pinned.
+
+        It sets the fan-in trigger *and*, through `common_sender_floor()`,
+        the number of distinct senders that make a shingle a destination's
+        ambient content. Replacing either with a literal left the whole
+        suite green, because every test that exercises the detector builds
+        one of its own: a deployment's `fanin.min_agents` could be
+        disconnected from the detector entirely and nothing would notice.
+
+        The floor is asserted against `common_sender_floor(7)` and not
+        against `EchoStore`'s constructor default, so dropping the argument
+        fails here too.
+        """
+        from admina.core.config import EgressConfig
+        from admina.domains.agent_security.coordination import common_sender_floor
+        from admina.proxy.main import build_coordination_detector
+
+        cfg = EgressConfig(
+            coordination_declared=["queue.internal"],
+            fanin_window_seconds=900,
+            fanin_min_agents=7,
+        )
+        r = FakeRedisHash()
+        detector = build_coordination_detector(r, cfg, QuarantineStore(r, 60))
+
+        check = {
+            "status": "resolved",
+            "destinations": ["wiki.corp"],
+            "write_shaped": True,
+            "allowed": True,
+        }
+        statuses = [
+            (
+                await detector.observe(f"agent-{i}", check, f"message {i} from agent", 1000.0 + i)
+            ).status
+            for i in range(7)
+        ]
+        assert statuses == ["none"] * 6 + ["suspected"], statuses
+        assert detector._echo._common_min == common_sender_floor(7) == 6
+        assert detector._fanin._window == 900
+        assert detector._echo._window == 1800, "the echo bucket is twice the fan-in window"
+        assert detector._declared == frozenset({"queue.internal"})
+
     async def test_the_refresh_is_silent_with_no_redis_configured(self, caplog):
         """No Redis configured is a supported deployment, not a failure.
 
