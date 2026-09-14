@@ -28,6 +28,22 @@ class _Redis:
     async def hdel(self, key, field):
         return 1 if self.h.pop(field, None) is not None else 0
 
+    async def close(self):
+        pass
+
+
+class _FailingRedis:
+    """Redis client that always raises."""
+
+    async def hgetall(self, key):
+        raise ConnectionError("Redis unreachable")
+
+    async def hdel(self, key, field):
+        raise ConnectionError("Redis unreachable")
+
+    async def close(self):
+        pass
+
 
 @pytest.fixture
 def fake_redis(monkeypatch):
@@ -62,10 +78,24 @@ class TestQuarantineLift:
         fake_redis["redis"] = _Redis({"wiki.corp": "99999999999"})
         r = CliRunner().invoke(app, ["egress", "quarantine", "lift", "wiki.corp"])
         assert r.exit_code == 0
-        assert "wiki.corp" in r.output
+        assert "Lifted" in r.output
 
     def test_lifting_an_absent_destination_says_so(self, fake_redis):
         fake_redis["redis"] = _Redis({})
         r = CliRunner().invoke(app, ["egress", "quarantine", "lift", "nope.corp"])
         assert r.exit_code == 0
         assert "not quarantined" in r.output.lower()
+
+    def test_lift_with_redis_down_reports_unavailability(self, fake_redis):
+        fake_redis["redis"] = _FailingRedis()
+        r = CliRunner().invoke(app, ["egress", "quarantine", "lift", "wiki.corp"])
+        assert r.exit_code == 1
+        assert "Could not reach" in r.output
+
+
+class TestQuarantineListErrors:
+    def test_list_with_redis_down_reports_unavailability(self, fake_redis):
+        fake_redis["redis"] = _FailingRedis()
+        r = CliRunner().invoke(app, ["egress", "quarantine", "list"])
+        assert r.exit_code == 1
+        assert "Could not read" in r.output

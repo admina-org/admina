@@ -298,6 +298,25 @@ class QuarantineStore:
             logger.warning("Cannot read quarantine set: %s", exc)
             return frozenset()
 
+    async def current_raising(self, now: float) -> frozenset[str]:
+        """Destinations still quarantined. Raises on Redis failure.
+
+        Same as :meth:`current` but propagates exceptions instead of failing
+        open. CLI commands use this to distinguish unavailability (operator
+        needs to know) from absence (nothing to report).
+        """
+        return await self._read_live(now)
+
+    async def lift_raising(self, destination: str) -> bool:
+        """Clear one destination's quarantine. Raises on Redis failure.
+
+        Same as :meth:`lift` but propagates exceptions instead of failing open.
+        CLI commands use this to distinguish unavailability from absence.
+        """
+        if self._redis is None:
+            return False
+        return bool(await self._redis.hdel(self.KEY, destination))
+
     async def _read_live(self, now: float) -> frozenset[str]:
         """Read the hash and purge expired entries. Raises on a Redis failure.
 

@@ -1588,10 +1588,19 @@ def quarantine_list(redis_url: str) -> None:
     from admina.domains.agent_security.coordination import QuarantineStore
 
     async def _run():
-        store = QuarantineStore(_quarantine_redis(redis_url), ttl_seconds=1)
-        return await store.current(time.time())
+        client = _quarantine_redis(redis_url)
+        try:
+            store = QuarantineStore(client, ttl_seconds=1)
+            return await store.current_raising(time.time())
+        finally:
+            await client.close()
 
-    live = sorted(asyncio.run(_run()))
+    try:
+        live = sorted(asyncio.run(_run()))
+    except Exception as exc:  # noqa: BLE001
+        click.echo(f"Could not read quarantine set: {exc}")
+        raise SystemExit(1)
+
     if not live:
         click.echo("No destination is currently quarantined.")
         return
@@ -1613,10 +1622,20 @@ def quarantine_lift(destination: str, redis_url: str) -> None:
     from admina.domains.agent_security.coordination import QuarantineStore
 
     async def _run():
-        store = QuarantineStore(_quarantine_redis(redis_url), ttl_seconds=1)
-        return await store.lift(destination)
+        client = _quarantine_redis(redis_url)
+        try:
+            store = QuarantineStore(client, ttl_seconds=1)
+            return await store.lift_raising(destination)
+        finally:
+            await client.close()
 
-    if asyncio.run(_run()):
+    try:
+        lifted = asyncio.run(_run())
+    except Exception as exc:  # noqa: BLE001
+        click.echo(f"Could not reach quarantine store: {exc}")
+        raise SystemExit(1)
+
+    if lifted:
         click.echo(f"Lifted quarantine on {destination}.")
     else:
         click.echo(f"{destination} was not quarantined.")
