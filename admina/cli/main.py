@@ -1607,6 +1607,11 @@ def quarantine_list(redis_url: str) -> None:
     click.echo("Quarantined for writes (reads are unaffected):")
     for destination in live:
         click.echo(f"  - {destination}")
+    click.echo("")
+    click.echo(
+        "Write-shaped calls to these are refused only under ADMINA_EGRESS_MODE=enforce; "
+        "under the default observe mode they are recorded and allowed."
+    )
 
 
 @quarantine.command("lift")

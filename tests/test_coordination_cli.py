@@ -67,6 +67,13 @@ class TestQuarantineList:
         out = CliRunner().invoke(app, ["egress", "quarantine", "list"]).output
         assert "old.corp" not in out
 
+    def test_the_listing_says_what_a_quarantine_does_at_the_shipped_default(self, fake_redis):
+        """Under the default observe mode a listed destination is recorded,
+        not refused; a listing that does not say so reads as a block list."""
+        fake_redis["redis"] = _Redis({"wiki.corp": "99999999999"})
+        out = CliRunner().invoke(app, ["egress", "quarantine", "list"]).output
+        assert "ADMINA_EGRESS_MODE=enforce" in out
+
     def test_empty_set_explains_itself(self, fake_redis):
         fake_redis["redis"] = _Redis({})
         out = CliRunner().invoke(app, ["egress", "quarantine", "list"]).output

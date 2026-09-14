@@ -428,18 +428,25 @@ included. Wiring it is a separate change, not a configuration option.
 ### What it does
 
 `admina/proxy/main.py` feeds the egress check and a 2000-character tail of
-its content into `CoordinationDetector.observe()` for every MCP tool call
-that reaches the egress stage — one not already short-circuited by an
-earlier governance check (loop breaker, firewall) and with egress control
-enabled (`"egress" in pipeline_result.checks`). Two phases run in order,
-each gated on the destination not being in the operator's
+the call's *payload* into `CoordinationDetector.observe()` for every MCP
+tool call that reaches the egress stage — one not already short-circuited
+by an earlier governance check (loop breaker, firewall) and with egress
+control enabled (`"egress" in pipeline_result.checks`). The payload is
+`egress.payload_text()`: the string values the egress stage already treats
+as payload-bearing, without the keys, the tool name or the JSON-RPC
+envelope around them, which are identical on every call to a given tool
+and would make two agents using one tool look like an echo of each other.
+A call carrying no payload text is not fingerprinted at all. Two phases
+run in order, each gated on the destination not being in the operator's
 `coordination_declared` set:
 
 1. **Fan-in trigger (always on).** `FanInCounter` counts distinct agent
-   ids making write-shaped, egress-allowed calls to one destination inside
-   a rolling `fanin.window_seconds` (default 3600s). Once a destination
-   crosses `fanin.min_agents` (default 5, floor 2) distinct agents, the
-   verdict escalates to `suspected` and is logged. Nothing is blocked yet.
+   ids making write-shaped, egress-allowed calls to one destination across
+   two tumbling `fanin.window_seconds` buckets (default 3600s), so the
+   effective window is one to two times that value, as it is for the echo
+   sketches below. Once a destination crosses `fanin.min_agents`
+   (default 5, floor 2) distinct agents, the verdict escalates to
+   `suspected` and is logged. Nothing is blocked yet.
 2. **Echo confirmation (keyed).** Only once `ADMINA_EGRESS_FINGERPRINT_KEY`
    is set: each call's content tail is reduced to a bounded set of keyed
    shingle hashes (`fingerprint.py`) and checked against sketches other
@@ -448,10 +455,18 @@ each gated on the destination not being in the operator's
    adds the destination to the quarantine set.
 
 A `confirmed` destination is refused for write-shaped calls fleet-wide
-until `quarantine_ttl_seconds` (default 86400s) lapses without renewal, or
-an operator runs `admina egress quarantine lift <destination>`;
-`admina egress quarantine list` shows what is currently blocked. Reads are
+**under `ADMINA_EGRESS_MODE=enforce`**; under the default `observe` the
+verdict is recorded and logged, the destination appears in `admina egress
+quarantine list`, and the call proceeds — exactly as §5b describes for the
+allowlist, and for the same reason: upgrading a deployment must not
+silently start refusing calls. The quarantine holds until
+`quarantine_ttl_seconds` (default 86400s) lapses without renewal, or an
+operator runs `admina egress quarantine lift <destination>`. Reads are
 never affected — the quarantine only ever gates `write_shaped` calls.
+
+An armed quarantine writes its own record to the forensic chain, naming
+the destination, the number of agents counted and the peer whose content
+matched, and emits a `policy_violation` event on the governance bus.
 
 Self-confirmation is blocked by two independent mechanisms, not one:
 `FanInCounter` counts distinct `agent_id`s, so repeated calls from a single
@@ -494,10 +509,23 @@ does not participate in the Python/Rust recall baseline in §9.
   `GovernedAgent`) never call it, so multi-agent coordination conducted
   through any of those surfaces is invisible to this control — the same
   asymmetry §5b documents for the egress stage itself, one layer up.
-- **A quarantine is fleet-wide for writes.** `QuarantineStore` keeps one
-  shared destination-to-expiry hash; a single `confirmed` verdict costs
-  *every* agent write access to that destination, not just the agents
-  that triggered it, until the TTL lapses or an operator lifts it.
+- **A quarantine is fleet-wide for writes, and only under `enforce`.**
+  `QuarantineStore` keeps one shared destination-to-expiry hash; under
+  `ADMINA_EGRESS_MODE=enforce` a single `confirmed` verdict costs *every*
+  agent write access to that destination, not just the agents that
+  triggered it, until the TTL lapses or an operator lifts it. Under the
+  shipped default (`ADMINA_EGRESS_MODE` unset, which resolves to
+  `observe`) the quarantine is recorded and visible to `admina egress
+  quarantine list` and blocks nothing.
+- **A shared footer can be most of a short message.** Confirmation needs
+  12 shared shingles and a containment coefficient of 0.4, so two messages
+  match when what they share is more than about 40% of the shorter one.
+  Boilerplate long enough to clear the shingle floor does that on its own
+  when the messages are short: two 30-word bodies with nothing in common
+  but the same 25-word automated footer measure 21 shared shingles at 0.41
+  and confirm. The same footer on 60-word bodies scores 0.26 and does not.
+  A destination whose agents all append one signature is the shape to
+  watch, and `coordination_declared` is the answer for it.
 - **Detection is retrospective by construction.** The fan-in trigger needs
   `fanin_min_agents` distinct agents against one destination before it can
   conclude anything at all, so the calls that establish that count are
@@ -505,12 +533,40 @@ does not participate in the Python/Rust recall baseline in §9.
   free calls, never zero, before a `suspected` verdict becomes possible.
 - **Content sketches are bounded and keyed, never plaintext.** A sketch is
   a set of up to 512 keyed 64-bit HMAC values over 5-word shingles of the
-  last 2000 characters sent to a destination; nothing in `fingerprint.py`
-  stores or can reconstruct the source text. Outbound sketches live in a
-  per-destination Redis set sized at twice `fanin.window_seconds` (not an
-  independently configurable value) and are matchable for roughly one to
-  two times that size — with the shipped default (`window_seconds: 3600`)
-  that is 2 to 4 hours — after which they age out regardless of activity.
+  last 2000 characters of payload a call carried toward a destination;
+  nothing in `fingerprint.py` stores or can reconstruct the source text.
+  Outbound sketches live in a Redis set per destination, agent and bucket,
+  the bucket sized at twice `fanin.window_seconds` (not an independently
+  configurable value), and are matchable for roughly one to two times that
+  size — with the shipped default (`window_seconds: 3600`) that is 2 to 4
+  hours — after which they age out regardless of activity.
+- **An agent's sketch storage is capped, and the cap is per agent.** Each
+  agent holds up to 1024 values per destination per bucket; a message that
+  does not fit that budget displaces the same agent's older sketches, so
+  what an agent stores is always its most recent messages and no agent's
+  traffic can displace another's. Two ceilings above that do lose
+  detection, both logged at WARNING: a single sketch larger than the whole
+  budget is not stored, and at most 256 agents are indexed per destination
+  per bucket — an agent arriving after that is invisible to the echo phase
+  until the bucket rolls over.
+- **Under `observe` the tracked keyspace is bounded only by the agents.**
+  Fan-in and echo keys are named by destination, which comes from
+  agent-supplied arguments. Under `enforce` an unlisted destination is
+  refused upstream and nothing is recorded, so the allowlist bounds the
+  keyspace; under `observe` every destination is "allowed", so an agent
+  naming N hosts creates keys for N hosts, each held for 2-4 hours. Host
+  length is bounded to 253 characters by the analyser's host pattern, so
+  this is memory amplification rather than key injection.
+- **A call the firewall or the loop breaker stops never reaches the
+  detector.** `checks["egress"]` is only produced while the pipeline's
+  action is still ALLOW, so a call blocked earlier is not counted. Under
+  `observe`/`dry-run` that decision is downgraded back to ALLOW at stage 5
+  and the call *is* forwarded upstream while staying invisible here —
+  appending a known injection trigger to a payload removes a call from the
+  fan-in count without preventing its delivery. The loop breaker collides
+  with this feature's own subject: repetitive writes to one shared
+  destination are what coordination looks like and what trips the
+  breaker.
 
 ---
 

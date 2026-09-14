@@ -76,11 +76,16 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `window_seconds`, default 3600; `min_agents`, default 5) and reports
   `suspected` once the threshold is crossed. If
   `ADMINA_EGRESS_FINGERPRINT_KEY` is set, a second phase compares keyed
-  content shingles between agents; a match against another agent's prior
+  content shingles of what each call carries — the payload values, not the
+  request envelope — between agents; a match against another agent's prior
   output escalates the verdict to `confirmed` and quarantines the
   destination for write-shaped calls fleet-wide — every agent, not only
   the ones involved — until `quarantine_ttl_seconds` (default 86400) lapses
-  or an operator lifts it. **Without that key, the detector never
+  or an operator lifts it. The quarantine refuses calls under
+  `ADMINA_EGRESS_MODE=enforce`; under the default `observe` it is recorded,
+  logged, listed by `admina egress quarantine list` and written to the
+  forensic chain with the agents and the matching peer, and the call
+  proceeds — the same mode gate the allowlist has. **Without that key, the detector never
   escalates past `suspected`**: echo confirmation does not run at all
   rather than falling back to unkeyed, dictionary-attackable hashes.
   Destinations meant to receive coordinated writes are exempted via

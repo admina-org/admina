@@ -97,7 +97,8 @@ Grafana baseline.
   observed traffic. A cross-agent coordination detector, fed from the MCP
   proxy path only, escalates undeclared multi-agent fan-in on one
   destination to a fleet-wide write quarantine once keyed content confirms
-  it.
+  it — refused under `enforce`, recorded under `observe` like every other
+  egress decision.
 - Emission of the streaming-request metadata shaped in 0.11 onto the
   OpenTelemetry GenAI semantic conventions (`gen_ai.request.model`,
   `gen_ai.usage.*`, `gen_ai.response.finish_reasons`,

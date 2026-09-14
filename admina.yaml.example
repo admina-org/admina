@@ -108,9 +108,11 @@ domains:
       # destination the operator never declared: an always-on fan-in trigger
       # (below) counts distinct agents hitting one destination, and escalates
       # to a fleet-wide write quarantine on a content match between agents —
-      # never on intent, only on undeclared-ness. Fed only by the MCP proxy
-      # path (see MODEL_CARD.md §5c); the gateway, /api/v1/validate and the
-      # SDK primitives do not feed it.
+      # never on intent, only on undeclared-ness. The content compared is
+      # what the call carries (the payload argument values), not the tool
+      # call around it. Fed only by the MCP proxy path (see MODEL_CARD.md
+      # §5c); the gateway, /api/v1/validate and the SDK primitives do not
+      # feed it.
       #
       # Destinations where many agents legitimately write to one place — a
       # shared work queue, a results board — belong here. This is what stops
@@ -120,9 +122,11 @@ domains:
       # coordination_declared:
       #   - queue.internal
       fanin:
-        # Rolling window and distinct-agent threshold for the fan-in trigger.
-        # Crossing min_agents distinct agents against one undeclared
-        # destination inside window_seconds raises a `suspected` verdict
+        # Window and distinct-agent threshold for the fan-in trigger. Two
+        # tumbling buckets of window_seconds each, so the effective window
+        # is one to two times it. Crossing min_agents distinct agents
+        # against one undeclared destination inside it raises a `suspected`
+        # verdict
         # (logged, not blocked). The first calls that establish the count
         # are never themselves flagged — detection is retrospective.
         window_seconds: 3600
@@ -131,7 +135,10 @@ domains:
       # (see below). Renewed automatically while the destination keeps
       # receiving calls; otherwise lifts itself, or lift it early with
       # `admina egress quarantine lift <destination>`.
-      # `admina egress quarantine list` shows what is currently blocked.
+      # `admina egress quarantine list` shows what is currently held.
+      # The quarantine refuses calls only under ADMINA_EGRESS_MODE=enforce;
+      # under the default `observe` it is recorded, logged and listed, and
+      # the call goes through — the same mode gate as the allowlist above.
       quarantine_ttl_seconds: 86400
       # Escalating a `suspected` verdict to `confirmed` (and arming the
       # quarantine) requires content-echo confirmation, which requires this
