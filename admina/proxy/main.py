@@ -150,6 +150,18 @@ def instantiate_plugins(
     return instances
 
 
+# The coordination verdicts that leave a record, mapped to the ProxyState
+# counter each one increments. One mapping rather than a tuple beside a
+# derived key name: a status with no counter is a status the proxy does not
+# record, instead of one that raises inside the fire-and-forget task and
+# takes the forensic entry down with it.
+COORDINATION_COUNTERS = {
+    "confirmed": "coordination_confirmed",
+    "suspected": "coordination_suspected",
+    "degraded": "coordination_degraded",
+}
+
+
 def build_coordination_detector(redis: Any, egress_cfg: Any, quarantine: Any) -> Any:
     """Build the coordination detector from the egress configuration.
 
@@ -836,6 +848,13 @@ async def prometheus_metrics(request: Request) -> Response:
         "Rolling average pipeline latency in milliseconds",
         "gauge",
     )
+    for _status, _counter in COORDINATION_COUNTERS.items():
+        _metric(
+            "coordination_verdicts_total",
+            m.get(_counter, 0),
+            "Coordination detector verdicts per status",
+            labels=f'status="{_status}"',
+        )
 
     # Firewall pattern hits, broken down per category
     for cat, count in (fw_stats.get("detections_by_type") or {}).items():
@@ -1469,7 +1488,8 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
             verdict = await state.coordination.observe(
                 agent_id, pipeline_result.checks["egress"], payload, time.time()
             )
-            if verdict.status not in ("suspected", "confirmed", "degraded"):
+            counter = COORDINATION_COUNTERS.get(verdict.status)
+            if counter is None:
                 return
             logger.warning(
                 "Coordination %s on %r (%d agents, peer %s)",
@@ -1478,22 +1498,30 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                 verdict.agents,
                 verdict.peer or "none",
             )
-            if verdict.status != "confirmed":
-                return
-            # A confirmed verdict costs every agent write access to the
-            # destination until the quarantine lapses or an operator lifts
-            # it. It is reached here, after this request's own forensic
-            # record and ClickHouse event have been built and after the
-            # response has gone out, so the enforcement action gets a record
-            # of its own naming the destination, the agents counted and the
-            # peer whose content matched — the datum an operator needs to
-            # understand why the fleet lost write access.
+            # Every verdict the detector reaches a conclusion on leaves the
+            # same three things behind: a metric, a forensic-chain entry and
+            # a bus event, each naming the destination, the agents counted
+            # and the peer where there is one. `confirmed` is the one that
+            # costs every agent write access to the destination until the
+            # quarantine lapses or an operator lifts it, and it is marked as
+            # such; `suspected` and `degraded` arm nothing, and at the
+            # shipped fan-in defaults they are the whole of what a same-text
+            # cascade across a fleet produces, so a record is the only place
+            # that detection survives log rotation. All of it is built here,
+            # inside the fire-and-forget task, after this request's own
+            # forensic record and ClickHouse event have gone out: the
+            # verdict is not known while `pipeline_result.checks` is being
+            # serialised, so writing it there would be a store nothing reads.
+            armed = verdict.status == "confirmed"
             coordination_check = {
                 "status": verdict.status,
                 "destination": verdict.destination,
                 "agents": verdict.agents,
                 "peer": verdict.peer,
             }
+            coordination_action = "QUARANTINE" if armed else "OBSERVE"
+            coordination_risk = RiskLevel.CRITICAL if armed else RiskLevel.MEDIUM
+            state.inc_metric(counter)
             if state.forensic_box:
                 _coord_loop = asyncio.get_running_loop()
                 await _coord_loop.run_in_executor(
@@ -1505,8 +1533,8 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                             "agent_id": agent_id,
                             "session_id": session_id,
                             "method": method,
-                            "action": "QUARANTINE",
-                            "risk_level": RiskLevel.CRITICAL,
+                            "action": coordination_action,
+                            "risk_level": coordination_risk,
                             "checks": {"coordination": coordination_check},
                         }
                     ),
@@ -1515,8 +1543,8 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                 BusGovernanceEvent(
                     event_type=EventType.POLICY_VIOLATION,
                     session_id=session_id,
-                    action="QUARANTINE",
-                    risk_level=RiskLevel.CRITICAL,
+                    action=coordination_action,
+                    risk_level=coordination_risk,
                     domain="agent_security",
                     metadata=coordination_check,
                 )

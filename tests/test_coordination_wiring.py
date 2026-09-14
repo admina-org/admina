@@ -9,6 +9,7 @@ pytest.importorskip("fastapi")
 
 import httpx
 
+from admina.core.types import EventType, RiskLevel
 from admina.domains.agent_security.coordination import (
     CoordinationDetector,
     CoordinationVerdict,
@@ -17,6 +18,12 @@ from admina.domains.agent_security.coordination import (
     QuarantineStore,
 )
 from admina.domains.agent_security.egress import EgressPolicy, analyze
+from admina.proxy.main import COORDINATION_COUNTERS
+
+# The verdicts main.py records, read from main.py itself: a status added
+# there without a counter, or a counter added without a record, is what
+# these tests have to be able to see.
+_VERDICT_COUNTERS = COORDINATION_COUNTERS
 
 
 @pytest.mark.anyio
@@ -671,13 +678,21 @@ class TestOrdinaryTrafficThroughOneToolIsNotAnEcho:
         assert not (stored & credential), "a credential value reached the echo store"
 
 
-class TestAnArmedQuarantineLeavesAnAuditRecord:
-    """A confirmed verdict costs every agent write access to a destination.
+class TestEveryConclusiveVerdictLeavesAnAuditRecord:
+    """What the detector concluded has to outlive the proxy's stdout.
 
-    It is reached on a fire-and-forget task, after the request's own
+    A verdict is reached on a fire-and-forget task, after the request's own
     forensic record and ClickHouse event have been built and after the
-    response has gone out, so nothing that serialises `pipeline_result`
-    can carry it: writing it there was a store no consumer reads.
+    response has gone out, so nothing that serialises `pipeline_result` can
+    carry it: writing it there was a store no consumer reads.
+
+    `confirmed` is the verdict that costs every agent write access to a
+    destination. `suspected` is the one that does not — and at the shipped
+    fan-in defaults it is the whole of what a same-text cascade across a
+    fleet produces, because the ubiquity floor deliberately declines to
+    quarantine that shape. The argument for that choice is that detection is
+    kept even though enforcement is not, which is only true while a
+    `suspected` verdict leaves something behind.
     """
 
     def test_a_confirmed_verdict_is_recorded_with_the_peer_that_matched(self, monkeypatch):
@@ -701,15 +716,92 @@ class TestAnArmedQuarantineLeavesAnAuditRecord:
         assert record["agent_id"] == "agent-7"
         assert record["action"] == "QUARANTINE"
 
-    def test_a_verdict_that_arms_nothing_adds_no_record(self, monkeypatch):
-        """Under a Redis outage every call reports `degraded`; one forensic
-        entry per call would bury the chain."""
+    @pytest.mark.parametrize("status", ["suspected", "degraded"])
+    def test_a_verdict_that_arms_nothing_is_still_recorded(self, monkeypatch, status):
+        """A verdict that quarantines nothing is still a detection.
+
+        Before this, `suspected` and `degraded` returned above the forensic
+        record and the bus emit, so a nine-agent cascade relaying one
+        instruction for six hours left a WARNING line in the proxy log and
+        nothing else: no chain entry, no `policy_violation`, no metric. The
+        record carries the same fields a `confirmed` one does and is marked
+        OBSERVE rather than QUARANTINE, because nothing was refused.
+        """
         box = _FakeForensicBox()
         coordination = _RecordingCoordination(
-            CoordinationVerdict(status="degraded", destination="wiki.corp")
+            CoordinationVerdict(status=status, destination="wiki.corp", agents=9, peer=None)
         )
-        _resp, _result = _drive_governed_call(monkeypatch, coordination, forensic_box=box)
+        _drive_governed_call(monkeypatch, coordination, forensic_box=box)
+
+        records = [r for r in box.records if "coordination" in (r.get("checks") or {})]
+        assert len(records) == 1, f"a {status} verdict left no forensic record"
+        assert records[0]["checks"]["coordination"] == {
+            "status": status,
+            "destination": "wiki.corp",
+            "agents": 9,
+            "peer": None,
+        }
+        assert records[0]["action"] == "OBSERVE", "nothing was quarantined"
+        assert records[0]["risk_level"] != RiskLevel.CRITICAL
+
+    @pytest.mark.parametrize(
+        ("status", "peer"), [("confirmed", "agent-3"), ("suspected", None), ("degraded", None)]
+    )
+    def test_every_conclusive_verdict_is_counted(self, monkeypatch, status, peer):
+        """A counter per status, so an alert rule can see a cascade.
+
+        The forensic chain is read after an incident; a metric is what an
+        operator watches during one. `confirmed` is broken out from the other
+        two because only it refuses anything.
+        """
+        from admina.proxy import main as proxy_main
+
+        coordination = _RecordingCoordination(
+            CoordinationVerdict(status=status, destination="wiki.corp", agents=9, peer=peer)
+        )
+        _drive_governed_call(monkeypatch, coordination)
+        metrics = proxy_main.app.state.proxy.metrics
+        assert metrics[_VERDICT_COUNTERS[status]] == 1, metrics
+        assert sum(metrics[c] for c in _VERDICT_COUNTERS.values()) == 1
+
+    def test_a_verdict_of_none_records_nothing(self, monkeypatch):
+        """The ordinary call. Every governed write-shaped call reaches the
+        detector, so a record for a verdict that concluded nothing would be
+        one forensic entry per request."""
+        from admina.proxy import main as proxy_main
+
+        box = _FakeForensicBox()
+        _drive_governed_call(monkeypatch, _RecordingCoordination(), forensic_box=box)
         assert [r for r in box.records if "coordination" in (r.get("checks") or {})] == []
+        metrics = proxy_main.app.state.proxy.metrics
+        assert sum(metrics[c] for c in _VERDICT_COUNTERS.values()) == 0
+
+    def test_every_counter_the_proxy_names_exists_on_the_state(self):
+        """`inc_metric` raises on a key the state does not hold, and it runs
+        inside the same fire-and-forget task as the forensic record — so a
+        counter named in main.py and missing from ProxyState would silently
+        cost the record it was added to accompany."""
+        from admina.proxy.state import ProxyState
+
+        assert set(_VERDICT_COUNTERS.values()) <= set(ProxyState().metrics)
+
+    def test_a_suspected_verdict_reaches_the_governance_bus(self, monkeypatch):
+        """The bus is what an alert channel subscribes to; stdout is not."""
+        from admina.core.event_bus import bus as governance_bus
+
+        seen: list = []
+        governance_bus.subscribe(EventType.POLICY_VIOLATION, lambda event: seen.append(event))
+        try:
+            coordination = _RecordingCoordination(
+                CoordinationVerdict(status="suspected", destination="wiki.corp", agents=9)
+            )
+            _drive_governed_call(monkeypatch, coordination)
+        finally:
+            governance_bus._subscribers[EventType.POLICY_VIOLATION].pop()
+        assert [e.metadata for e in seen] == [
+            {"status": "suspected", "destination": "wiki.corp", "agents": 9, "peer": None}
+        ]
+        assert seen[0].action == "OBSERVE"
 
     def test_the_peer_is_named_in_the_warning(self, monkeypatch, caplog):
         coordination = _RecordingCoordination(
