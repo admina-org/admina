@@ -145,27 +145,46 @@ class TestEchoStore:
     async def test_pooling_does_not_defeat_min_shared_shingles(self):
         """Messages are matched individually, not pooled.
 
-        Two distinct messages from one agent, neither matching the inbound alone,
-        recorded with the same timestamp, should not confirm even though pooling
-        would exceed MIN_SHARED_SHINGLES. This ensures the 12-shingle floor
-        applies per message, not across fragments, regardless of clock.
+        Two messages from one agent, neither matching the inbound alone,
+        recorded with the same timestamp, should not confirm. Inbound is
+        constructed from the two messages so that both individually fall below
+        the 12-shingle floor while their union exceeds it. This ensures the
+        floor is enforced per message, not pooled, regardless of clock reuse.
         """
-        from admina.domains.agent_security.fingerprint import matches
+        from admina.domains.agent_security.fingerprint import MIN_SHARED_SHINGLES
 
         s = EchoStore(FakeRedis(), ttl_seconds=7200)
-        # Create two distinct, unrelated messages (both with 16+ words).
-        sketch_a = sketch(_MSG_A, _KEY)
-        sketch_b = sketch(_MSG_B, _KEY)
-        inbound = sketch(_MSG, _KEY)
-        # Verify neither matches the inbound alone.
-        assert not matches(inbound, sketch_a, 0.4), "sketch_a should not match alone"
-        assert not matches(inbound, sketch_b, 0.4), "sketch_b should not match alone"
+        # Two messages of 16+ words each, neither matching inbound alone.
+        msg_a = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar"
+        msg_b = (
+            "papa quebec romeo sierra tango uniform victor whiskey xray yankee"
+            " zulu alpha bravo charlie delta"
+        )
+        # Inbound is concatenation of both, so both messages contribute shingles.
+        inbound_text = msg_a + " " + msg_b
+        sketch_a = sketch(msg_a, _KEY)
+        sketch_b = sketch(msg_b, _KEY)
+        inbound = sketch(inbound_text, _KEY)
+        # Verify and report intersection sizes.
+        shared_a = inbound & sketch_a
+        shared_b = inbound & sketch_b
+        shared_ab = inbound & (sketch_a | sketch_b)
+        print(
+            f"\nPooling test data: "
+            f"a∩inbound={len(shared_a)} (need 0<x<12), "
+            f"b∩inbound={len(shared_b)} (need 0<x<12), "
+            f"(a∪b)∩inbound={len(shared_ab)} (need ≥12)"
+        )
+        assert 0 < len(shared_a) < MIN_SHARED_SHINGLES, "a should partially match"
+        assert 0 < len(shared_b) < MIN_SHARED_SHINGLES, "b should partially match"
+        assert len(shared_ab) >= MIN_SHARED_SHINGLES, "union should exceed floor"
         # Record both from a1 WITH THE SAME TIMESTAMP (tests clock reuse).
         shared_time = 1000.0
         await s.record_outbound("wiki.corp", "a1", sketch_a, now=shared_time)
         await s.record_outbound("wiki.corp", "a1", sketch_b, now=shared_time)
         # Confirm with inbound should return None (messages matched individually).
-        # Without msgid grouping, pooling these would approach 24+ shared shingles.
+        # Without msgid grouping, pooling would give ≥12 shingles; with it, each
+        # message fails individually.
         assert await s.confirm("wiki.corp", "a2", inbound, now=1100.0) is None
 
     async def test_member_count_does_not_grow_unbounded(self):
@@ -197,14 +216,18 @@ class TestEchoStore:
         assert await s.confirm("wiki.corp", "a2", sketch(_MSG, _KEY), now=1150.0) == "a1"
 
     async def test_an_old_bucket_is_not_included(self):
-        """Content older than the window is not matched."""
+        """Content expires after the window elapses.
+
+        A message written in an old bucket is not found when confirming after
+        enough time has passed that the bucket has aged out of the two-bucket
+        sliding window.
+        """
         s = EchoStore(FakeRedis(), ttl_seconds=100)
-        # bucket 10: times 1000-1099; bucket 5: times 500-599
+        # bucket 10: times 1000-1099; confirm at 1250 checks buckets 12 and 11.
         await s.record_outbound("wiki.corp", "a1", sketch(_MSG, _KEY), now=1000.0)
-        # Confirm at time 500 is before the write; even if we check bucket 4 and 5,
-        # bucket 5 is older than any window that contains time 500.
-        # Specifically, at time 500 we check buckets 5 and 4; bucket 10 is not checked.
-        assert await s.confirm("wiki.corp", "a2", sketch(_MSG, _KEY), now=500.0) is None
+        # Confirm at time 1250 (bucket 12): looks at buckets 12 and 11.
+        # Bucket 10 (time 1000) is too old, not checked.
+        assert await s.confirm("wiki.corp", "a2", sketch(_MSG, _KEY), now=1250.0) is None
 
     async def test_high_overlap_without_min_shingles_does_not_confirm(self):
         """High ratio but few shared shingles should not confirm.

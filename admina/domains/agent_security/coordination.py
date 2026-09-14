@@ -85,8 +85,10 @@ class EchoStore:
     ) -> None:
         """Store one agent's outbound sketch. No-op without Redis or a sketch.
 
-        Concurrent writers can cause overage slightly beyond the cap; this is
-        acceptable against unbounded growth.
+        Writes all values of the sketch or none. Partial writes are dropped to
+        avoid creating unsearchable fragments (too few shingles to ever match).
+        Concurrent writers can exceed the cap slightly; this is acceptable
+        against unbounded growth.
         """
         if self._redis is None or not sketch_values:
             return
@@ -95,18 +97,18 @@ class EchoStore:
         msgid = self._msgid(sketch_values)
         try:
             current_count = await self._redis.scard(key)
-            # Only write as many values as fit in the cap.
+            # Write all values or none; partial sketches are unmatchable.
             available = self._cap - current_count
-            if available > 0:
-                values_to_write = min(available, len(sketch_values))
-                values_iter = iter(sketch_values)
-                members = [
-                    f"{agent_id}:{now}:{msgid}:{v}"
-                    for _ in range(values_to_write)
-                    if (v := next(values_iter, None)) is not None
-                ]
-                if members:
-                    await self._redis.sadd(key, *members)
+            if available >= len(sketch_values):
+                members = [f"{agent_id}:{now}:{msgid}:{v}" for v in sketch_values]
+                await self._redis.sadd(key, *members)
+            elif available > 0:
+                logger.debug(
+                    "Echo store bucket %s at capacity; dropping sketch (need %d slots, have %d)",
+                    key,
+                    len(sketch_values),
+                    available,
+                )
             await self._redis.expire(key, self._window * 2)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Echo store unavailable, not recording outbound: %s", exc)
