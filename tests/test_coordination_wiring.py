@@ -115,8 +115,9 @@ class TestProxyWiring:
 class _RecordingCoordination:
     """Stands in for CoordinationDetector; records every observe() call."""
 
-    def __init__(self) -> None:
+    def __init__(self, verdict: CoordinationVerdict | None = None) -> None:
         self.calls: list[dict] = []
+        self._verdict = verdict or CoordinationVerdict()
 
     async def observe(self, agent_id, egress_check, content_tail, now):
         self.calls.append(
@@ -127,7 +128,18 @@ class _RecordingCoordination:
                 "now": now,
             }
         )
-        return CoordinationVerdict()
+        return self._verdict
+
+
+class _FakeForensicBox:
+    """Stands in for ForensicBlackBox; keeps the events it was handed."""
+
+    def __init__(self) -> None:
+        self.records: list[dict] = []
+
+    def record(self, event: dict) -> dict:
+        self.records.append(event)
+        return {"sequence_number": len(self.records), "record_hash": "h", "stored": False}
 
 
 class _FakeFirewall:
@@ -156,7 +168,7 @@ def _wiki_body(tool: str, message: str, extra: dict | None = None) -> dict:
     }
 
 
-def _drive_governed_calls(monkeypatch, coordination, calls):
+def _drive_governed_calls(monkeypatch, coordination, calls, forensic_box=None):
     """POST each of *calls* through the real /mcp handler against one state.
 
     *calls* is a sequence of ``(agent_id, body)``. Returns
@@ -202,7 +214,7 @@ def _drive_governed_calls(monkeypatch, coordination, calls):
         http_client=mock_http,
         redis=None,
         clickhouse=None,
-        forensic_box=None,
+        forensic_box=forensic_box,
         governance_guards=[],
         alert_channels=[],
         auth_providers=[],
@@ -228,7 +240,7 @@ def _drive_governed_calls(monkeypatch, coordination, calls):
     return responses, captured
 
 
-def _drive_governed_call(monkeypatch, coordination):
+def _drive_governed_call(monkeypatch, coordination, forensic_box=None):
     """One write-shaped call through the real /mcp handler.
 
     3000 chars of payload guarantee the content tail is well past the
@@ -243,7 +255,9 @@ def _drive_governed_call(monkeypatch, coordination):
             "arguments": {"url": "https://wiki.corp/w", "text": "x" * 3000},
         },
     }
-    responses, results = _drive_governed_calls(monkeypatch, coordination, [("agent-7", body)])
+    responses, results = _drive_governed_calls(
+        monkeypatch, coordination, [("agent-7", body)], forensic_box=forensic_box
+    )
     return responses[0], results[0]
 
 
@@ -380,21 +394,54 @@ class TestOrdinaryTrafficThroughOneToolIsNotAnEcho:
         assert final.destination == "wiki.corp"
 
 
-class TestCoordinationChecksShape:
-    """``checks["coordination"]`` is a brief-mandated "Produces" item.
+class TestAnArmedQuarantineLeavesAnAuditRecord:
+    """A confirmed verdict costs every agent write access to a destination.
 
-    It is written by a fire-and-forget background task, after the HTTP
-    response has already gone out, so nothing else in the request path
-    reads it — a renamed key or a dropped field would pass the rest of the
-    suite silently.
+    It is reached on a fire-and-forget task, after the request's own
+    forensic record and ClickHouse event have been built and after the
+    response has gone out, so nothing that serialises `pipeline_result`
+    can carry it: writing it there was a store no consumer reads.
     """
 
-    def test_the_verdict_is_recorded_with_the_documented_shape(self, monkeypatch):
-        fake_coordination = _RecordingCoordination()
-        _resp, pipeline_result = _drive_governed_call(monkeypatch, fake_coordination)
+    def test_a_confirmed_verdict_is_recorded_with_the_peer_that_matched(self, monkeypatch):
+        box = _FakeForensicBox()
+        coordination = _RecordingCoordination(
+            CoordinationVerdict(
+                status="confirmed", destination="wiki.corp", agents=5, peer="agent-3"
+            )
+        )
+        _resp, _result = _drive_governed_call(monkeypatch, coordination, forensic_box=box)
 
-        checks = pipeline_result.checks["coordination"]
-        assert set(checks) == {"status", "destination", "agents"}
-        assert isinstance(checks["status"], str)
-        assert isinstance(checks["destination"], str)
-        assert isinstance(checks["agents"], int)
+        coordination_records = [r for r in box.records if "coordination" in (r.get("checks") or {})]
+        assert len(coordination_records) == 1, "an armed quarantine left no forensic record"
+        record = coordination_records[0]
+        assert record["checks"]["coordination"] == {
+            "status": "confirmed",
+            "destination": "wiki.corp",
+            "agents": 5,
+            "peer": "agent-3",
+        }
+        assert record["agent_id"] == "agent-7"
+        assert record["action"] == "QUARANTINE"
+
+    def test_a_verdict_that_arms_nothing_adds_no_record(self, monkeypatch):
+        """Under a Redis outage every call reports `degraded`; one forensic
+        entry per call would bury the chain."""
+        box = _FakeForensicBox()
+        coordination = _RecordingCoordination(
+            CoordinationVerdict(status="degraded", destination="wiki.corp")
+        )
+        _resp, _result = _drive_governed_call(monkeypatch, coordination, forensic_box=box)
+        assert [r for r in box.records if "coordination" in (r.get("checks") or {})] == []
+
+    def test_the_peer_is_named_in_the_warning(self, monkeypatch, caplog):
+        coordination = _RecordingCoordination(
+            CoordinationVerdict(
+                status="confirmed", destination="wiki.corp", agents=5, peer="agent-3"
+            )
+        )
+        with caplog.at_level(logging.WARNING, logger="admina.proxy"):
+            _drive_governed_call(monkeypatch, coordination)
+        assert any("peer agent-3" in rec.getMessage() for rec in caplog.records), [
+            rec.getMessage() for rec in caplog.records
+        ]

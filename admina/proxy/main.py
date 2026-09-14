@@ -46,7 +46,7 @@ import admina.plugins.builtin.transports.mcp as mcp_transport
 from admina import __version__
 from admina.core.event_bus import GovernanceEvent as BusGovernanceEvent
 from admina.core.event_bus import bus as governance_bus
-from admina.core.types import EventType, GovernanceAction
+from admina.core.types import EventType, GovernanceAction, RiskLevel
 from admina.domains.agent_security.egress import payload_text, resolve_egress_mode
 from admina.domains.compliance.forensic import ForensicBlackBox
 from admina.domains.compliance.otel import OTELGovernanceExporter
@@ -1442,18 +1442,58 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
             verdict = await state.coordination.observe(
                 agent_id, pipeline_result.checks["egress"], content_tail, time.time()
             )
-            pipeline_result.checks["coordination"] = {
+            if verdict.status not in ("suspected", "confirmed", "degraded"):
+                return
+            logger.warning(
+                "Coordination %s on %r (%d agents, peer %s)",
+                verdict.status,
+                verdict.destination,
+                verdict.agents,
+                verdict.peer or "none",
+            )
+            if verdict.status != "confirmed":
+                return
+            # A confirmed verdict costs every agent write access to the
+            # destination until the quarantine lapses or an operator lifts
+            # it. It is reached here, after this request's own forensic
+            # record and ClickHouse event have been built and after the
+            # response has gone out, so the enforcement action gets a record
+            # of its own naming the destination, the agents counted and the
+            # peer whose content matched — the datum an operator needs to
+            # understand why the fleet lost write access.
+            coordination_check = {
                 "status": verdict.status,
                 "destination": verdict.destination,
                 "agents": verdict.agents,
+                "peer": verdict.peer,
             }
-            if verdict.status in ("suspected", "confirmed", "degraded"):
-                logger.warning(
-                    "Coordination %s on %r (%d agents)",
-                    verdict.status,
-                    verdict.destination,
-                    verdict.agents,
+            if state.forensic_box:
+                _coord_loop = asyncio.get_running_loop()
+                await _coord_loop.run_in_executor(
+                    None,
+                    lambda: state.forensic_box.record(
+                        {
+                            "event_id": f"{event_id}:coordination",
+                            "event_type": EventType.POLICY_VIOLATION,
+                            "agent_id": agent_id,
+                            "session_id": session_id,
+                            "method": method,
+                            "action": "QUARANTINE",
+                            "risk_level": RiskLevel.CRITICAL,
+                            "checks": {"coordination": coordination_check},
+                        }
+                    ),
                 )
+            await governance_bus.emit(
+                BusGovernanceEvent(
+                    event_type=EventType.POLICY_VIOLATION,
+                    session_id=session_id,
+                    action="QUARANTINE",
+                    risk_level=RiskLevel.CRITICAL,
+                    domain="agent_security",
+                    metadata=coordination_check,
+                )
+            )
 
         _spawn(_observe())
 
