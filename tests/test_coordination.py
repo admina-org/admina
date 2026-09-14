@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 from _fakes import FakeRedis, FakeRedisError, FakeRedisHash
 
@@ -15,6 +17,21 @@ _MSG = "task 42 completed, results are on ZZZ_Results_42, whoever takes 43 start
 # Additional test messages with sufficient length (>= 16 words for >= 12 shingles)
 _MSG_A = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa"
 _MSG_B = "quebec romeo sierra tango uniform victor whiskey xray yankee zulu alpha bravo charlie delta echo foxtrot"
+
+
+def _filler(tag: str, words: int = 20) -> str:
+    """A message of *words* unique words: 16 shingles, disjoint from any other tag."""
+    return " ".join(f"{tag}{i}" for i in range(words))
+
+
+def _values_of(agent_id: str, redis) -> set[int]:
+    """Every sketch value stored for *agent_id*, wherever the store put it."""
+    return {
+        int(str(m).rsplit(":", 3)[3])
+        for members in redis.sets.values()
+        for m in members
+        if str(m).startswith(f"{agent_id}:")
+    }
 
 
 @pytest.mark.anyio
@@ -192,25 +209,96 @@ class TestEchoStore:
         # message fails individually.
         assert await s.confirm("wiki.corp", "a2", inbound, now=1100.0) is None
 
-    async def test_member_count_does_not_grow_unbounded(self):
-        """Stored member count stops growing at cap per bucket."""
+    async def test_a_sketch_is_stored_whole_or_not_at_all(self):
+        """A fragment of a sketch is a fragment nothing can ever match.
+
+        Fewer than MIN_SHARED_SHINGLES values can never reach the floor, so a
+        clamped partial write does not save a message, it stores one that
+        cannot be found while consuming the budget of one that could.
+        """
         r = FakeRedis()
-        s = EchoStore(r, ttl_seconds=100)
-        # Write from one agent (sketch of our message has 13 values)
-        base_sketch = sketch(_MSG, _KEY)
-        await s.record_outbound("wiki.corp", "a1", base_sketch, now=1000.0)
-        # Get the current bucket key
-        current_bucket = int(1000.0 // 100)
-        key = f"admina:egress:echo:wiki.corp:{current_bucket}"
-        # Write many more messages; bucket should cap at 1024
+        s = EchoStore(r, ttl_seconds=7200, cap=40)
+        first, second, third = (sketch(_filler(t), _KEY) for t in ("alpha", "bravo", "delta"))
+        assert len(first) == len(second) == len(third) == 16, "16 values each"
+        await s.record_outbound("wiki.corp", "a1", first, now=1000.0)
+        await s.record_outbound("wiki.corp", "a1", second, now=1000.0)
+        # 32 of 40 values used: the third sketch does not fit in what is left.
+        await s.record_outbound("wiki.corp", "a1", third, now=1000.0)
+
+        stored = _values_of("a1", r)
+        assert third <= stored, "the sketch just recorded must be stored whole"
+        assert len(stored) == len(third), "its own older sketches are what make room"
+
+    async def test_an_agents_member_count_does_not_grow_unbounded(self):
+        """Per-agent budgets bound memory; they do not remove the bound."""
+        r = FakeRedis()
+        s = EchoStore(r, ttl_seconds=100, cap=64)
         for i in range(200):
-            await s.record_outbound("wiki.corp", f"a{i}", base_sketch, now=1050.0)
-        count = len(r.sets.get(key, set()))
-        # Count should be capped (around 1024, may exceed slightly under race).
-        # Without the cap, we'd have 201 writes * 13 values = 2613 members.
-        # With the cap, we have <= 1037 (1024 + 13 for overage).
-        assert count <= 1037
-        assert count < 2000  # Much less than unbounded growth
+            await s.record_outbound("wiki.corp", "a1", sketch(_filler(f"m{i}"), _KEY), now=1050.0)
+        assert len(_values_of("a1", r)) <= 64 + 16, "cap, plus at most one sketch of overage"
+
+    async def test_a_flood_before_an_echo_does_not_stop_it_being_recorded(self):
+        """The evasion a shared budget opens: fill it, then coordinate.
+
+        One agent writes far past the whole budget, then two other agents
+        exchange a message. Anything shared per destination lets the flood
+        decide whether their echo is recorded at all.
+        """
+        r = FakeRedis()
+        s = EchoStore(r, ttl_seconds=7200, cap=40)
+        for i in range(50):
+            await s.record_outbound(
+                "wiki.corp", "flooder", sketch(_filler(f"j{i}"), _KEY), now=1000.0 + i
+            )
+        await s.record_outbound("wiki.corp", "a1", sketch(_MSG, _KEY), now=1060.0)
+        assert await s.confirm("wiki.corp", "a2", sketch(_MSG, _KEY), now=1070.0) == "a1"
+
+    async def test_a_flood_after_an_echo_does_not_erase_it(self):
+        """The same evasion from the other side.
+
+        Whether a full budget refuses the newest write or makes room for it,
+        a shared one lets an agent remove what another agent stored — here by
+        flooding after the message it wants to hide has been recorded.
+        """
+        r = FakeRedis()
+        s = EchoStore(r, ttl_seconds=7200, cap=40)
+        await s.record_outbound("wiki.corp", "a1", sketch(_MSG, _KEY), now=1000.0)
+        for i in range(50):
+            await s.record_outbound(
+                "wiki.corp", "flooder", sketch(_filler(f"j{i}"), _KEY), now=1010.0 + i
+            )
+        assert await s.confirm("wiki.corp", "a2", sketch(_MSG, _KEY), now=1070.0) == "a1"
+
+    async def test_a_full_budget_keeps_the_message_just_sent(self):
+        """Refusing the newest write instead would be the same hole, self-inflicted:
+        an agent could bury the message it is about to have echoed."""
+        r = FakeRedis()
+        s = EchoStore(r, ttl_seconds=7200, cap=20)
+        old = sketch(_filler("older"), _KEY)
+        await s.record_outbound("wiki.corp", "a1", old, now=1000.0)
+        await s.record_outbound("wiki.corp", "a1", sketch(_MSG, _KEY), now=1001.0)
+        assert await s.confirm("wiki.corp", "a2", sketch(_MSG, _KEY), now=1002.0) == "a1"
+        assert await s.confirm("wiki.corp", "a2", old, now=1002.0) is None, "older one made room"
+
+    async def test_a_sketch_larger_than_the_budget_is_reported_not_dropped_quietly(self, caplog):
+        r = FakeRedis()
+        s = EchoStore(r, ttl_seconds=7200, cap=8)
+        with caplog.at_level(logging.WARNING, logger="admina.coordination"):
+            await s.record_outbound("wiki.corp", "a1", sketch(_MSG, _KEY), now=1000.0)
+        key = f"admina:egress:echo:wiki.corp:a1:{int(1000.0 // 7200)}"
+        assert key not in r.sets
+        assert any("cannot confirm an echo" in rec.getMessage() for rec in caplog.records)
+
+    async def test_the_agent_index_is_capped_and_the_refusal_is_reported(self, caplog):
+        """Bounds confirm()'s fan-out. An agent left out of it is invisible to
+        the echo phase, which is a loss of detection and is logged as one."""
+        r = FakeRedis()
+        s = EchoStore(r, ttl_seconds=7200, agent_cap=3)
+        with caplog.at_level(logging.WARNING, logger="admina.coordination"):
+            for i in range(5):
+                await s.record_outbound("wiki.corp", f"a{i}", sketch(_MSG, _KEY), now=1000.0)
+        assert len(r.sets[f"admina:egress:echo:wiki.corp:{int(1000.0 // 7200)}:agents"]) == 3
+        assert any("is not recorded" in rec.getMessage() for rec in caplog.records)
 
     async def test_the_previous_bucket_is_included(self):
         """Without this, a message straddling a bucket edge is missed."""
@@ -386,6 +474,31 @@ class TestCoordinationDetector:
         assert v.status == "confirmed"
         assert v.peer == "a1"
         assert "wiki.corp" in await QuarantineStore(r, 86400).current(now=1020.0)
+
+    async def test_one_agents_flood_does_not_disable_confirmation_for_the_fleet(self):
+        """Echo confirmation is the only path to a quarantine.
+
+        An agent that could exhaust the store for a destination would not be
+        blinding itself, it would be blinding the confirmation phase for
+        every other agent writing there — flood first, then coordinate.
+        """
+        r = FakeRedisHash()
+        echo = EchoStore(r, ttl_seconds=7200, cap=40)
+        d = CoordinationDetector(
+            fanin=FanInCounter(r, window_seconds=3600),
+            echo=echo,
+            quarantine=QuarantineStore(r, ttl_seconds=86400),
+            declared=frozenset(),
+            min_agents=2,
+            fingerprint_key=b"k",
+        )
+        for i in range(60):
+            await d.observe("flooder", _check(), _filler(f"j{i}"), now=1000.0 + i)
+        await d.observe("a1", _check(), _ECHOED, now=1100.0)
+        v = await d.observe("a2", _check(), _ECHOED, now=1110.0)
+        assert v.status == "confirmed"
+        assert v.peer == "a1"
+        assert "wiki.corp" in await QuarantineStore(r, 86400).current(now=1110.0)
 
     async def test_a_declared_destination_is_never_flagged(self):
         """Designed and emergent coordination look identical; only this separates them."""

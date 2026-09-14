@@ -35,7 +35,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from admina.domains.agent_security.fingerprint import matches, sketch
+from admina.domains.agent_security.fingerprint import SKETCH_SIZE, matches, sketch
 
 __all__ = [
     "CoordinationDetector",
@@ -52,27 +52,57 @@ logger = logging.getLogger("admina.coordination")
 class EchoStore:
     """Outbound content sketches, matched against later inbound content.
 
-    Entries are ``<agent_id>:<timestamp>:<msgid>:<value>`` members in buckets
-    per destination and time window. The agent and msgid (content-derived hash)
-    are what let the two rules that give the verdict meaning be enforced at
-    read time: a match against the same agent is discarded, and the outbound
-    sketch must predate the inbound content.
+    Entries are ``<agent_id>:<timestamp>:<msgid>:<value>`` members in one set
+    per destination, *agent* and time window. The agent and msgid
+    (content-derived hash) are what let the two rules that give the verdict
+    meaning be enforced at read time: a match against the same agent is
+    discarded, and the outbound sketch must predate the inbound content.
 
     Each distinct message is matched individually against the inbound sketch.
     This prevents false positives where unrelated messages are pooled to meet
     the MIN_SHARED_SHINGLES floor that guarantees containment of one coherent
     text.
 
+    The storage budget is per agent, not per destination. A single set per
+    destination is a resource every agent writing there shares, so whichever
+    rule bounds it — refusing writes at a cap, or evicting — lets one agent's
+    traffic decide whether *other* agents' messages are available to a later
+    confirm(). Since a quarantine can only be armed by a confirmed echo, that
+    is an evasion channel: fill the destination's budget, then coordinate
+    through it unobserved. Per-agent keys make the only traffic that can
+    displace an agent's sketches its own.
+
+    Reading them back needs the agents' ids, so each bucket also carries an
+    index set of the agents that wrote to it, capped at *agent_cap*; confirm()
+    reads the two indexes and unions the keys they name in one round trip.
+    Being an index of *this* store's buckets rather than the fan-in counter's
+    (whose window is half as long) keeps the matchable period where the
+    docstring below says it is.
+
     ttl_seconds is a bucket window. Content is matchable for roughly one to
     two times that duration and is hard-bounded regardless of activity (unlike
     older time-based expiry that reset on each write).
     """
 
-    def __init__(self, redis: Any, ttl_seconds: int, threshold: float = 0.4) -> None:
+    def __init__(
+        self,
+        redis: Any,
+        ttl_seconds: int,
+        threshold: float = 0.4,
+        cap: int = 2 * SKETCH_SIZE,
+        agent_cap: int = 256,
+    ) -> None:
         self._redis = redis
         self._window = max(1, ttl_seconds)
         self._threshold = threshold
-        self._cap = 1024  # Members per bucket before clamping.
+        # Values per agent per bucket. Two maximal sketches: large enough that
+        # one sketch always fits after the eviction in record_outbound, so the
+        # message an agent just sent is always the one that is kept.
+        self._cap = cap
+        # Agents indexed per destination per bucket. Bounds both the fan-out
+        # of confirm()'s union and the total memory a destination can hold,
+        # which is agent_cap x cap values.
+        self._agent_cap = agent_cap
 
     @staticmethod
     def _msgid(sketch_values: frozenset[int]) -> str:
@@ -85,8 +115,22 @@ class EchoStore:
         current = int(now // self._window)
         return current, current - 1
 
-    def _key(self, destination: str, bucket: int) -> str:
-        return f"admina:egress:echo:{destination}:{bucket}"
+    def _key(self, destination: str, agent_id: str, bucket: int) -> str:
+        return f"admina:egress:echo:{destination}:{agent_id}:{bucket}"
+
+    def _index_key(self, destination: str, bucket: int) -> str:
+        # Cannot collide with a _key(): that one ends in an integer bucket.
+        return f"admina:egress:echo:{destination}:{bucket}:agents"
+
+    async def _register(self, index_key: str, agent_id: str) -> bool:
+        """Index the agent against the bucket. False when the index is full."""
+        if await self._redis.scard(index_key) >= self._agent_cap and not (
+            await self._redis.sismember(index_key, agent_id)
+        ):
+            return False
+        await self._redis.sadd(index_key, agent_id)
+        await self._redis.expire(index_key, self._window * 2)
+        return True
 
     async def record_outbound(
         self, destination: str, agent_id: str, sketch_values: frozenset[int], now: float
@@ -95,28 +139,56 @@ class EchoStore:
 
         Writes all values of the sketch or none. Partial writes are dropped to
         avoid creating unsearchable fragments (too few shingles to ever match).
-        Concurrent writers can exceed the cap slightly; this is acceptable
-        against unbounded growth.
+
+        When the agent's own budget cannot hold the sketch, its older sketches
+        for this bucket are dropped and the current message is written whole.
+        Keeping the older ones instead would leave the agent's most recent
+        message — the one another agent is about to echo — unmatchable, and
+        would do so on traffic the agent controls. Concurrent writers can
+        exceed the cap slightly; this is acceptable against unbounded growth.
+
+        Anything that does lose a message is logged at WARNING: the echo phase
+        is the only path to a quarantine, so a sketch that is not stored is
+        confirmation that cannot happen.
         """
         if self._redis is None or not sketch_values:
             return
         current, _ = self._buckets(now)
-        key = self._key(destination, current)
+        key = self._key(destination, agent_id, current)
+        index_key = self._index_key(destination, current)
         msgid = self._msgid(sketch_values)
         try:
-            current_count = await self._redis.scard(key)
-            # Write all values or none; partial sketches are unmatchable.
-            available = self._cap - current_count
-            if available >= len(sketch_values):
-                members = [f"{agent_id}:{now}:{msgid}:{v}" for v in sketch_values]
-                await self._redis.sadd(key, *members)
-            elif available > 0:
-                logger.debug(
-                    "Echo store bucket %s at capacity; dropping sketch (need %d slots, have %d)",
-                    key,
-                    len(sketch_values),
-                    available,
+            if not await self._register(index_key, agent_id):
+                logger.warning(
+                    "Echo store index for %r holds %d agents; %r's content is not recorded "
+                    "for this window and cannot confirm an echo",
+                    destination,
+                    self._agent_cap,
+                    agent_id,
                 )
+                return
+            if len(sketch_values) > self._cap:
+                logger.warning(
+                    "Sketch of %d values exceeds the %d-value echo budget per agent; %r's "
+                    "content toward %r is not recorded and cannot confirm an echo",
+                    len(sketch_values),
+                    self._cap,
+                    agent_id,
+                    destination,
+                )
+                return
+            stored = await self._redis.scard(key)
+            if self._cap - stored < len(sketch_values):
+                await self._redis.delete(key)
+                logger.info(
+                    "Echo budget of %d values for %r on %r is full; dropping its older "
+                    "sketches to record the message it just sent",
+                    self._cap,
+                    agent_id,
+                    destination,
+                )
+            members = [f"{agent_id}:{now}:{msgid}:{v}" for v in sketch_values]
+            await self._redis.sadd(key, *members)
             await self._redis.expire(key, self._window * 2)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Echo store unavailable, not recording outbound: %s", exc)
@@ -129,9 +201,13 @@ class EchoStore:
             return None
         current, previous = self._buckets(now)
         try:
-            members_combined: set[str] = set()
+            keys: list[str] = []
             for bucket in (current, previous):
-                members_combined |= set(await self._redis.smembers(self._key(destination, bucket)))
+                indexed = await self._redis.smembers(self._index_key(destination, bucket))
+                keys.extend(self._key(destination, str(other), bucket) for other in indexed)
+            members_combined: set[str] = (
+                {str(m) for m in await self._redis.sunion(*keys)} if keys else set()
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Echo store unavailable, cannot confirm: %s", exc)
             return None

@@ -8,7 +8,7 @@ class FakeRedisError(Exception):
 
 
 class FakeRedis:
-    """Minimal async stand-in: the four operations the counter uses."""
+    """Minimal async stand-in: the set operations the detector uses."""
 
     def __init__(self):
         self.sets: dict[str, set[str]] = {}
@@ -30,6 +30,32 @@ class FakeRedis:
         if self.fail:
             raise FakeRedisError("redis down")
         return set(self.sets.get(key, ()))
+
+    async def sismember(self, key, value):
+        if self.fail:
+            raise FakeRedisError("redis down")
+        return value in self.sets.get(key, ())
+
+    async def sunion(self, keys, *args):
+        """Union of several sets. Mirrors redis-py's list-or-varargs call."""
+        if self.fail:
+            raise FakeRedisError("redis down")
+        names = [keys] if isinstance(keys, str | bytes) else list(keys)
+        names.extend(args)
+        union: set[str] = set()
+        for name in names:
+            union |= self.sets.get(name, set())
+        return union
+
+    async def delete(self, *keys):
+        if self.fail:
+            raise FakeRedisError("redis down")
+        removed = 0
+        for key in keys:
+            if self.sets.pop(key, None) is not None:
+                removed += 1
+            self.ttls.pop(key, None)
+        return removed
 
     async def expire(self, key, seconds):
         if self.fail:
