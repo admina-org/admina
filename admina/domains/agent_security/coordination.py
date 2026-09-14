@@ -303,6 +303,16 @@ class FanInCounter:
         return found
 
 
+def _live_expiry(raw: Any, now: float) -> bool:
+    """Whether a stored expiry field exists and is still in the future."""
+    if raw is None:
+        return False
+    try:
+        return float(raw) > now
+    except (TypeError, ValueError):
+        return False
+
+
 class QuarantineStore:
     """Destinations that may not receive payload-bearing calls.
 
@@ -318,31 +328,41 @@ class QuarantineStore:
         self._ttl = max(1, ttl_seconds)
 
     async def add(self, destination: str, now: float) -> None:
+        """Quarantine a destination, or extend one already in force.
+
+        Logs at WARNING only when the quarantine begins. Under ``observe``
+        the policy keeps letting the calls through, so the detector keeps
+        confirming and every confirmation lands here; repeating the line
+        would report one event once per call.
+        """
         if self._redis is None:
             return
         try:
+            existing = await self._redis.hget(self.KEY, destination)
             await self._redis.hset(self.KEY, destination, now + self._ttl)
-            logger.warning(
-                "Destination %r quarantined for writes until %.0f (undeclared coordination)",
-                destination,
-                now + self._ttl,
-            )
+            if not _live_expiry(existing, now):
+                logger.warning(
+                    "Destination %r quarantined for writes until %.0f (undeclared coordination)",
+                    destination,
+                    now + self._ttl,
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning("Cannot record quarantine for %r: %s", destination, exc)
 
     async def renew(self, destination: str, now: float) -> None:
-        """Extend an existing quarantine. Never creates one."""
+        """Extend an existing quarantine. Never creates one.
+
+        Reads the one field it needs: this runs for every destination of
+        every governed call, whether or not anything is quarantined, so
+        reading the whole hash here scales with the size of the quarantine
+        set for a lookup that is constant.
+        """
         if self._redis is None:
             return
         try:
-            existing = await self._redis.hgetall(self.KEY)
-            if destination in existing:
-                try:
-                    expiry = float(existing[destination])
-                    if expiry > now:
-                        await self._redis.hset(self.KEY, destination, now + self._ttl)
-                except (TypeError, ValueError):
-                    pass
+            expiry = await self._redis.hget(self.KEY, destination)
+            if _live_expiry(expiry, now):
+                await self._redis.hset(self.KEY, destination, now + self._ttl)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Cannot renew quarantine for %r: %s", destination, exc)
 

@@ -77,6 +77,11 @@ class FakeRedisHash(FakeRedis):
         self.hashes.setdefault(key, {})[field] = str(value)
         return 1
 
+    async def hget(self, key, field):
+        if self.fail:
+            raise FakeRedisError("redis down")
+        return self.hashes.get(key, {}).get(field)
+
     async def hgetall(self, key):
         if self.fail:
             raise FakeRedisError("redis down")

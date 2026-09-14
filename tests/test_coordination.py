@@ -374,6 +374,53 @@ class TestQuarantineStore:
         await q.renew("wiki.corp", now=1000.0)
         assert await q.current(now=1000.0) == frozenset()
 
+    async def test_renewal_reads_one_field_not_the_whole_hash(self):
+        """renew() runs for every destination of every governed call, whether
+        or not anything is quarantined; reading the whole hash there scales
+        the cost with the size of the quarantine set."""
+
+        class _CountingRedis(FakeRedisHash):
+            def __init__(self):
+                super().__init__()
+                self.hgetall_calls = 0
+
+            async def hgetall(self, key):
+                self.hgetall_calls += 1
+                return await super().hgetall(key)
+
+        r = _CountingRedis()
+        q = QuarantineStore(r, ttl_seconds=100)
+        await q.add("wiki.corp", now=1000.0)
+        r.hgetall_calls = 0
+        await q.renew("wiki.corp", now=1090.0)
+        await q.renew("never.quarantined", now=1090.0)
+        assert r.hgetall_calls == 0
+        assert await q.current(now=1150.0) == frozenset({"wiki.corp"}), "still renewed"
+
+    async def test_the_warning_reports_the_quarantine_not_every_confirmation(self, caplog):
+        """Under `observe` the calls keep going through, so the detector keeps
+        confirming and every confirmation lands in add(). One quarantine is
+        one event."""
+        r = FakeRedisHash()
+        q = QuarantineStore(r, ttl_seconds=100)
+        with caplog.at_level(logging.WARNING, logger="admina.coordination"):
+            for stamp in (1000.0, 1010.0, 1020.0):
+                await q.add("wiki.corp", now=stamp)
+        armed = [rec for rec in caplog.records if "quarantined for writes" in rec.getMessage()]
+        assert len(armed) == 1, [rec.getMessage() for rec in armed]
+        assert await q.current(now=1115.0) == frozenset({"wiki.corp"}), "later ones still extend"
+
+    async def test_a_destination_quarantined_again_after_it_lapsed_is_reported_again(self, caplog):
+        """Reporting on transition must not silence a second quarantine."""
+        r = FakeRedisHash()
+        q = QuarantineStore(r, ttl_seconds=100)
+        with caplog.at_level(logging.WARNING, logger="admina.coordination"):
+            await q.add("wiki.corp", now=1000.0)
+            assert await q.current(now=1200.0) == frozenset(), "the first one lapsed"
+            await q.add("wiki.corp", now=1300.0)
+        armed = [rec for rec in caplog.records if "quarantined for writes" in rec.getMessage()]
+        assert len(armed) == 2, [rec.getMessage() for rec in armed]
+
     async def test_lift_removes_it(self):
         q = QuarantineStore(FakeRedisHash(), ttl_seconds=86400)
         await q.add("wiki.corp", now=1000.0)
