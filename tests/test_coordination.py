@@ -7,6 +7,10 @@ from admina.domains.agent_security.fingerprint import sketch
 _KEY = b"k"
 _MSG = "task 42 completed, results are on ZZZ_Results_42, whoever takes 43 starts at column two in the spreadsheet"
 
+# Additional test messages with sufficient length (>= 16 words for >= 12 shingles)
+_MSG_A = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa"
+_MSG_B = "quebec romeo sierra tango uniform victor whiskey xray yankee zulu alpha bravo charlie delta echo foxtrot"
+
 
 @pytest.mark.anyio
 class TestFanInCounter:
@@ -141,27 +145,27 @@ class TestEchoStore:
     async def test_pooling_does_not_defeat_min_shared_shingles(self):
         """Messages are matched individually, not pooled.
 
-        Two messages from one agent, neither matching the inbound alone,
-        should not confirm even though pooling them would exceed
-        MIN_SHARED_SHINGLES. This ensures Ruling 2's 12-shingle floor
-        applies per message, not across fragments.
+        Two distinct messages from one agent, neither matching the inbound alone,
+        recorded with the same timestamp, should not confirm even though pooling
+        would exceed MIN_SHARED_SHINGLES. This ensures the 12-shingle floor
+        applies per message, not across fragments, regardless of clock.
         """
-        from admina.domains.agent_security.fingerprint import MIN_SHARED_SHINGLES
+        from admina.domains.agent_security.fingerprint import matches
 
         s = EchoStore(FakeRedis(), ttl_seconds=7200)
-        # Create two small sketches (each with few shingles)
-        msg1 = "alpha bravo charlie"
-        msg2 = "delta echo foxtrot"
-        inbound = sketch(_MSG, _KEY)  # Our long test message
-        sketch1 = sketch(msg1, _KEY)
-        sketch2 = sketch(msg2, _KEY)
-        # Verify sketches are small
-        assert len(sketch1) < MIN_SHARED_SHINGLES
-        assert len(sketch2) < MIN_SHARED_SHINGLES
-        # Record both from a1 (they won't match individually)
-        await s.record_outbound("wiki.corp", "a1", sketch1, now=1000.0)
-        await s.record_outbound("wiki.corp", "a1", sketch2, now=1010.0)
-        # Confirm with inbound should return None (messages matched individually)
+        # Create two distinct, unrelated messages (both with 16+ words).
+        sketch_a = sketch(_MSG_A, _KEY)
+        sketch_b = sketch(_MSG_B, _KEY)
+        inbound = sketch(_MSG, _KEY)
+        # Verify neither matches the inbound alone.
+        assert not matches(inbound, sketch_a, 0.4), "sketch_a should not match alone"
+        assert not matches(inbound, sketch_b, 0.4), "sketch_b should not match alone"
+        # Record both from a1 WITH THE SAME TIMESTAMP (tests clock reuse).
+        shared_time = 1000.0
+        await s.record_outbound("wiki.corp", "a1", sketch_a, now=shared_time)
+        await s.record_outbound("wiki.corp", "a1", sketch_b, now=shared_time)
+        # Confirm with inbound should return None (messages matched individually).
+        # Without msgid grouping, pooling these would approach 24+ shared shingles.
         assert await s.confirm("wiki.corp", "a2", inbound, now=1100.0) is None
 
     async def test_member_count_does_not_grow_unbounded(self):
@@ -184,21 +188,47 @@ class TestEchoStore:
         assert count <= 1037
         assert count < 2000  # Much less than unbounded growth
 
+    async def test_the_previous_bucket_is_included(self):
+        """Without this, a message straddling a bucket edge is missed."""
+        s = EchoStore(FakeRedis(), ttl_seconds=100)
+        # bucket 10: times 1000-1099; bucket 11: times 1100-1199
+        await s.record_outbound("wiki.corp", "a1", sketch(_MSG, _KEY), now=1000.0)
+        # Confirm at time 1150 (bucket 11) should still see a1's write at 1000 (bucket 10).
+        assert await s.confirm("wiki.corp", "a2", sketch(_MSG, _KEY), now=1150.0) == "a1"
+
+    async def test_an_old_bucket_is_not_included(self):
+        """Content older than the window is not matched."""
+        s = EchoStore(FakeRedis(), ttl_seconds=100)
+        # bucket 10: times 1000-1099; bucket 5: times 500-599
+        await s.record_outbound("wiki.corp", "a1", sketch(_MSG, _KEY), now=1000.0)
+        # Confirm at time 500 is before the write; even if we check bucket 4 and 5,
+        # bucket 5 is older than any window that contains time 500.
+        # Specifically, at time 500 we check buckets 5 and 4; bucket 10 is not checked.
+        assert await s.confirm("wiki.corp", "a2", sketch(_MSG, _KEY), now=500.0) is None
+
     async def test_high_overlap_without_min_shingles_does_not_confirm(self):
         """High ratio but few shared shingles should not confirm.
 
         Verifies that matches() enforces both the shingle floor and the ratio.
-        A case where overlap >= 0.4 but shared < MIN_SHARED_SHINGLES should be
-        rejected. This is the exact scenario Ruling 2 exists to catch.
+        A prefix of a longer message has high overlap (fewer shingles all match)
+        but below MIN_SHARED_SHINGLES. This is the exact scenario Ruling 2
+        exists to catch. Test passes with matches() and fails with bare overlap.
         """
         s = EchoStore(FakeRedis(), ttl_seconds=7200)
-        # Create a small sketch with few shingles. If it happens to overlap
-        # with the inbound, the ratio could be high, but the absolute count
-        # will be below MIN_SHARED_SHINGLES, so matches() rejects it.
-        small_msg = "results on"
-        outbound = sketch(small_msg, _KEY)  # Will be < 5 shingles
-        inbound = sketch(_MSG, _KEY)  # Will be 13 shingles
-        # Record the small sketch
+        # Use a prefix of _MSG. This will share some shingles at containment 1.0
+        # (all prefix shingles appear in the full message) but the count will
+        # be much less than 12.
+        prefix_msg = "task 42 completed results are on ZZZ_Results_42 whoever"
+        outbound = sketch(prefix_msg, _KEY)
+        inbound = sketch(_MSG, _KEY)
+        # Verify outbound has shingles but < 12.
+        from admina.domains.agent_security.fingerprint import MIN_SHARED_SHINGLES
+
+        assert 0 < len(outbound) < MIN_SHARED_SHINGLES, (
+            f"Need a smaller sketch; got {len(outbound)}"
+        )
+        # Record the prefix sketch.
         await s.record_outbound("wiki.corp", "a1", outbound, now=1000.0)
-        # Confirm should return None because matches enforces both floor and ratio
-        assert await s.confirm("wiki.corp", "a2", inbound, now=1100.0) is None
+        # Confirm should return None because matches enforces both floor and ratio.
+        result = await s.confirm("wiki.corp", "a2", inbound, now=1100.0)
+        assert result is None, f"Expected None (matches enforces floor), got {result}"

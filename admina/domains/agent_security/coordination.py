@@ -30,6 +30,7 @@ owns it.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any
 
@@ -43,15 +44,20 @@ logger = logging.getLogger("admina.coordination")
 class EchoStore:
     """Outbound content sketches, matched against later inbound content.
 
-    Entries are ``<agent_id>:<timestamp>:<value>`` members in buckets per
-    destination and time window. Storing the agent and the time inside the
-    member is what lets the two rules that give the verdict meaning be
-    enforced at read time: a match against the same agent is discarded, and
-    the outbound sketch must predate the inbound content.
+    Entries are ``<agent_id>:<timestamp>:<msgid>:<value>`` members in buckets
+    per destination and time window. The agent and msgid (content-derived hash)
+    are what let the two rules that give the verdict meaning be enforced at
+    read time: a match against the same agent is discarded, and the outbound
+    sketch must predate the inbound content.
 
-    Each message is matched individually against the inbound sketch. This
-    prevents false positives where unrelated messages are pooled to meet the
-    MIN_SHARED_SHINGLES floor that guarantees containment of one coherent text.
+    Each distinct message is matched individually against the inbound sketch.
+    This prevents false positives where unrelated messages are pooled to meet
+    the MIN_SHARED_SHINGLES floor that guarantees containment of one coherent
+    text.
+
+    ttl_seconds is a bucket window. Content is matchable for roughly one to
+    two times that duration and is hard-bounded regardless of activity (unlike
+    older time-based expiry that reset on each write).
     """
 
     def __init__(self, redis: Any, ttl_seconds: int, threshold: float = 0.4) -> None:
@@ -59,6 +65,13 @@ class EchoStore:
         self._window = max(1, ttl_seconds)
         self._threshold = threshold
         self._cap = 1024  # Members per bucket before clamping.
+
+    @staticmethod
+    def _msgid(sketch_values: frozenset[int]) -> str:
+        """Derive a short content-based message id from the sketch."""
+        sorted_values = sorted(sketch_values)
+        h = hashlib.sha256(str(sorted_values).encode()).digest()
+        return h.hex()[:8]
 
     def _buckets(self, now: float) -> tuple[int, int]:
         current = int(now // self._window)
@@ -70,15 +83,30 @@ class EchoStore:
     async def record_outbound(
         self, destination: str, agent_id: str, sketch_values: frozenset[int], now: float
     ) -> None:
-        """Store one agent's outbound sketch. No-op without Redis or a sketch."""
+        """Store one agent's outbound sketch. No-op without Redis or a sketch.
+
+        Concurrent writers can cause overage slightly beyond the cap; this is
+        acceptable against unbounded growth.
+        """
         if self._redis is None or not sketch_values:
             return
         current, _ = self._buckets(now)
         key = self._key(destination, current)
+        msgid = self._msgid(sketch_values)
         try:
             current_count = await self._redis.scard(key)
-            if current_count < self._cap:
-                await self._redis.sadd(key, *(f"{agent_id}:{now}:{v}" for v in sketch_values))
+            # Only write as many values as fit in the cap.
+            available = self._cap - current_count
+            if available > 0:
+                values_to_write = min(available, len(sketch_values))
+                values_iter = iter(sketch_values)
+                members = [
+                    f"{agent_id}:{now}:{msgid}:{v}"
+                    for _ in range(values_to_write)
+                    if (v := next(values_iter, None)) is not None
+                ]
+                if members:
+                    await self._redis.sadd(key, *members)
             await self._redis.expire(key, self._window * 2)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Echo store unavailable, not recording outbound: %s", exc)
@@ -98,24 +126,24 @@ class EchoStore:
             logger.warning("Echo store unavailable, cannot confirm: %s", exc)
             return None
 
-        # Group by (agent_id, timestamp) to keep messages separate.
-        # Each write is one coherent message; match each individually.
-        by_message: dict[tuple[str, float], set[int]] = {}
+        # Group by (agent_id, msgid) to keep distinct messages separate.
+        # Each distinct message is matched individually.
+        by_message: dict[tuple[str, str], set[int]] = {}
         for member in members_combined:
             member_str = str(member)
             # Parse from the right to handle agent IDs containing colons.
-            # agent_id:timestamp:value -> rsplit gives us three parts.
-            parts = member_str.rsplit(":", 2)
-            if len(parts) != 3:
+            # agent_id:timestamp:msgid:value -> rsplit gives us four parts.
+            parts = member_str.rsplit(":", 3)
+            if len(parts) != 4:
                 continue
-            other, stamp, value = parts
+            other, stamp, msgid, value = parts
             if other == agent_id:
                 continue
             try:
                 timestamp = float(stamp)
                 if timestamp > now:
                     continue
-                by_message.setdefault((other, timestamp), set()).add(int(value))
+                by_message.setdefault((other, msgid), set()).add(int(value))
             except ValueError:
                 continue
 
