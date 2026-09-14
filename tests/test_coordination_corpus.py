@@ -17,12 +17,20 @@
 text. Coordination is a multi-event, multi-agent phenomenon that a single line
 cannot represent, so each record here is a trace: an ordered list of
 ``{agent_id, destination, write_shaped, allowed, content, t}`` with a label of
-``coordination`` or ``benign``.
+``coordination``, ``suspected`` or ``benign``.
 
 The negative controls are the point of this gate. A declared work queue and a
 legitimate read fan-in have the same shape as the thing being detected. A
 detector that fires on them is a detector an operator switches off, and then
 it protects nothing.
+
+The ``suspected`` label pins a separate boundary: undeclared write fan-in
+that reaches ``min_agents`` with no echo match is *noticed* (a ``suspected``
+verdict, logged but not quarantined) but never escalated to ``confirmed``
+without a content match. Three agents writing genuinely uncorrelated content
+to one undeclared destination is not distinguishable from an emergent
+channel by fan-in alone — that is the two-phase design's founding claim, not
+a defect — so this label is deliberately not ``benign``.
 """
 
 import json
@@ -33,6 +41,7 @@ from _fakes import FakeRedisHash
 
 from admina.domains.agent_security.coordination import (
     CoordinationDetector,
+    CoordinationVerdict,
     EchoStore,
     FanInCounter,
     QuarantineStore,
@@ -56,8 +65,11 @@ async def _replay(trace, min_agents=3):
         min_agents=min_agents,
         fingerprint_key=b"corpus-key",
     )
-    worst = "none"
-    rank = {"none": 0, "declared": 0, "degraded": 1, "suspected": 2, "confirmed": 3}
+    # Picking the "worst" verdict across a trace's events is the same
+    # severity-ordering problem observe() already solves for several
+    # destinations in one call. Reuse it instead of restating a parallel
+    # ranking that can silently drift from the module's own ordering.
+    worst = CoordinationVerdict()
     for event in trace["events"]:
         verdict = await detector.observe(
             event["agent_id"],
@@ -70,9 +82,8 @@ async def _replay(trace, min_agents=3):
             event["content"],
             now=1000.0 + event["t"],
         )
-        if rank[verdict.status] > rank[worst]:
-            worst = verdict.status
-    return worst
+        worst = CoordinationDetector._stronger(worst, verdict)  # noqa: SLF001
+    return worst.status
 
 
 @pytest.mark.anyio
@@ -94,3 +105,16 @@ async def test_coordination_traces_are_confirmed(trace):
 async def test_benign_traces_are_not_flagged(trace):
     """A detector that fires on these is one an operator switches off."""
     assert await _replay(trace) in ("none", "declared")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "trace",
+    [t for t in _traces() if t["label"] == "suspected"],
+    ids=lambda t: t["trace_id"],
+)
+async def test_suspected_traces_stop_short_of_confirmed(trace):
+    """Fan-in alone is noticed, not quarantined: it must not reach `confirmed`."""
+    verdict = await _replay(trace)
+    assert verdict != "confirmed"
+    assert verdict == "suspected"
