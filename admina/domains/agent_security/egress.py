@@ -38,6 +38,7 @@ __all__ = [
     "EgressStatus",
     "EgressIntent",
     "analyze",
+    "payload_text",
     "EgressDecision",
     "EgressPolicy",
     "resolve_egress_mode",
@@ -224,6 +225,67 @@ def _classify_write_shaped(obj: Any, depth: int) -> str | None:
             if reason:
                 return reason
     return None
+
+
+def _collect_payload_strings(obj: Any, depth: int, found: list[str]) -> None:
+    """Append the payload-bearing strings of *obj* to *found*, in argument order.
+
+    Applies the same notion of "payload" as :func:`_classify_write_shaped` —
+    a value under a :data:`_PAYLOAD_KEYS` name, or a free-form string of at
+    least :data:`_PAYLOAD_MIN_CHARS` that is not itself a destination — so
+    the half of the system that decides a call is write-shaped and the half
+    that fingerprints what it carries agree on where the payload is.
+
+    Only values are collected. Argument *names*, the tool name, the method
+    and every other structural token are identical across every call to the
+    same tool, so a fingerprint taken over them measures the shape of the
+    API rather than the content of the message.
+    """
+    if depth > _MAX_SCAN_DEPTH:
+        return
+    if isinstance(obj, str):
+        # A host or URL says where the call goes, which is what the fan-in
+        # trigger counts; it is not what the call carries.
+        if _host_from_string(obj, allow_bare_host=True):
+            return
+        value = obj.strip()
+        if len(value) >= _PAYLOAD_MIN_CHARS:
+            found.append(value)
+        return
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            name = key.lower() if isinstance(key, str) else ""
+            if name in _NETWORK_KEYS:
+                continue
+            if name in _PAYLOAD_KEYS and isinstance(value, str):
+                text = value.strip()
+                if text:
+                    found.append(text)
+                continue
+            _collect_payload_strings(value, depth + 1, found)
+        return
+    if isinstance(obj, list):
+        for item in obj:
+            _collect_payload_strings(item, depth + 1, found)
+
+
+def payload_text(params: Any) -> str:
+    """The payload a tool call carries, as text, with no call envelope around it.
+
+    The coordination detector's echo phase asks whether what one agent wrote
+    toward a destination later turns up in another agent's content. That
+    question is about the message, so the fingerprint source has to be the
+    message: a serialisation of the whole request carries the tool name and
+    every argument name with it, and those are the same on every call to the
+    same tool, which is a property of the API rather than evidence of an
+    echo.
+
+    Returns "" when the call carries no payload text. The caller fingerprints
+    nothing in that case rather than falling back to a wider source.
+    """
+    found: list[str] = []
+    _collect_payload_strings(params, 0, found)
+    return "\n".join(found)
 
 
 def _remote_hint(obj: Any, depth: int = 0) -> bool | None:

@@ -1,6 +1,6 @@
 import pytest
 
-from admina.domains.agent_security.egress import EgressStatus, analyze
+from admina.domains.agent_security.egress import EgressStatus, analyze, payload_text
 
 
 def _nest(levels: int, leaf: dict) -> dict:
@@ -292,3 +292,71 @@ class TestTriState:
     def test_deep_but_complete_non_network_call_is_still_no_egress(self):
         """Nesting that stays within the cap is not truncation."""
         assert analyze(_nest(5, {"expression": "2 + 2"})).status is EgressStatus.NO_EGRESS
+
+
+class TestPayloadText:
+    """The fingerprint source the coordination detector's echo phase uses.
+
+    It has to be the message, not the call that carried it: argument names,
+    the tool name and the JSON-RPC envelope are the same on every call to a
+    given tool, so a sketch taken over them matches every caller of that
+    tool and says nothing about content passing between agents.
+    """
+
+    def test_it_returns_the_payload_value(self):
+        params = {"url": "https://api.corp/x", "content": "task 42 done, results in ZZZ_Page"}
+        assert payload_text(params) == "task 42 done, results in ZZZ_Page"
+
+    def test_argument_names_are_not_part_of_it(self):
+        """Keys are identical across callers; only values can carry a message."""
+        params = {"url": "https://api.corp/x", "content": "a sufficiently long payload value"}
+        text = payload_text(params)
+        assert "content" not in text
+        assert "url" not in text
+
+    def test_the_destination_is_not_part_of_it(self):
+        """Where a call goes is what phase 1 counts, not what the call carries."""
+        params = {"url": "https://api.corp/v2/pages/44182031/child", "body": "the message body"}
+        assert payload_text(params) == "the message body"
+
+    def test_short_structural_values_are_excluded(self):
+        """Flags and ids are constant per tool and below the payload floor."""
+        params = {
+            "url": "https://api.corp/x",
+            "space_key": "ENGINEERING",
+            "format": "storage",
+            "content": "the only real payload in this call",
+        }
+        assert payload_text(params) == "the only real payload in this call"
+
+    def test_a_free_form_value_under_an_unconventional_key_is_included(self):
+        """_PAYLOAD_KEYS is not exhaustive; a long free-form value counts."""
+        params = {"url": "https://api.corp/x", "message": "a message under a key nobody listed"}
+        assert payload_text(params) == "a message under a key nobody listed"
+
+    def test_a_nested_payload_is_found(self):
+        params = {"url": "https://api.corp/x", "body": {"note": "a sufficiently long value"}}
+        assert payload_text(params) == "a sufficiently long value"
+
+    def test_several_payload_values_are_joined_in_argument_order(self):
+        params = {"title": "the first long enough value", "content": "the second value"}
+        assert payload_text(params) == "the first long enough value\nthe second value"
+
+    def test_a_call_carrying_nothing_yields_an_empty_string(self):
+        """Nothing to fingerprint means the echo phase skips, not that it
+        falls back to a wider source."""
+        assert payload_text({"url": "https://api.corp/items?id=1"}) == ""
+
+    def test_arguments_below_the_scan_depth_limit_are_reached(self):
+        params = _nest(4, {"content": "a payload well below the depth cap"})
+        assert payload_text(params) == "a payload well below the depth cap"
+
+    def test_arguments_past_the_scan_depth_limit_are_not_reached(self):
+        """Same cap as analyze(): a walk that stops is a walk that stops."""
+        assert payload_text(_nest(9, {"content": "a payload past the depth cap"})) == ""
+
+    def test_a_non_dict_argument_object_does_not_raise(self):
+        assert payload_text(None) == ""
+        assert (
+            payload_text(["a list item long enough to count"]) == "a list item long enough to count"
+        )

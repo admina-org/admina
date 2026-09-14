@@ -143,14 +143,28 @@ class _FakeLoopBreaker:
         return {"is_loop": False, "similarity": 0.0}
 
 
-def _drive_governed_call(monkeypatch, coordination):
-    """POST one write-shaped call through the real /mcp handler.
+def _wiki_body(tool: str, message: str, extra: dict | None = None) -> dict:
+    """One JSON-RPC tool call whose only free content is *message*."""
+    arguments = {"url": "https://wiki.corp/rest/api/content/44182/child/page"}
+    arguments.update(extra or {})
+    arguments["content"] = message
+    return {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": tool, "arguments": arguments},
+    }
 
-    Returns ``(response, pipeline_result)``. ``pipeline_result`` is the
-    GovernanceResult mcp_proxy built, captured via a spy on ``run_pipeline``
-    so callers can inspect ``checks["coordination"]`` — written by the
-    fire-and-forget ``_observe()`` task, which is drained here before
-    returning so its mutation of ``pipeline_result.checks`` has landed.
+
+def _drive_governed_calls(monkeypatch, coordination, calls):
+    """POST each of *calls* through the real /mcp handler against one state.
+
+    *calls* is a sequence of ``(agent_id, body)``. Returns
+    ``(responses, pipeline_results)``, one entry per call; each
+    ``pipeline_result`` is the GovernanceResult mcp_proxy built, captured via
+    a spy on ``run_pipeline``. The fire-and-forget ``_observe()`` task each
+    call spawns is drained before the next one starts, so a detector passed
+    here sees the calls in order.
     """
     from admina.proxy import main as proxy_main
     from admina.proxy.multi_upstream import MultiUpstreamRouter
@@ -163,12 +177,12 @@ def _drive_governed_call(monkeypatch, coordination):
     monkeypatch.setattr(proxy_main.settings, "UPSTREAM_MCP_URL", "http://fake-upstream")
     monkeypatch.setattr(proxy_main.settings, "GOVERNANCE_MODE", "enforce")
 
-    captured: dict = {}
+    captured: list = []
     original_run_pipeline = proxy_main.run_pipeline
 
     async def _spy_run_pipeline(*args, **kwargs):
         result = await original_run_pipeline(*args, **kwargs)
-        captured["result"] = result
+        captured.append(result)
         return result
 
     monkeypatch.setattr(proxy_main, "run_pipeline", _spy_run_pipeline)
@@ -195,8 +209,31 @@ def _drive_governed_call(monkeypatch, coordination):
     )
     monkeypatch.setattr(proxy_main.app.state, "proxy", state, raising=False)
 
-    # 3000 chars of arguments guarantee content_str (the JSON-encoded body)
-    # is well past the 2000-char cap the tail must be clipped to.
+    async def go():
+        responses = []
+        transport = httpx.ASGITransport(app=proxy_main.app, raise_app_exceptions=True)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            for agent_id, body in calls:
+                responses.append(
+                    await client.post("/mcp", json=body, headers={"X-Agent-Id": agent_id})
+                )
+                # _observe() is fire-and-forget (_spawn); drain it before the
+                # next call so the detector sees this one first.
+                pending = [t for t in proxy_main._background_tasks if not t.done()]
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+        return responses
+
+    responses = asyncio.run(go())
+    return responses, captured
+
+
+def _drive_governed_call(monkeypatch, coordination):
+    """One write-shaped call through the real /mcp handler.
+
+    3000 chars of payload guarantee the content tail is well past the
+    2000-char cap it must be clipped to.
+    """
     body = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -206,19 +243,8 @@ def _drive_governed_call(monkeypatch, coordination):
             "arguments": {"url": "https://wiki.corp/w", "text": "x" * 3000},
         },
     }
-
-    async def go():
-        transport = httpx.ASGITransport(app=proxy_main.app, raise_app_exceptions=True)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.post("/mcp", json=body, headers={"X-Agent-Id": "agent-7"})
-        # _observe() is fire-and-forget (_spawn); drain it before returning.
-        pending = [t for t in proxy_main._background_tasks if not t.done()]
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
-        return resp
-
-    resp = asyncio.run(go())
-    return resp, captured["result"]
+    responses, results = _drive_governed_calls(monkeypatch, coordination, [("agent-7", body)])
+    return responses[0], results[0]
 
 
 class TestCallSiteIsPinned:
@@ -244,6 +270,114 @@ class TestCallSiteIsPinned:
         assert call["agent_id"] == "agent-7"
         assert "wiki.corp" in call["destinations"]
         assert len(call["content_tail"]) == 2000, "the tail must be capped at 2000 chars"
+
+    def test_the_tail_is_the_payload_and_not_the_request_envelope(self, monkeypatch):
+        """What is fingerprinted is the message, not the call that carried it.
+
+        ``content_str`` — what the pipeline scans — is json.dumps() of the
+        whole JSON-RPC body, so a tail taken from it carries the method, the
+        tool name and every argument name, all identical across every caller
+        of that tool.
+        """
+        fake_coordination = _RecordingCoordination()
+        _resp, _result = _drive_governed_call(monkeypatch, fake_coordination)
+        tail = fake_coordination.calls[0]["content_tail"]
+        assert tail == "x" * 2000, "the tail must be the payload value itself"
+        for envelope_token in ("jsonrpc", "tools/call", "wiki_edit", "arguments", "wiki.corp"):
+            assert envelope_token not in tail
+
+
+class _SpyDetector(CoordinationDetector):
+    """The real detector, keeping every verdict it returned."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.verdicts: list[CoordinationVerdict] = []
+
+    async def observe(self, *args, **kwargs):
+        verdict = await super().observe(*args, **kwargs)
+        self.verdicts.append(verdict)
+        return verdict
+
+
+# Five unrelated messages: no two share a five-word run.
+_DIFFERENT_MESSAGES = [
+    "The migration of the billing ledger finished at noon and reconciliation found three orphaned"
+    " invoices in the eu-west shard, reissued under the new numbering scheme.",
+    "Quarterly headcount planning is blocked until finance publishes the revised opex envelope, so"
+    " the hiring panel for the platform team moves to the second week of next month.",
+    "A customer reported that exported CSV files open with mojibake in Excel on Windows; the root"
+    " cause is a missing byte order mark and the exporter now writes UTF-8 with it.",
+    "Load testing on the new search cluster peaked at eleven thousand queries per second before"
+    " latency degraded, roughly double what the previous deployment sustained under the same load.",
+    "Design review for the onboarding flow concluded that the progress indicator confuses users who"
+    " skip optional steps, so the wizard will show completed sections instead of a percentage.",
+]
+
+# A verbose but ordinary tool envelope: seven arguments, all constant per tool.
+_VERBOSE_ARGS = {
+    "space_key": "ENGINEERING",
+    "parent_page_id": "44182031",
+    "title": "Daily operations log",
+    "content_format": "storage",
+    "notify_watchers": False,
+    "minor_edit": True,
+}
+
+
+def _real_detector(redis, min_agents):
+    return _SpyDetector(
+        fanin=FanInCounter(redis, window_seconds=3600),
+        echo=EchoStore(redis, ttl_seconds=7200),
+        quarantine=QuarantineStore(redis, ttl_seconds=86400),
+        declared=frozenset(),
+        min_agents=min_agents,
+        fingerprint_key=b"deployment-secret",
+    )
+
+
+class TestOrdinaryTrafficThroughOneToolIsNotAnEcho:
+    """Five agents, one verbose tool, five different messages.
+
+    This is what a shared wiki looks like on an ordinary afternoon. The
+    fan-in trigger is supposed to notice it (`suspected`, which blocks
+    nothing); the echo phase is supposed to find no echo, because there is
+    none. Fingerprinting the serialised request instead of the payload turns
+    the fixed part of the envelope — method, tool name, argument names, the
+    constant argument values — into the shared shingles the confirmation
+    rests on, and every pair of agents matches.
+    """
+
+    def test_five_agents_posting_different_messages_are_not_confirmed(self, monkeypatch):
+        detector = _real_detector(FakeRedisHash(), min_agents=5)
+        calls = [
+            (f"agent-{i}", _wiki_body("confluence_page_append_content", msg, _VERBOSE_ARGS))
+            for i, msg in enumerate(_DIFFERENT_MESSAGES)
+        ]
+        responses, _results = _drive_governed_calls(monkeypatch, detector, calls)
+
+        assert [r.status_code for r in responses] == [200] * 5
+        statuses = [v.status for v in detector.verdicts]
+        assert "confirmed" not in statuses, f"ordinary traffic was confirmed: {statuses}"
+        assert statuses[-1] == "suspected", (
+            f"the fan-in trigger must still fire on five agents, got {statuses}"
+        )
+
+    def test_a_genuine_echo_through_the_same_tool_still_confirms(self, monkeypatch):
+        """The fix narrows what is fingerprinted, not whether it detects."""
+        detector = _real_detector(FakeRedisHash(), min_agents=5)
+        echoed = list(_DIFFERENT_MESSAGES)
+        echoed[4] = _DIFFERENT_MESSAGES[0]  # agent-4 repeats what agent-0 wrote
+        calls = [
+            (f"agent-{i}", _wiki_body("confluence_page_append_content", msg, _VERBOSE_ARGS))
+            for i, msg in enumerate(echoed)
+        ]
+        _responses, _results = _drive_governed_calls(monkeypatch, detector, calls)
+
+        final = detector.verdicts[-1]
+        assert final.status == "confirmed", [v.status for v in detector.verdicts]
+        assert final.peer == "agent-0"
+        assert final.destination == "wiki.corp"
 
 
 class TestCoordinationChecksShape:

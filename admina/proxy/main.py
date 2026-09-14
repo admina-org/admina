@@ -47,7 +47,7 @@ from admina import __version__
 from admina.core.event_bus import GovernanceEvent as BusGovernanceEvent
 from admina.core.event_bus import bus as governance_bus
 from admina.core.types import EventType, GovernanceAction
-from admina.domains.agent_security.egress import resolve_egress_mode
+from admina.domains.agent_security.egress import payload_text, resolve_egress_mode
 from admina.domains.compliance.forensic import ForensicBlackBox
 from admina.domains.compliance.otel import OTELGovernanceExporter
 from admina.domains.governance import (
@@ -1426,14 +1426,21 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
     # ─── Coordination detector (fire-and-forget) ───────────────
     # Never blocks: a confirmed verdict arms EgressPolicy's quarantine set,
     # which is what makes the next payload-bearing call to that destination
-    # refuse. The tail is capped at 2000 chars — fingerprinting the whole
-    # conversation would be quadratic and would match an agent against its
-    # own past (see fingerprint.py's SKETCH_SIZE note).
+    # refuse. What is fingerprinted is the payload the call carries
+    # (`payload_text`), not the serialised request: the method, the tool name
+    # and every argument name are identical on every call to the same tool,
+    # so a sketch taken over them measures the shape of the API and matches
+    # every other caller of it. A call carrying no payload text yields "",
+    # and the echo phase skips it. The tail is capped at 2000 chars —
+    # fingerprinting the whole conversation would be quadratic and would
+    # match an agent against its own past (see fingerprint.py's SKETCH_SIZE
+    # note). The extraction runs inside the task, off the request path.
     if state.coordination is not None and "egress" in pipeline_result.checks:
 
         async def _observe() -> None:
+            content_tail = payload_text(params)[-2000:]
             verdict = await state.coordination.observe(
-                agent_id, pipeline_result.checks["egress"], content_str[-2000:], time.time()
+                agent_id, pipeline_result.checks["egress"], content_tail, time.time()
             )
             pipeline_result.checks["coordination"] = {
                 "status": verdict.status,
