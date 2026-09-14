@@ -304,12 +304,22 @@ class TestQuarantineStore:
         assert await q.current(now=1000.0) == frozenset()
 
     async def test_renewing_an_expired_quarantine_does_not_resurrect_it(self):
-        """Expired entries must not be extended; renewal checks liveness."""
-        q = QuarantineStore(FakeRedisHash(), ttl_seconds=100)
+        """Expired entries must not be extended; renewal checks liveness.
+
+        Renews without intermediate current() to ensure the expiry check in
+        renew() is reached. Verifies both that the entry is not resurrected
+        and that the stored expiry is unchanged.
+        """
+        r = FakeRedisHash()
+        q = QuarantineStore(r, ttl_seconds=100)
         await q.add("wiki.corp", now=1000.0)  # expires at 1100
-        assert await q.current(now=5000.0) == frozenset()  # long expired
+        stored_before = dict(r.hashes.get("admina:egress:quarantine", {}))
         await q.renew("wiki.corp", now=5000.0)  # should not extend
-        assert await q.current(now=5050.0) == frozenset()  # still absent
+        stored_after = dict(r.hashes.get("admina:egress:quarantine", {}))
+        # Expiry unchanged: renew rejected it as expired
+        assert stored_before == stored_after
+        # Not resurrected on later read
+        assert await q.current(now=5050.0) == frozenset()
 
     async def test_expired_entries_are_purged_from_store(self):
         """Entries judged expired by current() are deleted from the hash."""

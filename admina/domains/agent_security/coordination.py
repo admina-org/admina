@@ -278,6 +278,11 @@ class QuarantineStore:
         this every ~5s on every replica; purging is idempotent so concurrent
         purges converge. This bounds hash growth and removes the resurrection
         surface at its source rather than only at renew()'s check.
+
+        Race: a renew() and purge() can collide on the same expiry instant, with
+        purge deleting what renew just extended. This is acceptable — the window
+        is one Redis round-trip, it requires both operations at an instant when
+        the quarantine's TTL has just reached zero, and new evidence re-flags.
         """
         if self._redis is None:
             return frozenset()
