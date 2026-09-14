@@ -281,14 +281,17 @@ boundary. The allowlist (`domains.agent_security.egress.allow` in
 A call naming a destination that is not on the allowlist is blocked under
 `ADMINA_EGRESS_MODE=enforce` and recorded (not blocked) under `observe`; a
 call with no network-facing argument is untouched. The call is also
-classified as payload-bearing (`write_shaped`) or not; today the only
-code that reads it is the quarantine check inside `evaluate()` (see
-limitations below), and otherwise it is carried through to the forensic
-record for operators to build on. The stage is wired into five governed
-surfaces — `/mcp`, `/v1/chat/completions`, `/api/v1/validate`,
-`GovernedModel.ask()` and `GovernedModel.stream()` — after PII redaction
-and before pluggable governance guards, so a denied destination never
-reaches third-party guard code.
+classified as payload-bearing (`write_shaped`) or not. Two things read
+that flag: this module's own quarantine check inside `evaluate()`
+(`egress.py`; see limitations below), and the coordination detector's
+fan-in trigger (`coordination.py`, §5c), which only counts a call toward
+fan-in when it is both write-shaped and allowed. Otherwise the flag is
+carried through to the forensic record for operators to build on. The
+stage is wired into five governed surfaces — `/mcp`,
+`/v1/chat/completions`, `/api/v1/validate`, `GovernedModel.ask()` and
+`GovernedModel.stream()` — after PII redaction and before pluggable
+governance guards, so a denied destination never reaches third-party
+guard code.
 
 ### Coverage is not uniform across those five surfaces
 
@@ -393,7 +396,10 @@ included. Wiring it is a separate change, not a configuration option.
   "done"}` included. This does not affect the block decision — an
   unlisted destination is refused whatever the call's shape — but it
   means a call that falls outside those three conditions is invisible to
-  any future counting built on `write_shaped`.
+  both readers of `write_shaped`: it neither triggers the quarantine check
+  above nor counts toward the coordination detector's fan-in trigger
+  (§5c). A destination reached only by calls shaped this way accumulates
+  no fan-in count at all.
 - **Config reload is not immediate on any surface.** `GovernedModel`
   resolves the policy lazily on first use and caches it for the life of
   the instance. The proxy and the gateway resolve it once at startup and
@@ -420,10 +426,13 @@ included. Wiring it is a separate change, not a configuration option.
 
 ### What it does
 
-`admina/proxy/main.py` feeds every governed MCP tool call's egress check
-and a 2000-character tail of its content into
-`CoordinationDetector.observe()`. Two phases run in order, each gated on
-the destination not being in the operator's `coordination_declared` set:
+`admina/proxy/main.py` feeds the egress check and a 2000-character tail of
+its content into `CoordinationDetector.observe()` for every MCP tool call
+that reaches the egress stage — one not already short-circuited by an
+earlier governance check (loop breaker, firewall) and with egress control
+enabled (`"egress" in pipeline_result.checks`). Two phases run in order,
+each gated on the destination not being in the operator's
+`coordination_declared` set:
 
 1. **Fan-in trigger (always on).** `FanInCounter` counts distinct agent
    ids making write-shaped, egress-allowed calls to one destination inside
