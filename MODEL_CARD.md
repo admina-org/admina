@@ -29,6 +29,7 @@ functions, and ISO/IEC 42001 clause 8 (Operations).
 | PII Scanner | Regex + spaCy NER (optional), or Microsoft Presidio (opt-in) | Python default even when Rust is installed; Rust (`core-rust/src/pii.rs`) only under an explicit `ADMINA_ENGINE=rust` | `admina/domains/data_sovereignty/`, `admina/engines/presidio.py` |
 | Loop Breaker | TF-IDF cosine similarity over a sliding window | Rust (`core-rust/src/loop_breaker.rs`) + Python fallback | `admina/domains/agent_security/loop_breaker.py` |
 | Egress Policy | Destination allowlist (exact host / `*.suffix` / CIDR) matched against tool-call arguments | Python only — no Rust variant | `admina/domains/agent_security/egress.py` |
+| Coordination Detector | Fan-in counter over distinct agents, escalating to keyed shingle-sketch echo confirmation | Python only — no Rust variant; requires Redis — no Redis means no detection at all | `admina/domains/agent_security/coordination.py`, `admina/domains/agent_security/fingerprint.py` |
 | Forensic Hash Chain | SHA-256 chained log | Rust (`core-rust/src/forensic.rs`) + Python fallback | `admina/domains/compliance/forensic.py` |
 | EU AI Act Classifier | Keyword-based risk classifier + Annex III mapping | Python (`admina/domains/compliance/eu_ai_act.py`) | — |
 | NIS2 Self-Assessment | Deterministic checklist (10 areas × 4 controls = 40 checks) + gap analysis | Python (`admina/domains/compliance/nis2.py`) | — |
