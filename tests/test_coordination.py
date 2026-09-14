@@ -459,6 +459,20 @@ class TestCoordinationDetector:
         v = await d.observe("a1", _check(), _ECHOED, now=1000.0)
         assert v.status == "none"
 
+    async def test_the_configured_threshold_is_floored_at_two_agents(self):
+        """One agent is not coordination with anyone.
+
+        `min_agents: 1` in admina.yaml would otherwise report every single
+        write-shaped call to an undeclared destination as `suspected`, and
+        the word would stop meaning "more than one agent is writing here".
+        """
+        for configured in (1, 0, -3):
+            d = _detector(FakeRedisHash(), min_agents=configured)
+            v = await d.observe("a1", _check(), _ECHOED, now=1000.0)
+            assert v.status == "none", f"min_agents={configured} flagged a lone agent"
+            v = await d.observe("a2", _check(), "unrelated text for a2 alone", now=1010.0)
+            assert v.status == "suspected", f"min_agents={configured} must still fire at two"
+
     async def test_reaching_the_threshold_without_an_echo_is_suspected(self):
         d = _detector(FakeRedisHash())
         for agent in ("a1", "a2", "a3"):

@@ -1,4 +1,5 @@
 from admina.domains.agent_security.fingerprint import (
+    MIN_SHARED_SHINGLES,
     load_fingerprint_key,
     matches,
     overlap,
@@ -123,3 +124,38 @@ class TestContainment:
         assert len(s) <= shingles_approx
         # Verify SKETCH_SIZE is not the limiting factor
         assert len(s) < 512
+
+    def test_a_shared_footer_between_two_long_texts_does_not_match(self):
+        """The condition the intersection floor cannot carry on its own.
+
+        Two long messages with nothing in common but an automated footer
+        clear MIN_SHARED_SHINGLES on the footer alone — a 24-word footer is
+        20 shingles. What rejects them is containment: 20 shingles out of
+        200 is not one text appearing inside another. Set the threshold to
+        0 and this pair confirms an echo between two agents who never
+        exchanged anything.
+        """
+        footer = (
+            "this message was generated automatically by the reporting service please do not"
+            " reply to it directly and instead open a ticket with the platform team"
+        )
+        assert len(footer.split()) >= 16, "the footer must clear the shingle floor alone"
+        text_a = " ".join(f"alpha{i}" for i in range(200)) + " " + footer
+        text_b = " ".join(f"bravo{i}" for i in range(200)) + " " + footer
+        a, b = sketch(text_a, _KEY), sketch(text_b, _KEY)
+
+        assert len(a & b) >= MIN_SHARED_SHINGLES, "the floor is not what rejects this pair"
+        assert overlap(a, b) < 0.4
+        assert matches(a, b) is False
+
+    def test_the_threshold_argument_is_what_rejects_it(self):
+        """Names the condition under test, so the pair above cannot be read
+        as a second test of the shingle floor."""
+        footer = (
+            "this message was generated automatically by the reporting service please do not"
+            " reply to it directly and instead open a ticket with the platform team"
+        )
+        a = sketch(" ".join(f"alpha{i}" for i in range(200)) + " " + footer, _KEY)
+        b = sketch(" ".join(f"bravo{i}" for i in range(200)) + " " + footer, _KEY)
+        assert matches(a, b, threshold=0.4) is False
+        assert matches(a, b, threshold=0.0) is True, "only the ratio separates them"
