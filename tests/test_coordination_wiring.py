@@ -844,6 +844,38 @@ class TestEveryConclusiveVerdictLeavesAnAuditRecord:
         ]
         assert seen[0].action == "OBSERVE"
 
+    def test_a_forensic_write_failure_does_not_drop_the_bus_event(self, monkeypatch):
+        """The forensic write and the bus emit are two independent outputs of
+        the same verdict, not one gated on the other. The shipped
+        `ForensicBlackBox` swallows its own storage errors, so this path is
+        unreachable with the built-in store — but a plugin store need not,
+        and before this an exception raised out of the forensic write
+        propagated past `governance_bus.emit()`, losing the
+        `policy_violation` event for a verdict whose counter had already
+        been incremented.
+        """
+        from admina.core.event_bus import bus as governance_bus
+
+        class _RaisingOnCoordination:
+            def record(self, event: dict) -> dict:
+                if "coordination" in (event.get("checks") or {}):
+                    raise RuntimeError("simulated forensic store failure")
+                return {"sequence_number": 1, "record_hash": "h", "stored": False}
+
+        seen: list = []
+        governance_bus.subscribe(EventType.POLICY_VIOLATION, lambda event: seen.append(event))
+        try:
+            coordination = _RecordingCoordination(
+                CoordinationVerdict(status="suspected", destination="wiki.corp", agents=9)
+            )
+            resp, _ = _drive_governed_call(
+                monkeypatch, coordination, forensic_box=_RaisingOnCoordination()
+            )
+        finally:
+            governance_bus._subscribers[EventType.POLICY_VIOLATION].pop()
+        assert resp.status_code == 200, "a background forensic failure must not affect the response"
+        assert len(seen) == 1, "the bus event must still fire after the forensic write raised"
+
     def test_the_peer_is_named_in_the_warning(self, monkeypatch, caplog):
         coordination = _RecordingCoordination(
             CoordinationVerdict(

@@ -1531,23 +1531,36 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
             coordination_action = "QUARANTINE" if armed else "OBSERVE"
             coordination_risk = RiskLevel.CRITICAL if armed else RiskLevel.MEDIUM
             state.inc_metric(counter)
+            # The forensic write and the bus emit are two independent
+            # outputs of the same verdict, not one guarded by the other: a
+            # store that raises (the shipped ForensicBlackBox swallows its
+            # own storage errors, but a plugin store need not) must not also
+            # take the policy_violation event down with it, which is what an
+            # unhandled exception here would do to the rest of this task.
             if state.forensic_box:
                 _coord_loop = asyncio.get_running_loop()
-                await _coord_loop.run_in_executor(
-                    None,
-                    lambda: state.forensic_box.record(
-                        {
-                            "event_id": f"{event_id}:coordination",
-                            "event_type": EventType.POLICY_VIOLATION,
-                            "agent_id": agent_id,
-                            "session_id": session_id,
-                            "method": method,
-                            "action": coordination_action,
-                            "risk_level": coordination_risk,
-                            "checks": {"coordination": coordination_check},
-                        }
-                    ),
-                )
+                try:
+                    await _coord_loop.run_in_executor(
+                        None,
+                        lambda: state.forensic_box.record(
+                            {
+                                "event_id": f"{event_id}:coordination",
+                                "event_type": EventType.POLICY_VIOLATION,
+                                "agent_id": agent_id,
+                                "session_id": session_id,
+                                "method": method,
+                                "action": coordination_action,
+                                "risk_level": coordination_risk,
+                                "checks": {"coordination": coordination_check},
+                            }
+                        ),
+                    )
+                except Exception:
+                    logger.warning(
+                        "Coordination forensic record failed for event %s; bus event still emitted",
+                        event_id,
+                        exc_info=True,
+                    )
             await governance_bus.emit(
                 BusGovernanceEvent(
                     event_type=EventType.POLICY_VIOLATION,
