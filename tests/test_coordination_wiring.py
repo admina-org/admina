@@ -145,6 +145,47 @@ class TestProxyWiring:
         assert detector._echo._window == 1800, "the echo bucket is twice the fan-in window"
         assert detector._declared == frozenset({"queue.internal"})
 
+    async def test_the_fingerprint_key_build_coordination_detector_loads_reaches_the_echo_phase(
+        self, monkeypatch
+    ):
+        """`build_coordination_detector` calls `load_fingerprint_key()` inline
+        rather than taking the key as an argument, so nothing pins its return
+        value to the constructor argument it feeds. Losing it silently — for
+        instance by hardcoding ``fingerprint_key=None`` — raises nothing: the
+        echo phase (``CoordinationDetector._fingerprint``) simply never runs,
+        so no verdict can reach `confirmed` and the deployment's
+        `ADMINA_EGRESS_FINGERPRINT_KEY` is dead on arrival while every check
+        that reads configuration says it is set. Two agents sending the same
+        18-word message (14 shingles, clearing the 12-shingle floor) confirm
+        on the second call when the key reaches the detector; with the key
+        lost they can only reach `suspected`.
+        """
+        from admina.core.config import EgressConfig
+        from admina.proxy.main import build_coordination_detector
+
+        monkeypatch.setenv("ADMINA_EGRESS_FINGERPRINT_KEY", "a-sixteen-byte-or-longer-secret")
+        cfg = EgressConfig(coordination_declared=[], fanin_window_seconds=900, fanin_min_agents=2)
+        r = FakeRedisHash()
+        detector = build_coordination_detector(r, cfg, QuarantineStore(r, 60))
+
+        check = {
+            "status": "resolved",
+            "destinations": ["wiki.corp"],
+            "write_shaped": True,
+            "allowed": True,
+        }
+        # Same 18-word message used above: 14 shingles, clears
+        # fingerprint.MIN_SHARED_SHINGLES (12).
+        msg = (
+            "task 42 completed, results are on ZZZ_Results_42, whoever takes 43"
+            " starts at column two in the shared spreadsheet"
+        )
+        await detector.observe("a1", check, msg, now=1000.0)
+        verdict = await detector.observe("a2", check, msg, now=1010.0)
+        assert verdict.status == "confirmed", (
+            f"the fingerprint key never reached the echo phase: {verdict}"
+        )
+
     async def test_the_refresh_is_silent_with_no_redis_configured(self, caplog):
         """No Redis configured is a supported deployment, not a failure.
 
