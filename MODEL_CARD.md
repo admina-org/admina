@@ -496,14 +496,21 @@ destination not being in the operator's `coordination_declared` set:
    notification against the same notification plus 80 words of the sender's
    own build output shares 14 shingles at 1.000 containment and reports
    `suspected`; the same pair with nothing beside the template reports
-   `confirmed`. A field below the 12-shingle floor is dropped
-   before storage when the same call has a field above it — which is what
-   keeps a bearer token or a content type out of the echo store — and kept
-   only when no field in the call reaches the floor and the call's fields
-   hold 12 shingles between them, the shape of a tool that splits its
-   message over a title and a body. A match against another agent's earlier
-   output escalates the verdict to `confirmed` and adds the destination to
-   the quarantine set.
+   `confirmed`. **The real boundary sits much closer than that 80-word
+   example**: the same shape still reports `confirmed` at only +10 words of
+   the sender's own text per field (shared 14 shingles of a 34-shingle
+   payload, containment 0.41, still above the 0.4 threshold), and only
+   stops confirming once the sender's own text is roughly as long as the
+   shared template itself — not merely present beside it. A field below the
+   12-shingle floor is dropped before both storage and matching when the
+   same call has a field above it — `_fingerprint()` runs once per call and
+   the same trimmed fields feed both the echo store and the match probe, so
+   what this keeps out of the echo store (a bearer token, a content type) is
+   equally unavailable to confirm a match — and kept only when no field in
+   the call reaches the floor and the call's fields hold 12 shingles between
+   them, the shape of a tool that splits its message over a title and a
+   body. A match against another agent's earlier output escalates the
+   verdict to `confirmed` and adds the destination to the quarantine set.
 
 A `confirmed` destination is refused for write-shaped calls fleet-wide
 **under `ADMINA_EGRESS_MODE=enforce`**; under the default `observe` the
@@ -529,12 +536,34 @@ proxy's log rotated.
 
 The cost is one chain entry per governed call once a destination is past
 the fan-in threshold — the same per-call footing a `confirmed` verdict
-already had under `observe`. Measured over 20 governed write-shaped calls
-to one undeclared destination: **16 coordination records with Redis
-healthy** (the four calls below the fan-in threshold conclude nothing) and
-**20 with no Redis configured**, where every call is `degraded`. Listing
-the destination in `coordination_declared` suppresses both phases and with
-them the records.
+already had under `observe`. Measured through the real `/mcp` handler
+against a real `ForensicBlackBox`, over 20 governed write-shaped calls to
+one undeclared destination: **16 coordination records with Redis healthy**
+(the four calls below the fan-in threshold conclude nothing), **20 of 20
+with no Redis configured, and 20 of 20 with Redis configured but
+unreachable** — a Redis outage behaves identically to no Redis at all,
+every call `degraded` from the first one, with no fan-in threshold to clear
+first, so this is a reachable operational state and not only a deployment
+choice — and **0** when the destination is listed in `coordination_declared`,
+which suppresses both phases and with them the records. Each record costs
+**628 B and about 98 µs** on the filesystem backend (the shipped default);
+doubling the per-call forensic write is the steady-state price of turning
+this on.
+
+That write is not free on the request path either. `ForensicBlackBox.record()`
+takes one process-global lock and holds it through the backend I/O, and the
+coordination record is written under the same lock, and dispatched to the
+same default executor, as the request's own forensic entry — so the added
+write lengthens the very request whose call crossed the fan-in threshold,
+and it competes for a thread pool that every LLM adapter also uses.
+Measured with the detector on versus off, through the real handler against
+a 20 ms backend (the shape `FORENSIC_BACKEND=s3` has, which §6 recommends
+for on-premise and air-gapped deployments): request latency p50
+**520 → 835 ms**, p95 **555 → 1106 ms**, throughput **37 → 22 rps**. The lock
+is not specific to this feature — the request path already paid it for its
+own forensic entry — but this change doubles how often a request pays it,
+and it is documented here rather than fixed: this branch does not change
+`ForensicBlackBox`'s locking.
 
 Self-confirmation is blocked by three independent mechanisms, not one:
 `FanInCounter` counts distinct `agent_id`s, so repeated calls from a single
