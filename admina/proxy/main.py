@@ -821,10 +821,19 @@ async def prometheus_metrics(request: Request) -> Response:
     eng = engine_status()
 
     lines: list[str] = []
+    _emitted_metadata: set[str] = set()
 
     def _metric(name: str, value, help_text: str, mtype: str = "counter", labels: str = "") -> None:
-        lines.append(f"# HELP admina_{name} {help_text}")
-        lines.append(f"# TYPE admina_{name} {mtype}")
+        # HELP/TYPE describe the metric *family* (its bare name), not one
+        # label set — the Prometheus text format allows exactly one of each
+        # per family. A caller that emits several label sets for the same
+        # family (one sample per coordination status, one per firewall
+        # category) must only get the metadata once, or the family renders
+        # a second HELP/TYPE line and the whole scrape fails to parse.
+        if name not in _emitted_metadata:
+            lines.append(f"# HELP admina_{name} {help_text}")
+            lines.append(f"# TYPE admina_{name} {mtype}")
+            _emitted_metadata.add(name)
         suffix = f"{{{labels}}}" if labels else ""
         lines.append(f"admina_{name}{suffix} {value}")
 
