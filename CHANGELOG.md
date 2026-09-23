@@ -69,6 +69,57 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   persists nothing — an observation window intended to produce an allowlist
   needs `FORENSIC_BACKEND=filesystem` (with `FORENSIC_BASE_DIR`) or `=s3`
   set before it starts.
+- **Cross-agent coordination detector.** A two-phase check that finds
+  agents writing to a destination the operator never declared. An
+  always-on fan-in trigger counts distinct agent ids making write-shaped
+  calls to one destination (`domains.agent_security.egress.fanin`:
+  `window_seconds`, default 3600; `min_agents`, default 5) and reports
+  `suspected` once the threshold is crossed. If
+  `ADMINA_EGRESS_FINGERPRINT_KEY` is set, a second phase compares keyed
+  content shingles of what each call carries — the payload values, not the
+  request envelope, and each value fingerprinted on its own rather than
+  joined, so that the header block, bearer token and content type a whole
+  fleet sends unchanged cannot pool into the run of shared text a match
+  requires — between agents; a match needs 12 shared shingles and 0.4
+  containment across the whole payload, met either by one coherent run
+  inside a single pair of fields or, for a tool that splits its message
+  over several short arguments, by the two calls being near-copies of one
+  another — 0.9 containment over the smaller payload and 0.4 over the
+  larger, since containment alone says nothing about the larger side and a
+  call carrying only a shared template scores 1.0 against any call
+  carrying that template beside its own message. Before anything is
+  compared it discounts text
+  that `min_agents - 1` distinct *other* agents have already sent toward
+  that destination — a fleet's header block or instruction preamble is not
+  one agent quoting another, and counting senders rather than calls is what
+  keeps an agent from making its own message ambient by repeating it — and
+  text the reading agent has sent there itself. A match against another
+  agent's prior
+  output escalates the verdict to `confirmed` and quarantines the
+  destination for write-shaped calls fleet-wide — every agent, not only
+  the ones involved — until `quarantine_ttl_seconds` (default 86400) lapses
+  or an operator lifts it. The quarantine refuses calls under
+  `ADMINA_EGRESS_MODE=enforce`; under the default `observe` it is recorded,
+  logged, listed by `admina egress quarantine list` and written to the
+  forensic chain with the agents and the matching peer, and the call
+  proceeds — the same mode gate the allowlist has. Every verdict the
+  detector concludes, not only `confirmed`, leaves a forensic-chain record
+  marked `QUARANTINE` or `OBSERVE`, a `policy_violation` bus event and an
+  `admina_coordination_verdicts_total{status="…"}` counter on `/metrics`:
+  at the shipped fan-in defaults a same-text cascade across a whole fleet
+  reports `suspected` rather than quarantining, and the record is where
+  that detection is kept. **Without that key, the detector never
+  escalates past `suspected`**: echo confirmation does not run at all
+  rather than falling back to unkeyed, dictionary-attackable hashes.
+  Destinations meant to receive coordinated writes are exempted via
+  `coordination_declared`. Two new CLI commands operate on the quarantine
+  set: `admina egress quarantine list` and `admina egress quarantine lift
+  <destination>`. **This feed is MCP-proxy-only**: like the egress stage
+  it rides on, only `admina/proxy/main.py` calls the detector — the
+  OpenAI-compatible gateway, `POST /api/v1/validate`, and the SDK
+  primitives do not feed it, so coordination conducted through those
+  surfaces is not seen. See `MODEL_CARD.md` §5c for the full limitations,
+  including behaviour with no Redis (`degraded`, not `none`).
 
 ## [0.11.1] — 2026-07-16
 

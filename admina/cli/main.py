@@ -1563,6 +1563,94 @@ def suggest_allowlist(since: int, forensic_dir: str | None) -> None:
         click.echo(f"        - {dest}")
 
 
+def _quarantine_redis(url: str):
+    """Open an async Redis client. Isolated so tests can substitute it."""
+    import redis.asyncio as aioredis
+
+    return aioredis.from_url(url, decode_responses=True)
+
+
+@egress.group()
+def quarantine() -> None:
+    """Inspect and clear quarantined destinations."""
+
+
+@quarantine.command("list")
+@click.option(
+    "--redis-url",
+    default=lambda: os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+)
+def quarantine_list(redis_url: str) -> None:
+    """Show destinations currently refused for payload-bearing calls."""
+    import asyncio
+    import time
+
+    from admina.domains.agent_security.coordination import QuarantineStore
+
+    async def _run():
+        client = _quarantine_redis(redis_url)
+        try:
+            store = QuarantineStore(client, ttl_seconds=1)
+            return await store.current_raising(time.time())
+        finally:
+            await client.close()
+
+    try:
+        live = sorted(asyncio.run(_run()))
+    except Exception as exc:  # noqa: BLE001
+        click.echo(f"Could not read quarantine set: {exc}")
+        raise SystemExit(1)
+
+    if not live:
+        click.echo("No destination is currently quarantined.")
+        return
+    click.echo("Quarantined for writes (reads are unaffected):")
+    for destination in live:
+        click.echo(f"  - {destination}")
+    click.echo("")
+    click.echo(
+        "Write-shaped calls to these are refused only under ADMINA_EGRESS_MODE=enforce; "
+        "under the default observe mode they are recorded and allowed."
+    )
+
+
+@quarantine.command("lift")
+@click.argument("destination")
+@click.option(
+    "--redis-url",
+    default=lambda: os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
+)
+def quarantine_lift(destination: str, redis_url: str) -> None:
+    """Clear one destination's quarantine."""
+    import asyncio
+
+    from admina.domains.agent_security.coordination import QuarantineStore
+
+    # Destinations are stored as the egress analyser normalised them, which
+    # lower-cases every host. An operator reading WIKI.CORP off a dashboard
+    # would otherwise be told it was not quarantined.
+    destination = destination.strip().lower()
+
+    async def _run():
+        client = _quarantine_redis(redis_url)
+        try:
+            store = QuarantineStore(client, ttl_seconds=1)
+            return await store.lift_raising(destination)
+        finally:
+            await client.close()
+
+    try:
+        lifted = asyncio.run(_run())
+    except Exception as exc:  # noqa: BLE001
+        click.echo(f"Could not reach quarantine store: {exc}")
+        raise SystemExit(1)
+
+    if lifted:
+        click.echo(f"Lifted quarantine on {destination}.")
+    else:
+        click.echo(f"{destination} was not quarantined.")
+
+
 @app.command()
 @click.option(
     "--output",

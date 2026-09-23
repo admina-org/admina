@@ -1,0 +1,1240 @@
+import logging
+
+import pytest
+from _fakes import FakeRedis, FakeRedisError, FakeRedisHash
+
+from admina.domains.agent_security.coordination import (
+    CoordinationDetector,
+    EchoStore,
+    FanInCounter,
+    QuarantineStore,
+)
+from admina.domains.agent_security.fingerprint import sketch
+
+_KEY = b"k"
+_MSG = "task 42 completed, results are on ZZZ_Results_42, whoever takes 43 starts at column two in the spreadsheet"
+
+# Additional test messages with sufficient length (>= 16 words for >= 12 shingles)
+_MSG_A = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa"
+_MSG_B = "quebec romeo sierra tango uniform victor whiskey xray yankee zulu alpha bravo charlie delta echo foxtrot"
+
+
+def _filler(tag: str, words: int = 20) -> str:
+    """A message of *words* unique words: 16 shingles, disjoint from any other tag."""
+    return " ".join(f"{tag}{i}" for i in range(words))
+
+
+def _shared_run(common: str, tag: str, run: int = 11, words: int = 20) -> str:
+    """A 20-word text whose first *run* words are shared with every text
+    built from the same *common* tag. A shared run of 11 words is 7 shingles:
+    below the floor on its own, above it once two such fields are pooled."""
+    return " ".join(
+        [f"{common}{i}" for i in range(run)] + [f"{tag}{i}" for i in range(words - run)]
+    )
+
+
+def _values_of(agent_id: str, redis) -> set[int]:
+    """Every sketch value stored for *agent_id*, wherever the store put it."""
+    return {
+        int(str(m).rsplit(":", 3)[3])
+        for members in redis.sets.values()
+        for m in members
+        if str(m).startswith(f"{agent_id}:")
+    }
+
+
+@pytest.mark.anyio
+class TestFanInCounter:
+    async def test_counts_distinct_agents(self):
+        c = FanInCounter(FakeRedis(), window_seconds=3600)
+        for agent in ("a1", "a2", "a3"):
+            n = await c.record("wiki.corp", agent, now=1000.0)
+        assert n == 3
+
+    async def test_the_same_agent_twice_counts_once(self):
+        c = FanInCounter(FakeRedis(), window_seconds=3600)
+        await c.record("wiki.corp", "a1", now=1000.0)
+        assert await c.record("wiki.corp", "a1", now=1000.0) == 1
+
+    async def test_destinations_are_counted_separately(self):
+        c = FanInCounter(FakeRedis(), window_seconds=3600)
+        await c.record("wiki.corp", "a1", now=1000.0)
+        assert await c.record("other.corp", "a2", now=1000.0) == 1
+
+    async def test_the_previous_bucket_is_included(self):
+        """Without this a coordination straddling a bucket edge is missed."""
+        c = FanInCounter(FakeRedis(), window_seconds=100)
+        await c.record("wiki.corp", "a1", now=1000.0)
+        assert await c.record("wiki.corp", "a2", now=1150.0) == 2
+
+    async def test_an_old_bucket_is_not_included(self):
+        c = FanInCounter(FakeRedis(), window_seconds=100)
+        await c.record("wiki.corp", "a1", now=1000.0)
+        assert await c.record("wiki.corp", "a2", now=5000.0) == 1
+
+    async def test_a_ttl_is_always_set(self):
+        """An unbounded key set would grow forever."""
+        r = FakeRedis()
+        c = FanInCounter(r, window_seconds=100)
+        await c.record("wiki.corp", "a1", now=1000.0)
+        assert all(ttl == 200 for ttl in r.ttls.values())
+
+    async def test_redis_failure_degrades_to_zero_not_an_exception(self):
+        r = FakeRedis()
+        r.fail = True
+        c = FanInCounter(r, window_seconds=3600)
+        assert await c.record("wiki.corp", "a1", now=1000.0) == 0
+
+    async def test_no_redis_at_all_degrades_to_zero(self):
+        c = FanInCounter(None, window_seconds=3600)
+        assert await c.record("wiki.corp", "a1", now=1000.0) == 0
+
+    async def test_an_agent_in_both_buckets_counts_once(self):
+        """scard summed over buckets would double-count; the union must not."""
+        c = FanInCounter(FakeRedis(), window_seconds=100)
+        await c.record("wiki.corp", "a1", now=1000.0)
+        assert await c.record("wiki.corp", "a1", now=1150.0) == 1
+
+    async def test_cap_stops_growth(self):
+        """Once cap is reached, the underlying set stops growing."""
+        r = FakeRedis()
+        c = FanInCounter(r, window_seconds=100, cap=3)
+        for i in range(5):
+            await c.record("wiki.corp", f"a{i}", now=1000.0)
+        key = "admina:egress:fanin:wiki.corp:10"
+        assert len(r.sets[key]) == 3
+
+
+@pytest.mark.anyio
+class TestEchoStore:
+    async def test_content_from_another_agent_confirms(self):
+        s = EchoStore(FakeRedis(), ttl_seconds=7200)
+        await s.record_outbound("wiki.corp", "a1", [sketch(_MSG, _KEY)], now=1000.0)
+        assert await s.confirm("wiki.corp", "a2", [sketch(_MSG, _KEY)], now=1100.0) == "a1"
+
+    async def test_an_agent_does_not_echo_itself(self):
+        """Matching your own earlier output proves nothing."""
+        s = EchoStore(FakeRedis(), ttl_seconds=7200)
+        await s.record_outbound("wiki.corp", "a1", [sketch(_MSG, _KEY)], now=1000.0)
+        assert await s.confirm("wiki.corp", "a1", [sketch(_MSG, _KEY)], now=1100.0) is None
+
+    async def test_causality_is_required(self):
+        """An 'echo' that predates the write is a coincidence, not a channel."""
+        s = EchoStore(FakeRedis(), ttl_seconds=7200)
+        await s.record_outbound("wiki.corp", "a1", [sketch(_MSG, _KEY)], now=1000.0)
+        assert await s.confirm("wiki.corp", "a2", [sketch(_MSG, _KEY)], now=900.0) is None
+
+    async def test_unrelated_content_does_not_confirm(self):
+        s = EchoStore(FakeRedis(), ttl_seconds=7200)
+        await s.record_outbound("wiki.corp", "a1", [sketch(_MSG, _KEY)], now=1000.0)
+        other = sketch("the quarterly revenue report shows a decline in the north", _KEY)
+        assert await s.confirm("wiki.corp", "a2", [other], now=1100.0) is None
+
+    async def test_a_different_destination_does_not_confirm(self):
+        s = EchoStore(FakeRedis(), ttl_seconds=7200)
+        await s.record_outbound("wiki.corp", "a1", [sketch(_MSG, _KEY)], now=1000.0)
+        assert await s.confirm("other.corp", "a2", [sketch(_MSG, _KEY)], now=1100.0) is None
+
+    async def test_an_empty_sketch_never_confirms(self):
+        s = EchoStore(FakeRedis(), ttl_seconds=7200)
+        await s.record_outbound("wiki.corp", "a1", [sketch(_MSG, _KEY)], now=1000.0)
+        assert await s.confirm("wiki.corp", "a2", [frozenset()], now=1100.0) is None
+
+    async def test_redis_failure_degrades_to_none(self):
+        r = FakeRedis()
+        s = EchoStore(r, ttl_seconds=7200)
+        await s.record_outbound("wiki.corp", "a1", [sketch(_MSG, _KEY)], now=1000.0)
+        r.fail = True
+        assert await s.confirm("wiki.corp", "a2", [sketch(_MSG, _KEY)], now=1100.0) is None
+
+    async def test_no_plaintext_is_stored(self):
+        r = FakeRedis()
+        s = EchoStore(r, ttl_seconds=7200)
+        await s.record_outbound("wiki.corp", "a1", [sketch(_MSG, _KEY)], now=1000.0)
+        assert "ZZZ_Results_42" not in str(r.sets)
+
+    async def test_agent_id_with_colons_is_correctly_parsed(self):
+        """Agent IDs can contain colons; parsing from the right handles them."""
+        s = EchoStore(FakeRedis(), ttl_seconds=7200)
+        agent_with_colons = "team:alpha:1"
+        await s.record_outbound("wiki.corp", agent_with_colons, [sketch(_MSG, _KEY)], now=1000.0)
+        # Different agent should match
+        assert (
+            await s.confirm("wiki.corp", "a2", [sketch(_MSG, _KEY)], now=1100.0)
+            == agent_with_colons
+        )
+        # Same agent (with colons) should not match
+        assert (
+            await s.confirm("wiki.corp", agent_with_colons, [sketch(_MSG, _KEY)], now=1100.0)
+            is None
+        )
+
+    async def test_pooling_does_not_defeat_min_shared_shingles(self):
+        """Messages are matched individually, not pooled.
+
+        Two messages from one agent, neither matching the inbound alone,
+        recorded with the same timestamp, should not confirm. Inbound is
+        constructed from the two messages so that both individually fall below
+        the 12-shingle floor while their union exceeds it. This ensures the
+        floor is enforced per message, not pooled, regardless of clock reuse.
+        """
+        from admina.domains.agent_security.fingerprint import MIN_SHARED_SHINGLES
+
+        s = EchoStore(FakeRedis(), ttl_seconds=7200)
+        # Two messages of 16+ words each, neither matching inbound alone.
+        msg_a = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar"
+        msg_b = (
+            "papa quebec romeo sierra tango uniform victor whiskey xray yankee"
+            " zulu alpha bravo charlie delta"
+        )
+        # Inbound is concatenation of both, so both messages contribute shingles.
+        inbound_text = msg_a + " " + msg_b
+        sketch_a = sketch(msg_a, _KEY)
+        sketch_b = sketch(msg_b, _KEY)
+        inbound = sketch(inbound_text, _KEY)
+        # Verify and report intersection sizes.
+        shared_a = inbound & sketch_a
+        shared_b = inbound & sketch_b
+        shared_ab = inbound & (sketch_a | sketch_b)
+        print(
+            f"\nPooling test data: "
+            f"a∩inbound={len(shared_a)} (need 0<x<12), "
+            f"b∩inbound={len(shared_b)} (need 0<x<12), "
+            f"(a∪b)∩inbound={len(shared_ab)} (need ≥12)"
+        )
+        assert 0 < len(shared_a) < MIN_SHARED_SHINGLES, "a should partially match"
+        assert 0 < len(shared_b) < MIN_SHARED_SHINGLES, "b should partially match"
+        assert len(shared_ab) >= MIN_SHARED_SHINGLES, "union should exceed floor"
+        # Record both from a1 WITH THE SAME TIMESTAMP (tests clock reuse).
+        shared_time = 1000.0
+        await s.record_outbound("wiki.corp", "a1", [sketch_a], now=shared_time)
+        await s.record_outbound("wiki.corp", "a1", [sketch_b], now=shared_time)
+        # Confirm with inbound should return None (messages matched individually).
+        # Without msgid grouping, pooling would give ≥12 shingles; with it, each
+        # message fails individually.
+        assert await s.confirm("wiki.corp", "a2", [inbound], now=1100.0) is None
+
+    async def test_a_sketch_is_stored_whole_or_not_at_all(self):
+        """A fragment of a sketch is a fragment nothing can ever match.
+
+        Fewer than MIN_SHARED_SHINGLES values can never reach the floor, so a
+        clamped partial write does not save a message, it stores one that
+        cannot be found while consuming the budget of one that could.
+        """
+        r = FakeRedis()
+        s = EchoStore(r, ttl_seconds=7200, cap=40)
+        first, second, third = (sketch(_filler(t), _KEY) for t in ("alpha", "bravo", "delta"))
+        assert len(first) == len(second) == len(third) == 16, "16 values each"
+        await s.record_outbound("wiki.corp", "a1", [first], now=1000.0)
+        await s.record_outbound("wiki.corp", "a1", [second], now=1000.0)
+        # 32 of 40 values used: the third sketch does not fit in what is left.
+        await s.record_outbound("wiki.corp", "a1", [third], now=1000.0)
+
+        stored = _values_of("a1", r)
+        assert third <= stored, "the sketch just recorded must be stored whole"
+        assert len(stored) == len(third), "its own older sketches are what make room"
+
+    async def test_an_agents_member_count_does_not_grow_unbounded(self):
+        """Per-agent budgets bound memory; they do not remove the bound."""
+        r = FakeRedis()
+        s = EchoStore(r, ttl_seconds=100, cap=64)
+        for i in range(200):
+            await s.record_outbound("wiki.corp", "a1", [sketch(_filler(f"m{i}"), _KEY)], now=1050.0)
+        assert len(_values_of("a1", r)) <= 64 + 16, "cap, plus at most one sketch of overage"
+
+    async def test_a_flood_before_an_echo_does_not_stop_it_being_recorded(self):
+        """The evasion a shared budget opens: fill it, then coordinate.
+
+        One agent writes far past the whole budget, then two other agents
+        exchange a message. Anything shared per destination lets the flood
+        decide whether their echo is recorded at all.
+        """
+        r = FakeRedis()
+        s = EchoStore(r, ttl_seconds=7200, cap=40)
+        for i in range(50):
+            await s.record_outbound(
+                "wiki.corp", "flooder", [sketch(_filler(f"j{i}"), _KEY)], now=1000.0 + i
+            )
+        await s.record_outbound("wiki.corp", "a1", [sketch(_MSG, _KEY)], now=1060.0)
+        assert await s.confirm("wiki.corp", "a2", [sketch(_MSG, _KEY)], now=1070.0) == "a1"
+
+    async def test_a_flood_after_an_echo_does_not_erase_it(self):
+        """The same evasion from the other side.
+
+        Whether a full budget refuses the newest write or makes room for it,
+        a shared one lets an agent remove what another agent stored — here by
+        flooding after the message it wants to hide has been recorded.
+        """
+        r = FakeRedis()
+        s = EchoStore(r, ttl_seconds=7200, cap=40)
+        await s.record_outbound("wiki.corp", "a1", [sketch(_MSG, _KEY)], now=1000.0)
+        for i in range(50):
+            await s.record_outbound(
+                "wiki.corp", "flooder", [sketch(_filler(f"j{i}"), _KEY)], now=1010.0 + i
+            )
+        assert await s.confirm("wiki.corp", "a2", [sketch(_MSG, _KEY)], now=1070.0) == "a1"
+
+    async def test_a_full_budget_keeps_the_message_just_sent(self):
+        """Refusing the newest write instead would be the same hole, self-inflicted:
+        an agent could bury the message it is about to have echoed."""
+        r = FakeRedis()
+        s = EchoStore(r, ttl_seconds=7200, cap=20)
+        old = sketch(_filler("older"), _KEY)
+        await s.record_outbound("wiki.corp", "a1", [old], now=1000.0)
+        await s.record_outbound("wiki.corp", "a1", [sketch(_MSG, _KEY)], now=1001.0)
+        assert await s.confirm("wiki.corp", "a2", [sketch(_MSG, _KEY)], now=1002.0) == "a1"
+        assert await s.confirm("wiki.corp", "a2", [old], now=1002.0) is None, "older one made room"
+
+    async def test_a_sketch_larger_than_the_budget_is_reported_not_dropped_quietly(self, caplog):
+        r = FakeRedis()
+        s = EchoStore(r, ttl_seconds=7200, cap=8)
+        with caplog.at_level(logging.WARNING, logger="admina.coordination"):
+            await s.record_outbound("wiki.corp", "a1", [sketch(_MSG, _KEY)], now=1000.0)
+        key = f"admina:egress:echo:wiki.corp:a1:{int(1000.0 // 7200)}"
+        assert key not in r.sets
+        assert any("cannot confirm an echo" in rec.getMessage() for rec in caplog.records)
+
+    async def test_a_call_that_stores_nothing_takes_no_index_slot(self):
+        """The index is a bounded resource. An agent whose content is too
+        large to store would otherwise occupy a slot and contribute nothing,
+        and would evict an agent whose content *is* readable."""
+        r = FakeRedis()
+        s = EchoStore(r, ttl_seconds=7200, cap=8, agent_cap=2)
+        assert (
+            await s.record_outbound("wiki.corp", "big", [sketch(_MSG, _KEY)], now=1000.0) is False
+        )
+        index = r.sets.get(f"admina:egress:echo:wiki.corp:{int(1000.0 // 7200)}:agents", set())
+        assert "big" not in index
+
+    async def test_a_full_index_still_records_the_agent_that_arrives(self, caplog):
+        """The index is keyed by a caller-supplied header, so it is fillable.
+
+        Refusing the arriving agent hands whoever fills it first a way to
+        lock every later agent out of the echo phase for the life of the
+        bucket. Making room instead costs one indexed agent's readability and
+        keeps the newcomer's content confirmable.
+        """
+        r = FakeRedis()
+        s = EchoStore(r, ttl_seconds=7200, agent_cap=3)
+        with caplog.at_level(logging.WARNING, logger="admina.coordination"):
+            for i in range(5):
+                await s.record_outbound(
+                    "wiki.corp", f"filler{i}", [sketch(_filler(f"f{i}"), _KEY)], now=1000.0
+                )
+            await s.record_outbound("wiki.corp", "late", [sketch(_MSG, _KEY)], now=1001.0)
+        index = r.sets[f"admina:egress:echo:wiki.corp:{int(1000.0 // 7200)}:agents"]
+        assert len(index) == 3, "the index stays bounded"
+        assert "late" in index, "the agent that arrived last is the one indexed"
+        assert await s.confirm("wiki.corp", "reader", [sketch(_MSG, _KEY)], now=1002.0) == "late"
+        assert any("evicting one to record" in rec.getMessage() for rec in caplog.records)
+
+    async def test_a_full_index_stops_the_store_claiming_a_negative_result(self):
+        """Once the index is full some agent's sketches are unreadable, so
+        "no echo found" is no longer something the store can say."""
+        r = FakeRedis()
+        s = EchoStore(r, ttl_seconds=7200, agent_cap=2)
+        assert (
+            await s.record_outbound("wiki.corp", "a0", [sketch(_MSG_A, _KEY)], now=1000.0) is True
+        )
+        assert (
+            await s.record_outbound("wiki.corp", "a1", [sketch(_MSG_B, _KEY)], now=1000.0) is True
+        )
+        assert await s.record_outbound("wiki.corp", "a2", [sketch(_MSG, _KEY)], now=1000.0) is False
+
+    async def test_fields_of_one_call_are_not_pooled_to_reach_the_floor(self):
+        """The same rule as message grouping, one level down.
+
+        A tool call carries several strings — a header block, a content type,
+        a trace id — and every one of them is identical across a fleet. Each
+        shares too little with another call to be an echo of it; pooled, the
+        shares add up to the run of text the shingle floor is supposed to
+        mean one agent quoted another.
+        """
+        from admina.domains.agent_security.fingerprint import MIN_SHARED_SHINGLES, overlap
+
+        s = EchoStore(FakeRedis(), ttl_seconds=7200)
+        stored = [sketch(_shared_run("hdr", "s1"), _KEY), sketch(_shared_run("trc", "s2"), _KEY)]
+        probe = [sketch(_shared_run("hdr", "p1"), _KEY), sketch(_shared_run("trc", "p2"), _KEY)]
+        per_field = [len(a & b) for a, b in zip(stored, probe, strict=True)]
+        pooled = frozenset().union(*stored) & frozenset().union(*probe)
+        assert max(per_field) < MIN_SHARED_SHINGLES, f"no field is an echo on its own: {per_field}"
+        assert len(pooled) >= MIN_SHARED_SHINGLES, f"pooled, they clear the floor: {len(pooled)}"
+        assert overlap(frozenset().union(*stored), frozenset().union(*probe)) >= 0.4, (
+            "and the containment condition alone would not stop it"
+        )
+        await s.record_outbound("wiki.corp", "a1", stored, now=1000.0)
+        assert await s.confirm("wiki.corp", "a2", probe, now=1100.0) is None
+
+    async def test_text_an_agent_already_sent_itself_is_not_evidence(self):
+        """A fleet-wide constant is the one thing a single call cannot
+        recognise. An agent's own history can: text it has sent before is its
+        own boilerplate, not something it read from a peer."""
+        s = EchoStore(FakeRedis(), ttl_seconds=7200)
+        constant = sketch(_filler("const", words=40), _KEY)
+        a1_message = sketch(_filler("one"), _KEY)
+        await s.record_outbound("wiki.corp", "a1", [constant, a1_message], now=1000.0)
+        # a2 has sent the same constant before, in its own earlier call.
+        await s.record_outbound(
+            "wiki.corp", "a2", [constant, sketch(_filler("two"), _KEY)], now=1010.0
+        )
+        assert (
+            await s.confirm(
+                "wiki.corp", "a2", [constant, sketch(_filler("three"), _KEY)], now=1020.0
+            )
+            is None
+        )
+        # The discount is of the constant, not of the echo phase: a1's own
+        # message, which a2 never sent, still confirms.
+        assert await s.confirm("wiki.corp", "a2", [a1_message], now=1020.0) == "a1"
+
+    async def test_text_many_agents_have_sent_is_not_evidence(self):
+        """The discount that does not assume an agent id is stable.
+
+        An agent's own history can only recognise a fleet-wide constant when
+        the agent has a history — when its id is reused. Ubiquity needs no
+        id at all: text that as many agents send as it takes to trigger the
+        fan-in count is what the destination carries, not what one agent
+        read from another.
+        """
+        constant = sketch(_filler("const", words=40), _KEY)
+        s = EchoStore(FakeRedis(), ttl_seconds=7200, common_min_agents=4)
+        for i in range(4):
+            await s.record_outbound(
+                "wiki.corp", f"a{i}", [constant, sketch(_filler(f"m{i}"), _KEY)], now=1000.0 + i
+            )
+        # A reader with no history of its own: nothing to discount by author.
+        assert (
+            await s.confirm(
+                "wiki.corp", "fresh", [constant, sketch(_filler("own"), _KEY)], now=1100.0
+            )
+            is None
+        )
+        # The discount is of the constant, not of the echo phase: one agent's
+        # own message, which only that agent sent, is still evidence.
+        assert (
+            await s.confirm("wiki.corp", "fresh", [sketch(_filler("m0"), _KEY)], now=1100.0) == "a0"
+        )
+
+    async def test_three_senders_are_not_yet_enough_to_make_text_common(self):
+        """Pins the count, not merely that some discount exists.
+
+        Below the floor the same constant is still matchable, so a test that
+        only shows text going quiet cannot tell a working floor from one set
+        to zero.
+        """
+        constant = sketch(_filler("const", words=40), _KEY)
+        s = EchoStore(FakeRedis(), ttl_seconds=7200, common_min_agents=4)
+        for i in range(3):
+            await s.record_outbound(
+                "wiki.corp", f"a{i}", [constant, sketch(_filler(f"m{i}"), _KEY)], now=1000.0 + i
+            )
+        assert (
+            await s.confirm(
+                "wiki.corp", "fresh", [constant, sketch(_filler("own"), _KEY)], now=1100.0
+            )
+            is not None
+        )
+
+    async def test_one_agent_repeating_text_does_not_make_it_common(self):
+        """Senders are counted, never calls.
+
+        Counting calls would hand every agent the evasion the store is
+        bounded to prevent: send the message a few times and it becomes part
+        of the destination's furniture, after which no peer quoting it can
+        ever be confirmed.
+        """
+        repeated = sketch(_filler("repeated", words=40), _KEY)
+        s = EchoStore(FakeRedis(), ttl_seconds=7200, common_min_agents=4)
+        for i in range(6):
+            await s.record_outbound(
+                "wiki.corp", "a1", [repeated, sketch(_filler(f"n{i}"), _KEY)], now=1000.0 + i
+            )
+        assert await s.confirm("wiki.corp", "a2", [repeated], now=1100.0) == "a1"
+
+    async def test_an_evicted_agents_sketches_go_with_its_index_entry(self):
+        """The index is what the keys are read back through.
+
+        An agent evicted from it is unreachable, so its sketches are two to
+        four hours of storage nothing can ever read — bought with one forged
+        header value, once per id. Deleting them with the index entry is what
+        keeps a destination's footprint bounded by agent_cap instead of by
+        the number of ids that arrive.
+        """
+        r = FakeRedis()
+        s = EchoStore(r, ttl_seconds=7200, agent_cap=2)
+        for i in range(12):
+            await s.record_outbound(
+                "wiki.corp", f"forged-{i}", [sketch(_filler(f"m{i}"), _KEY)], now=1000.0
+            )
+        prefix = "admina:egress:echo:wiki.corp:"
+        keys = [k for k in r.sets if k.startswith(prefix) and not k.endswith(":agents")]
+        assert len(keys) == 2, f"12 ids left {len(keys)} keys behind a 2-agent index: {keys}"
+        # Bounded, not blinded: the agents still indexed remain matchable.
+        assert await s.confirm(
+            "wiki.corp", "reader", [sketch(_filler("m11"), _KEY)], now=1010.0
+        ) == ("forged-11")
+
+    async def test_a_peers_repeated_text_is_not_discounted(self):
+        """Only the reader's own history is discounted, never the peer's.
+
+        Discounting what the *stored* agent repeats would make sending a
+        message twice enough to launder it: it would become that agent's
+        boilerplate and stop being matchable, which is the evasion the whole
+        store is bounded to prevent.
+        """
+        s = EchoStore(FakeRedis(), ttl_seconds=7200)
+        repeated = sketch(_filler("repeated"), _KEY)
+        await s.record_outbound(
+            "wiki.corp", "a1", [repeated, sketch(_filler("n1"), _KEY)], now=1000.0
+        )
+        await s.record_outbound(
+            "wiki.corp", "a1", [repeated, sketch(_filler("n2"), _KEY)], now=1001.0
+        )
+        assert await s.confirm("wiki.corp", "a2", [repeated], now=1002.0) == "a1"
+
+    async def test_confirm_hands_the_event_loop_back_between_batches(self):
+        """confirm() runs on the proxy's own loop. Its parse loop is
+        synchronous, so without a yield a destination with many agents stalls
+        every unrelated in-flight request for as long as the parse takes."""
+        import asyncio
+
+        from admina.domains.agent_security.coordination import _CONFIRM_KEY_BATCH
+
+        r = FakeRedis()
+        s = EchoStore(r, ttl_seconds=7200, agent_cap=1024)
+        agents = _CONFIRM_KEY_BATCH * 3
+        for i in range(agents):
+            await s.record_outbound(
+                "wiki.corp", f"a{i}", [sketch(_filler(f"m{i}"), _KEY)], now=1000.0
+            )
+
+        ticks = 0
+        running = True
+
+        async def watchdog():
+            nonlocal ticks
+            while running:
+                await asyncio.sleep(0)
+                ticks += 1
+
+        task = asyncio.ensure_future(watchdog())
+        await asyncio.sleep(0)
+        ticks = 0
+        assert await s.confirm("wiki.corp", "reader", [sketch(_MSG, _KEY)], now=1100.0) is None
+        running = False
+        await task
+        assert ticks >= 2, f"confirm() never yielded the loop ({ticks} wakeups)"
+
+    async def test_the_previous_bucket_is_included(self):
+        """Without this, a message straddling a bucket edge is missed."""
+        s = EchoStore(FakeRedis(), ttl_seconds=100)
+        # bucket 10: times 1000-1099; bucket 11: times 1100-1199
+        await s.record_outbound("wiki.corp", "a1", [sketch(_MSG, _KEY)], now=1000.0)
+        # Confirm at time 1150 (bucket 11) should still see a1's write at 1000 (bucket 10).
+        assert await s.confirm("wiki.corp", "a2", [sketch(_MSG, _KEY)], now=1150.0) == "a1"
+
+    async def test_an_old_bucket_is_not_included(self):
+        """Content expires after the window elapses.
+
+        A message written in an old bucket is not found when confirming after
+        enough time has passed that the bucket has aged out of the two-bucket
+        sliding window.
+        """
+        s = EchoStore(FakeRedis(), ttl_seconds=100)
+        # bucket 10: times 1000-1099; confirm at 1250 checks buckets 12 and 11.
+        await s.record_outbound("wiki.corp", "a1", [sketch(_MSG, _KEY)], now=1000.0)
+        # Confirm at time 1250 (bucket 12): looks at buckets 12 and 11.
+        # Bucket 10 (time 1000) is too old, not checked.
+        assert await s.confirm("wiki.corp", "a2", [sketch(_MSG, _KEY)], now=1250.0) is None
+
+    async def test_high_overlap_without_min_shingles_does_not_confirm(self):
+        """High ratio but few shared shingles should not confirm.
+
+        Verifies that matches() enforces both the shingle floor and the ratio.
+        A prefix of a longer message has high overlap (fewer shingles all match)
+        but below MIN_SHARED_SHINGLES. This is the exact scenario Ruling 2
+        exists to catch. Test passes with matches() and fails with bare overlap.
+        """
+        s = EchoStore(FakeRedis(), ttl_seconds=7200)
+        # Use a prefix of _MSG. This will share some shingles at containment 1.0
+        # (all prefix shingles appear in the full message) but the count will
+        # be much less than 12.
+        prefix_msg = "task 42 completed results are on ZZZ_Results_42 whoever"
+        outbound = sketch(prefix_msg, _KEY)
+        inbound = sketch(_MSG, _KEY)
+        # Verify outbound has shingles but < 12.
+        from admina.domains.agent_security.fingerprint import MIN_SHARED_SHINGLES
+
+        assert 0 < len(outbound) < MIN_SHARED_SHINGLES, (
+            f"Need a smaller sketch; got {len(outbound)}"
+        )
+        # Record the prefix sketch.
+        await s.record_outbound("wiki.corp", "a1", [outbound], now=1000.0)
+        # Confirm should return None because matches enforces both floor and ratio.
+        result = await s.confirm("wiki.corp", "a2", [inbound], now=1100.0)
+        assert result is None, f"Expected None (matches enforces floor), got {result}"
+
+
+class TestCommonSenderFloor:
+    def test_it_follows_the_fan_in_threshold(self):
+        """One short of it, because the call that first crosses the threshold
+        is the Nth agent: a constant every agent carries has N-1 other
+        senders behind it at exactly that moment, and a higher floor lets it
+        through on the one call no identity-keyed rule covers either."""
+        from admina.domains.agent_security.coordination import common_sender_floor
+
+        assert [common_sender_floor(n) for n in (5, 8, 20)] == [4, 7, 19]
+
+    def test_it_never_drops_below_two_senders(self):
+        """One sender is a peer with a message, which is the thing being
+        detected. At min_agents=2 the rule has no room and takes the
+        minimum."""
+        from admina.domains.agent_security.coordination import common_sender_floor
+
+        assert [common_sender_floor(n) for n in (2, 1, 0, -3)] == [2, 2, 2, 2]
+
+
+@pytest.mark.anyio
+class TestQuarantineStore:
+    async def test_an_added_destination_is_current(self):
+        q = QuarantineStore(FakeRedisHash(), ttl_seconds=86400)
+        await q.add("wiki.corp", now=1000.0)
+        assert await q.current(now=1000.0) == frozenset({"wiki.corp"})
+
+    async def test_it_expires_after_the_ttl(self):
+        q = QuarantineStore(FakeRedisHash(), ttl_seconds=100)
+        await q.add("wiki.corp", now=1000.0)
+        assert await q.current(now=1200.0) == frozenset()
+
+    async def test_renewal_extends_it(self):
+        """Attempts renew — a quarantine suppresses the successes."""
+        q = QuarantineStore(FakeRedisHash(), ttl_seconds=100)
+        await q.add("wiki.corp", now=1000.0)
+        await q.renew("wiki.corp", now=1090.0)
+        assert await q.current(now=1150.0) == frozenset({"wiki.corp"})
+
+    async def test_renewing_an_absent_destination_does_not_create_it(self):
+        q = QuarantineStore(FakeRedisHash(), ttl_seconds=100)
+        await q.renew("wiki.corp", now=1000.0)
+        assert await q.current(now=1000.0) == frozenset()
+
+    async def test_renewal_reads_one_field_not_the_whole_hash(self):
+        """renew() runs for every destination of every governed call, whether
+        or not anything is quarantined; reading the whole hash there scales
+        the cost with the size of the quarantine set."""
+
+        class _CountingRedis(FakeRedisHash):
+            def __init__(self):
+                super().__init__()
+                self.hgetall_calls = 0
+
+            async def hgetall(self, key):
+                self.hgetall_calls += 1
+                return await super().hgetall(key)
+
+        r = _CountingRedis()
+        q = QuarantineStore(r, ttl_seconds=100)
+        await q.add("wiki.corp", now=1000.0)
+        r.hgetall_calls = 0
+        await q.renew("wiki.corp", now=1090.0)
+        await q.renew("never.quarantined", now=1090.0)
+        assert r.hgetall_calls == 0
+        assert await q.current(now=1150.0) == frozenset({"wiki.corp"}), "still renewed"
+
+    async def test_the_warning_reports_the_quarantine_not_every_confirmation(self, caplog):
+        """Under `observe` the calls keep going through, so the detector keeps
+        confirming and every confirmation lands in add(). One quarantine is
+        one event."""
+        r = FakeRedisHash()
+        q = QuarantineStore(r, ttl_seconds=100)
+        with caplog.at_level(logging.WARNING, logger="admina.coordination"):
+            for stamp in (1000.0, 1010.0, 1020.0):
+                await q.add("wiki.corp", now=stamp)
+        armed = [rec for rec in caplog.records if "quarantined for writes" in rec.getMessage()]
+        assert len(armed) == 1, [rec.getMessage() for rec in armed]
+        assert await q.current(now=1115.0) == frozenset({"wiki.corp"}), "later ones still extend"
+
+    async def test_a_destination_quarantined_again_after_it_lapsed_is_reported_again(self, caplog):
+        """Reporting on transition must not silence a second quarantine."""
+        r = FakeRedisHash()
+        q = QuarantineStore(r, ttl_seconds=100)
+        with caplog.at_level(logging.WARNING, logger="admina.coordination"):
+            await q.add("wiki.corp", now=1000.0)
+            assert await q.current(now=1200.0) == frozenset(), "the first one lapsed"
+            await q.add("wiki.corp", now=1300.0)
+        armed = [rec for rec in caplog.records if "quarantined for writes" in rec.getMessage()]
+        assert len(armed) == 2, [rec.getMessage() for rec in armed]
+
+    async def test_lift_removes_it(self):
+        q = QuarantineStore(FakeRedisHash(), ttl_seconds=86400)
+        await q.add("wiki.corp", now=1000.0)
+        assert await q.lift("wiki.corp") is True
+        assert await q.current(now=1000.0) == frozenset()
+
+    async def test_lifting_an_absent_destination_reports_false(self):
+        q = QuarantineStore(FakeRedisHash(), ttl_seconds=86400)
+        assert await q.lift("wiki.corp") is False
+
+    async def test_redis_failure_yields_an_empty_set_not_an_exception(self):
+        r = FakeRedisHash()
+        q = QuarantineStore(r, ttl_seconds=86400)
+        await q.add("wiki.corp", now=1000.0)
+        r.fail = True
+        assert await q.current(now=1000.0) == frozenset()
+
+    async def test_no_redis_at_all_yields_an_empty_set(self):
+        q = QuarantineStore(None, ttl_seconds=86400)
+        await q.add("wiki.corp", now=1000.0)
+        assert await q.current(now=1000.0) == frozenset()
+
+    async def test_renewing_an_expired_quarantine_does_not_resurrect_it(self):
+        """Expired entries must not be extended; renewal checks liveness.
+
+        Renews without intermediate current() to ensure the expiry check in
+        renew() is reached. Verifies both that the entry is not resurrected
+        and that the stored expiry is unchanged.
+        """
+        r = FakeRedisHash()
+        q = QuarantineStore(r, ttl_seconds=100)
+        await q.add("wiki.corp", now=1000.0)  # expires at 1100
+        stored_before = dict(r.hashes.get("admina:egress:quarantine", {}))
+        await q.renew("wiki.corp", now=5000.0)  # should not extend
+        stored_after = dict(r.hashes.get("admina:egress:quarantine", {}))
+        # Expiry unchanged: renew rejected it as expired
+        assert stored_before == stored_after
+        # Not resurrected on later read
+        assert await q.current(now=5050.0) == frozenset()
+
+    async def test_expired_entries_are_purged_from_store(self):
+        """Entries judged expired by current() are deleted from the hash."""
+        r = FakeRedisHash()
+        q = QuarantineStore(r, ttl_seconds=100)
+        await q.add("wiki.corp", now=1000.0)  # expires at 1100
+        await q.add("other.corp", now=1000.0)  # expires at 1100
+        # Call current at 1200 to expire both
+        assert await q.current(now=1200.0) == frozenset()
+        # Verify entries are actually gone from store, not just absent from return value
+        assert len(r.hashes["admina:egress:quarantine"]) == 0
+
+
+_ECHOED = (
+    "task 42 completed, results are on ZZZ_Results_42, whoever takes 43"
+    " starts at column two in the shared spreadsheet"
+)
+
+
+def _check(dest="wiki.corp", write_shaped=True, allowed=True, status="resolved"):
+    return {
+        "status": status,
+        "destinations": [dest] if dest else [],
+        "write_shaped": write_shaped,
+        "allowed": allowed,
+    }
+
+
+def _detector(redis, *, declared=frozenset(), min_agents=3, key=b"k"):
+    return CoordinationDetector(
+        fanin=FanInCounter(redis, window_seconds=3600),
+        echo=EchoStore(redis, ttl_seconds=7200),
+        quarantine=QuarantineStore(redis, ttl_seconds=86400),
+        declared=declared,
+        min_agents=min_agents,
+        fingerprint_key=key,
+    )
+
+
+@pytest.mark.anyio
+class TestCoordinationDetector:
+    async def test_below_the_threshold_reports_none(self):
+        d = _detector(FakeRedisHash())
+        v = await d.observe("a1", _check(), _ECHOED, now=1000.0)
+        assert v.status == "none"
+
+    async def test_the_configured_threshold_is_floored_at_two_agents(self):
+        """One agent is not coordination with anyone.
+
+        `min_agents: 1` in admina.yaml would otherwise report every single
+        write-shaped call to an undeclared destination as `suspected`, and
+        the word would stop meaning "more than one agent is writing here".
+        """
+        for configured in (1, 0, -3):
+            d = _detector(FakeRedisHash(), min_agents=configured)
+            v = await d.observe("a1", _check(), _ECHOED, now=1000.0)
+            assert v.status == "none", f"min_agents={configured} flagged a lone agent"
+            v = await d.observe("a2", _check(), "unrelated text for a2 alone", now=1010.0)
+            assert v.status == "suspected", f"min_agents={configured} must still fire at two"
+
+    async def test_reaching_the_threshold_without_an_echo_is_suspected(self):
+        d = _detector(FakeRedisHash())
+        for agent in ("a1", "a2", "a3"):
+            v = await d.observe(agent, _check(), f"unrelated text for {agent} alone", now=1000.0)
+        assert v.status == "suspected"
+
+    async def test_an_echo_from_another_agent_confirms_and_quarantines(self):
+        r = FakeRedisHash()
+        d = _detector(r)
+        await d.observe("a1", _check(), _ECHOED, now=1000.0)
+        await d.observe("a2", _check(), "something else entirely here", now=1010.0)
+        v = await d.observe("a3", _check(), _ECHOED, now=1020.0)
+        assert v.status == "confirmed"
+        assert v.peer == "a1"
+        assert "wiki.corp" in await QuarantineStore(r, 86400).current(now=1020.0)
+
+    async def test_one_agents_flood_does_not_disable_confirmation_for_the_fleet(self):
+        """Echo confirmation is the only path to a quarantine.
+
+        An agent that could exhaust the store for a destination would not be
+        blinding itself, it would be blinding the confirmation phase for
+        every other agent writing there — flood first, then coordinate.
+        """
+        r = FakeRedisHash()
+        echo = EchoStore(r, ttl_seconds=7200, cap=40)
+        d = CoordinationDetector(
+            fanin=FanInCounter(r, window_seconds=3600),
+            echo=echo,
+            quarantine=QuarantineStore(r, ttl_seconds=86400),
+            declared=frozenset(),
+            min_agents=2,
+            fingerprint_key=b"k",
+        )
+        for i in range(60):
+            await d.observe("flooder", _check(), _filler(f"j{i}"), now=1000.0 + i)
+        await d.observe("a1", _check(), _ECHOED, now=1100.0)
+        v = await d.observe("a2", _check(), _ECHOED, now=1110.0)
+        assert v.status == "confirmed"
+        assert v.peer == "a1"
+        assert "wiki.corp" in await QuarantineStore(r, 86400).current(now=1110.0)
+
+    async def test_a_filled_agent_index_reports_degraded_not_suspected(self):
+        """`suspected` claims the content was looked at and no echo was found.
+
+        Once forged agent ids have filled a destination's index, some agents'
+        sketches are unreadable and that claim is no longer true. Saying
+        `degraded` is the difference between a detection gap an operator can
+        see and one they cannot.
+        """
+        r = FakeRedisHash()
+        echo = EchoStore(r, ttl_seconds=7200, agent_cap=4)
+        d = CoordinationDetector(
+            fanin=FanInCounter(r, window_seconds=3600),
+            echo=echo,
+            quarantine=QuarantineStore(r, ttl_seconds=86400),
+            declared=frozenset(),
+            min_agents=3,
+            fingerprint_key=b"k",
+        )
+        for i in range(4):
+            v = await d.observe(f"forged-{i}", _check(), _filler(f"x{i}"), now=1000.0)
+        assert v.status == "suspected", "the index is full but nothing is lost yet"
+        v = await d.observe("genuine", _check(), _filler("genuine"), now=1010.0)
+        assert v.status == "degraded", "a negative result here is not 'no echo'"
+
+    async def test_a_filled_index_still_confirms_a_real_echo(self):
+        """Degrading the negative result must not degrade the positive one."""
+        r = FakeRedisHash()
+        echo = EchoStore(r, ttl_seconds=7200, agent_cap=3)
+        d = CoordinationDetector(
+            fanin=FanInCounter(r, window_seconds=3600),
+            echo=echo,
+            quarantine=QuarantineStore(r, ttl_seconds=86400),
+            declared=frozenset(),
+            min_agents=3,
+            fingerprint_key=b"k",
+        )
+        for i in range(3):
+            await d.observe(f"forged-{i}", _check(), _filler(f"x{i}"), now=1000.0)
+        await d.observe("a1", _check(), _ECHOED, now=1010.0)
+        v = await d.observe("a2", _check(), _ECHOED, now=1020.0)
+        assert v.status == "confirmed"
+        assert v.peer == "a1"
+
+    async def test_a_fleet_constant_does_not_confirm_when_every_id_is_new(self):
+        """The case the self-discount cannot reach.
+
+        `X-Agent-Id` is caller-supplied, and a runtime that mints one per
+        session makes every call a first call — so the reader never has a
+        history to discount its own boilerplate by. Six ids, six different
+        messages, one constant argument that outweighs them: what has to
+        stop this is the constant's ubiquity, which id rotation raises
+        rather than hides.
+        """
+        constant = _filler("preamble", words=60)
+        d = _detector(FakeRedisHash(), min_agents=5)
+        statuses = []
+        for i in range(8):
+            v = await d.observe(
+                f"session-{i}-{i * 7919}", _check(), [constant, _filler(f"body{i}")], now=1000.0 + i
+            )
+            statuses.append(v.status)
+        assert "confirmed" not in statuses, statuses
+        assert statuses[-1] == "suspected", f"the fan-in trigger must still fire: {statuses}"
+
+    async def test_a_channel_every_agent_joins_is_not_confirmed(self):
+        """A recall cost, pinned so that moving it is a decision and not an accident.
+
+        "The agents that brought this destination to the fan-in threshold have
+        all sent this exact text" describes a fleet's instruction preamble and
+        a channel every agent has joined equally well; the two are the same
+        observation, and no rule that suppresses one can spare the other. The
+        floor is set to suppress, because the alternative confirms a fleet
+        constant once per destination per window on ordinary traffic. What is
+        still confirmed is any channel narrower than that — the call below
+        pins the boundary from both sides.
+        """
+        quote = _filler("quote", words=30)
+        d = _detector(FakeRedisHash(), min_agents=5)
+        joined = [
+            (await d.observe(f"agent-{i}", _check(), quote, now=1000.0 + i)).status
+            for i in range(8)
+        ]
+        assert "confirmed" not in joined, f"the floor moved: {joined}"
+        assert joined[-1] == "suspected", joined
+
+        # Two of five agents, the other three sending their own content: the
+        # same text, a narrower channel, still confirmed.
+        d = _detector(FakeRedisHash(), min_agents=5)
+        for i in range(3):
+            await d.observe(f"agent-{i}", _check(), _filler(f"own{i}"), now=1000.0 + i)
+        await d.observe("agent-3", _check(), quote, now=1010.0)
+        v = await d.observe("agent-4", _check(), quote, now=1020.0)
+        assert v.status == "confirmed", v.status
+        assert v.peer == "agent-3"
+
+    async def test_two_agents_making_the_identical_call_are_confirmed(self):
+        """The plainest coordination signal there is.
+
+        A tool that splits its message over a title and a body — an issue, an
+        email, a wiki page — can carry a quoted run that no single argument
+        is long enough to carry. Two agents posting the byte-identical call
+        is what a channel looks like when it is not even paraphrasing.
+        """
+        from admina.domains.agent_security.fingerprint import MIN_SHARED_SHINGLES
+
+        head, tail = _filler("head", words=14), _filler("tail", words=14)
+        assert len(sketch(head, _KEY)) < MIN_SHARED_SHINGLES, "no field reaches the floor alone"
+        assert len(sketch(tail, _KEY)) < MIN_SHARED_SHINGLES
+        r = FakeRedisHash()
+        d = _detector(r, min_agents=3)
+        await d.observe("a1", _check(), _filler("unrelated"), now=1000.0)
+        await d.observe("a2", _check(), [head, tail], now=1010.0)
+        v = await d.observe("a3", _check(), [head, tail], now=1020.0)
+        assert v.status == "confirmed", v.status
+        assert v.peer == "a2"
+
+    async def test_a_quote_split_across_two_fields_is_confirmed(self):
+        """The same run, whole on one side and split on the other.
+
+        Splitting a quotation over two arguments loses only the shingles
+        that spanned the split, so the two calls are still copies of each
+        other; requiring the floor inside one pair of fields made this
+        invisible in every direction.
+        """
+        head, tail = _filler("head", words=14), _filler("tail", words=14)
+        whole = f"{head} {tail}"
+        d = _detector(FakeRedisHash(), min_agents=3)
+        await d.observe("a1", _check(), _filler("unrelated"), now=1000.0)
+        await d.observe("a2", _check(), whole, now=1010.0)
+        v = await d.observe("a3", _check(), [head, tail], now=1020.0)
+        assert v.status == "confirmed", v.status
+        assert v.peer == "a2"
+
+    async def test_a_run_that_exists_only_across_a_field_boundary_is_not_a_match(self):
+        """What "never joined" has to mean now that fields are counted together.
+
+        The false positive that started this: four constant header values,
+        none of them a message, concatenated into sixteen consecutive words
+        every agent in a fleet sends. The shingles that run is made of exist
+        in neither field, so the fix is that the text is never concatenated —
+        not that the fields are kept in separate accounts.
+        """
+        from admina.domains.agent_security.egress import payload_fields
+        from admina.domains.agent_security.fingerprint import MIN_SHARED_SHINGLES, overlap
+
+        run_head = " ".join(f"hdr{i}" for i in range(8))
+        run_tail = " ".join(f"trc{i}" for i in range(8))
+
+        def params(tag):
+            return {
+                "name": "post_note",
+                "arguments": {
+                    "url": "https://wiki.corp/notes",
+                    "title": f"{_filler(tag, words=4)} {run_head}",
+                    "body": f"{run_tail} {_filler(tag + 'z', words=4)}",
+                },
+            }
+
+        a_fields, b_fields = payload_fields(params("a")), payload_fields(params("b"))
+        assert len(a_fields) == len(b_fields) == 2, (a_fields, b_fields)
+        joined_a, joined_b = sketch(" ".join(a_fields), _KEY), sketch(" ".join(b_fields), _KEY)
+        assert len(joined_a & joined_b) >= MIN_SHARED_SHINGLES, (
+            "concatenated, the two calls share a run long enough to confirm"
+        )
+        assert overlap(joined_a, joined_b) >= 0.4, "and it is not the ratio that would stop it"
+
+        d = _detector(FakeRedisHash(), min_agents=2)
+        await d.observe("a1", _check(), a_fields, now=1000.0)
+        v = await d.observe("a2", _check(), b_fields, now=1010.0)
+        assert v.status == "suspected", v.status
+
+    async def test_a_declared_destination_is_never_flagged(self):
+        """Designed and emergent coordination look identical; only this separates them."""
+        d = _detector(FakeRedisHash(), declared=frozenset({"queue.internal"}))
+        for agent in ("a1", "a2", "a3", "a4"):
+            v = await d.observe(agent, _check(dest="queue.internal"), _ECHOED, now=1000.0)
+        assert v.status == "declared"
+
+    async def test_reads_are_not_counted(self):
+        d = _detector(FakeRedisHash())
+        for agent in ("a1", "a2", "a3", "a4"):
+            v = await d.observe(agent, _check(write_shaped=False), _ECHOED, now=1000.0)
+        assert v.status == "none"
+
+    async def test_blocked_calls_are_not_counted_as_coordination(self):
+        d = _detector(FakeRedisHash())
+        for agent in ("a1", "a2", "a3", "a4"):
+            v = await d.observe(agent, _check(allowed=False), _ECHOED, now=1000.0)
+        assert v.status == "none"
+
+    async def test_a_call_with_no_destination_is_ignored(self):
+        d = _detector(FakeRedisHash())
+        v = await d.observe("a1", _check(status="no_egress", dest=""), _ECHOED, now=1000.0)
+        assert v.status == "none"
+
+    async def test_without_a_key_it_never_escalates_past_suspected(self):
+        """An unkeyed fallback would be dictionary-attackable, so echo is off."""
+        d = _detector(FakeRedisHash(), key=None)
+        for agent in ("a1", "a2", "a3"):
+            v = await d.observe(agent, _check(), _ECHOED, now=1000.0)
+        assert v.status == "suspected"
+
+    async def test_redis_down_reports_degraded_not_none(self):
+        r = FakeRedisHash()
+        r.fail = True
+        d = _detector(r)
+        v = await d.observe("a1", _check(), _ECHOED, now=1000.0)
+        assert v.status == "degraded"
+
+    async def test_an_attempt_renews_an_existing_quarantine(self):
+        r = FakeRedisHash()
+        q = QuarantineStore(r, ttl_seconds=100)
+        await q.add("wiki.corp", now=1000.0)
+        d = CoordinationDetector(
+            fanin=FanInCounter(r, window_seconds=3600),
+            echo=EchoStore(r, ttl_seconds=7200),
+            quarantine=q,
+            declared=frozenset(),
+            min_agents=3,
+            fingerprint_key=b"k",
+        )
+        await d.observe("a9", _check(allowed=False), _ECHOED, now=1090.0)
+        assert "wiki.corp" in await q.current(now=1150.0)
+
+    async def test_a_declared_destination_still_renews_an_existing_quarantine(self):
+        """Declaring a destination exempts it from being flagged, not from renewal.
+
+        Renewal must run unconditionally, before the declared check, so an
+        existing quarantine entry is never dropped merely because its
+        destination sits in the declared set. Checked strictly *after* the
+        original expiry (1100), since a check at or before that timestamp
+        cannot distinguish "renewed" from "simply hasn't expired yet".
+        """
+        r = FakeRedisHash()
+        q = QuarantineStore(r, ttl_seconds=100)
+        await q.add("queue.internal", now=1000.0)  # expires at 1100 unless renewed
+        d = CoordinationDetector(
+            fanin=FanInCounter(r, window_seconds=3600),
+            echo=EchoStore(r, ttl_seconds=7200),
+            quarantine=q,
+            declared=frozenset({"queue.internal"}),
+            min_agents=3,
+            fingerprint_key=b"k",
+        )
+        v = await d.observe("a1", _check(dest="queue.internal"), _ECHOED, now=1050.0)
+        assert v.status == "declared"
+        assert "queue.internal" in await q.current(now=1110.0)
+
+    async def test_a_confirmed_destination_does_not_starve_another_of_renewal(self):
+        """A destination processed after one that confirms must still be renewed.
+
+        Reproduces the multi-destination bug directly: the early ``return`` on
+        ``confirmed`` used to skip every destination named after the one that
+        confirmed, including its ``quarantine.renew()``. Checked strictly
+        *after* the pre-existing quarantine's original expiry (1100), since a
+        check at or before that timestamp cannot distinguish "renewed" from
+        "simply hasn't expired yet".
+        """
+        r = FakeRedisHash()
+        q = QuarantineStore(r, ttl_seconds=100)
+        await q.add("second.dest", now=1000.0)  # expires at 1100 unless renewed
+        d = CoordinationDetector(
+            fanin=FanInCounter(r, window_seconds=3600),
+            echo=EchoStore(r, ttl_seconds=7200),
+            quarantine=q,
+            declared=frozenset(),
+            min_agents=3,
+            fingerprint_key=b"k",
+        )
+        single = _check(dest="first.dest")
+        await d.observe("a1", single, _ECHOED, now=1000.0)
+        await d.observe("a2", single, "something else entirely here", now=1010.0)
+        both = {
+            "status": "resolved",
+            "destinations": ["first.dest", "second.dest"],
+            "write_shaped": True,
+            "allowed": True,
+        }
+        v = await d.observe("a3", both, _ECHOED, now=1020.0)
+        assert v.status == "confirmed"
+        assert v.destination == "first.dest"
+        assert "second.dest" in await q.current(now=1110.0)
+
+    async def test_a_suspected_destination_is_not_masked_by_a_declared_one(self):
+        """A later declared destination must not silently overwrite an earlier verdict."""
+        d = _detector(FakeRedisHash(), declared=frozenset({"declared.dest"}))
+        check = {
+            "status": "resolved",
+            "destinations": ["suspected.dest", "declared.dest"],
+            "write_shaped": True,
+            "allowed": True,
+        }
+        for agent in ("a1", "a2", "a3"):
+            v = await d.observe(agent, check, f"unrelated text for {agent} alone", now=1000.0)
+        assert v.status == "suspected"
+        assert v.destination == "suspected.dest"
+
+    async def test_a_degraded_destination_is_not_masked_by_a_healthy_one(self):
+        """A healthy destination that turns suspected must not mask a store outage.
+
+        ``healthy.dest`` must actually reach "suspected" within the same call
+        for this to reproduce anything: a healthy destination that stays
+        below the fan-in threshold never touches the verdict either way, so
+        it could not distinguish the old overwrite bug from the fix.
+        """
+
+        class _PartialFailRedis(FakeRedisHash):
+            """Fails fan-in operations for one destination only.
+
+            Simulates a Redis shard outage that affects a single destination
+            while the rest of the store stays healthy, so the two
+            destinations can be told apart in one observe() call.
+            """
+
+            def __init__(self, broken_destination):
+                super().__init__()
+                self._broken = broken_destination
+
+            async def scard(self, key):
+                if self._broken in key:
+                    raise FakeRedisError("redis down for this destination")
+                return await super().scard(key)
+
+            async def sadd(self, key, *values):
+                if self._broken in key:
+                    raise FakeRedisError("redis down for this destination")
+                return await super().sadd(key, *values)
+
+        r = _PartialFailRedis("broken.dest")
+        d = _detector(r)
+        check = {
+            "status": "resolved",
+            "destinations": ["broken.dest", "healthy.dest"],
+            "write_shaped": True,
+            "allowed": True,
+        }
+        for agent in ("a1", "a2", "a3"):
+            v = await d.observe(agent, check, f"unrelated text for {agent} alone", now=1000.0)
+        assert v.status == "degraded"
+        assert v.destination == "broken.dest"
+
+    async def test_the_containment_ratio_the_detector_ships_is_what_rejects_a_footer(self):
+        """The shipped 0.4, measured where the deployment reads it.
+
+        `EchoStore(threshold=0.4)` is the live value: nothing passes
+        `threshold` to it, and `confirm()` hands `self._threshold` to
+        `matches()`. A test that calls `matches()` and lets the argument
+        default pins a number no deployment reads — set the store's 0.4 to
+        0.0 and it stays green while two 200-word reports sharing a 27-word
+        corporate footer arm a fleet-wide write quarantine.
+
+        Both halves are here because only the pair names the ratio: the
+        floor is met identically in each (21 shared shingles), the ubiquity
+        discount cannot fire in either (one sender behind the footer, floor
+        4), and the single thing that differs is how much of the shorter
+        body the footer accounts for.
+        """
+        from admina.domains.agent_security.fingerprint import MIN_SHARED_SHINGLES, overlap
+
+        footer = (
+            "this message was generated automatically by the reporting service please do not"
+            " reply to it directly and instead open a ticket with the platform team"
+        )
+
+        async def run(body_words):
+            d = _detector(FakeRedisHash(), min_agents=5)
+            for i in range(3):
+                await d.observe(f"other-{i}", _check(), _filler(f"own{i}", 30), now=1000.0 + i)
+            a = f"{_filler('alpha', body_words)} {footer}"
+            b = f"{_filler('bravo', body_words)} {footer}"
+            await d.observe("a4", _check(), a, now=1010.0)
+            return await d.observe("a5", _check(), b, now=1020.0), sketch(a, _KEY), sketch(b, _KEY)
+
+        short, a30, b30 = await run(30)
+        long, a60, b60 = await run(60)
+
+        assert len(a30 & b30) >= MIN_SHARED_SHINGLES, "the floor is not what separates the two"
+        assert len(a60 & b60) == len(a30 & b30), "the same footer, shared identically"
+        assert overlap(a30, b30) >= 0.4 > overlap(a60, b60), "only the ratio separates them"
+        assert short.status == "confirmed", short.status
+        assert short.peer == "a4"
+        assert long.status == "suspected", (
+            f"the footer is {overlap(a60, b60):.3f} of the shorter body and confirmed anyway; "
+            "the threshold EchoStore ships is not the one being applied"
+        )
+
+    async def test_a_template_beside_a_message_is_not_a_copy_of_the_template_alone(self):
+        """Containment is measured over the smaller payload, so the larger one
+        needs its own bound.
+
+        Two short fields may add up to the shingle floor together only when
+        the two calls are copies. A call that is *nothing but* a shared
+        template is the degenerate small side of that test: it scores 1.000
+        containment against any call carrying the same template, however
+        much of its own message that call also carries. A release bot
+        posting the bare notification and a second one posting the same
+        notification with eighty words of build output is then a confirmed
+        echo, and under `enforce` the webhook is write-blocked fleet-wide.
+        """
+        from admina.domains.agent_security.fingerprint import MIN_SHARED_SHINGLES, overlap
+
+        title = "nightly build finished for service platform api in the eu west region"
+        body = "generated automatically by the release coordination service pipeline please ignore"
+
+        async def run(extra_words):
+            d = _detector(FakeRedisHash(), min_agents=5)
+            for i in range(3):
+                await d.observe(f"other-{i}", _check(), _filler(f"own{i}", 30), now=1000.0 + i)
+            bare = [title, body]
+            beside = [
+                f"{title} {_filler('out', extra_words)}",
+                f"{body} {_filler('log', extra_words)}",
+            ]
+            await d.observe("a4", _check(), bare, now=1010.0)
+            return await d.observe("a5", _check(), beside, now=1020.0), bare, beside
+
+        verdict, bare, beside = await run(40)
+        small = frozenset().union(*[sketch(text, _KEY) for text in bare])
+        large = frozenset().union(*[sketch(text, _KEY) for text in beside])
+        assert all(len(sketch(text, _KEY)) < MIN_SHARED_SHINGLES for text in bare), (
+            "neither template field reaches the floor alone; they are added up"
+        )
+        assert len(small & large) >= MIN_SHARED_SHINGLES, "the floor is not what rejects this pair"
+        assert overlap(small, large) == 1.0, "nor is containment over the smaller payload"
+        assert len(large) > 2 * len(small), "the larger call is mostly its own message"
+        assert verdict.status == "suspected", verdict.status
+
+        # The same pair with nothing beside the template: genuinely copies,
+        # and still confirmed. Without this the test above would pass if the
+        # near-duplicate path were simply deleted.
+        copies, _bare, _beside = await run(0)
+        assert copies.status == "confirmed", copies.status
+        assert copies.peer == "a4"

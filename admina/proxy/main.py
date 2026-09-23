@@ -30,7 +30,7 @@ import re
 import secrets as _secrets
 import time
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -46,8 +46,8 @@ import admina.plugins.builtin.transports.mcp as mcp_transport
 from admina import __version__
 from admina.core.event_bus import GovernanceEvent as BusGovernanceEvent
 from admina.core.event_bus import bus as governance_bus
-from admina.core.types import EventType, GovernanceAction
-from admina.domains.agent_security.egress import resolve_egress_mode
+from admina.core.types import EventType, GovernanceAction, RiskLevel
+from admina.domains.agent_security.egress import payload_fields, resolve_egress_mode
 from admina.domains.compliance.forensic import ForensicBlackBox
 from admina.domains.compliance.otel import OTELGovernanceExporter
 from admina.domains.governance import (
@@ -148,6 +148,52 @@ def instantiate_plugins(
                 exc_info=True,
             )
     return instances
+
+
+# The coordination verdicts that leave a record, mapped to the ProxyState
+# counter each one increments. One mapping rather than a tuple beside a
+# derived key name: a status with no counter is a status the proxy does not
+# record, instead of one that raises inside the fire-and-forget task and
+# takes the forensic entry down with it.
+COORDINATION_COUNTERS = {
+    "confirmed": "coordination_confirmed",
+    "suspected": "coordination_suspected",
+    "degraded": "coordination_degraded",
+}
+
+
+def build_coordination_detector(redis: Any, egress_cfg: Any, quarantine: Any) -> Any:
+    """Build the coordination detector from the egress configuration.
+
+    Module-level rather than inline in :func:`lifespan` so that which
+    configured value reaches which constructor argument can be asserted. A
+    running proxy does not expose it: replacing either use of
+    ``fanin_min_agents`` below with a literal leaves a deployment's
+    ``fanin.min_agents`` disconnected from the detector, and every test that
+    builds a detector of its own would still pass.
+    """
+    from admina.domains.agent_security.coordination import (
+        CoordinationDetector,
+        EchoStore,
+        FanInCounter,
+        common_sender_floor,
+    )
+    from admina.domains.agent_security.fingerprint import load_fingerprint_key
+
+    return CoordinationDetector(
+        fanin=FanInCounter(redis, egress_cfg.fanin_window_seconds),
+        echo=EchoStore(
+            redis,
+            egress_cfg.fanin_window_seconds * 2,
+            # Text this many distinct agents send toward a destination is
+            # that destination's ambient content, not an echo.
+            common_min_agents=common_sender_floor(egress_cfg.fanin_min_agents),
+        ),
+        quarantine=quarantine,
+        declared=frozenset(egress_cfg.coordination_declared),
+        min_agents=egress_cfg.fanin_min_agents,
+        fingerprint_key=load_fingerprint_key(),
+    )
 
 
 # ── Startup / Shutdown ───────────────────────────────────────
@@ -252,6 +298,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             state.redis = None
     else:
         logger.info("Redis disabled (REDIS_URL is empty or non-redis scheme)")
+
+    # ── Coordination detector — feeds EgressPolicy's quarantine set ────
+    # The event bus carries no agent_id (see admina/core/event_bus.py), so
+    # the detector is fed here, the same way the forensic store, ClickHouse
+    # and the alert channels already are: by the caller that holds identity.
+    _eg_cfg = _admina_config.agent_security.egress if _admina_config else None
+    if state.egress_policy is not None and _eg_cfg is not None:
+        from admina.domains.agent_security.coordination import (
+            QuarantineStore,
+            refresh_quarantine_once,
+        )
+
+        _quarantine = QuarantineStore(state.redis, _eg_cfg.quarantine_ttl_seconds)
+        state.coordination = build_coordination_detector(state.redis, _eg_cfg, _quarantine)
+
+        async def _refresh_loop() -> None:
+            while True:
+                await refresh_quarantine_once(state.egress_policy, _quarantine, time.time())
+                await asyncio.sleep(5)
+
+        state.quarantine_refresh = _spawn(_refresh_loop())
 
     # Forensic backend: filesystem (default) | s3 (boto3 generic) | memory.
     # MinIO servers are supported through the s3 backend (they speak the S3
@@ -382,6 +449,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     yield
 
     # Shutdown
+    if state.quarantine_refresh is not None:
+        state.quarantine_refresh.cancel()
+        with suppress(asyncio.CancelledError):
+            await state.quarantine_refresh
     if state.redis:
         await state.redis.close()
     if state.http_client:
@@ -750,10 +821,19 @@ async def prometheus_metrics(request: Request) -> Response:
     eng = engine_status()
 
     lines: list[str] = []
+    _emitted_metadata: set[str] = set()
 
     def _metric(name: str, value, help_text: str, mtype: str = "counter", labels: str = "") -> None:
-        lines.append(f"# HELP admina_{name} {help_text}")
-        lines.append(f"# TYPE admina_{name} {mtype}")
+        # HELP/TYPE describe the metric *family* (its bare name), not one
+        # label set — the Prometheus text format allows exactly one of each
+        # per family. A caller that emits several label sets for the same
+        # family (one sample per coordination status, one per firewall
+        # category) must only get the metadata once, or the family renders
+        # a second HELP/TYPE line and the whole scrape fails to parse.
+        if name not in _emitted_metadata:
+            lines.append(f"# HELP admina_{name} {help_text}")
+            lines.append(f"# TYPE admina_{name} {mtype}")
+            _emitted_metadata.add(name)
         suffix = f"{{{labels}}}" if labels else ""
         lines.append(f"admina_{name}{suffix} {value}")
 
@@ -777,6 +857,13 @@ async def prometheus_metrics(request: Request) -> Response:
         "Rolling average pipeline latency in milliseconds",
         "gauge",
     )
+    for _status, _counter in COORDINATION_COUNTERS.items():
+        _metric(
+            "coordination_verdicts_total",
+            m.get(_counter, 0),
+            "Coordination detector verdicts per status",
+            labels=f'status="{_status}"',
+        )
 
     # Firewall pattern hits, broken down per category
     for cat, count in (fw_stats.get("detections_by_type") or {}).items():
@@ -1386,6 +1473,106 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
             ),
         )
     )
+
+    # ─── Coordination detector (fire-and-forget) ───────────────
+    # Never blocks: a confirmed verdict arms EgressPolicy's quarantine set,
+    # which is what makes the next payload-bearing call to that destination
+    # refuse. What is fingerprinted is the payload the call carries
+    # (`payload_fields`), not the serialised request: the method, the tool
+    # name and every argument name are identical on every call to the same
+    # tool, so a sketch taken over them measures the shape of the API and
+    # matches every other caller of it. The fields are handed over separately
+    # and never joined, because a header block, a content type and a bearer
+    # token are constant across a fleet too and concatenating them rebuilds
+    # the same false match one level down. A call carrying no payload text
+    # yields [], and the echo phase skips it. Each field is capped at 2000
+    # chars — fingerprinting the whole conversation would be quadratic and
+    # would match an agent against its own past (see fingerprint.py's
+    # SKETCH_SIZE note). The extraction runs inside the task, off the
+    # request path.
+    if state.coordination is not None and "egress" in pipeline_result.checks:
+
+        async def _observe() -> None:
+            payload = payload_fields(params)
+            verdict = await state.coordination.observe(
+                agent_id, pipeline_result.checks["egress"], payload, time.time()
+            )
+            counter = COORDINATION_COUNTERS.get(verdict.status)
+            if counter is None:
+                return
+            logger.warning(
+                "Coordination %s on %r (%d agents, peer %s)",
+                verdict.status,
+                verdict.destination,
+                verdict.agents,
+                verdict.peer or "none",
+            )
+            # Every verdict the detector reaches a conclusion on leaves the
+            # same three things behind: a metric, a forensic-chain entry and
+            # a bus event, each naming the destination, the agents counted
+            # and the peer where there is one. `confirmed` is the one that
+            # costs every agent write access to the destination until the
+            # quarantine lapses or an operator lifts it, and it is marked as
+            # such; `suspected` and `degraded` arm nothing, and at the
+            # shipped fan-in defaults they are the whole of what a same-text
+            # cascade across a fleet produces, so a record is the only place
+            # that detection survives log rotation. All of it is built here,
+            # inside the fire-and-forget task, after this request's own
+            # forensic record and ClickHouse event have gone out: the
+            # verdict is not known while `pipeline_result.checks` is being
+            # serialised, so writing it there would be a store nothing reads.
+            armed = verdict.status == "confirmed"
+            coordination_check = {
+                "status": verdict.status,
+                "destination": verdict.destination,
+                "agents": verdict.agents,
+                "peer": verdict.peer,
+            }
+            coordination_action = "QUARANTINE" if armed else "OBSERVE"
+            coordination_risk = RiskLevel.CRITICAL if armed else RiskLevel.MEDIUM
+            state.inc_metric(counter)
+            # The forensic write and the bus emit are two independent
+            # outputs of the same verdict, not one guarded by the other: a
+            # store that raises (the shipped ForensicBlackBox swallows its
+            # own storage errors, but a plugin store need not) must not also
+            # take the policy_violation event down with it, which is what an
+            # unhandled exception here would do to the rest of this task.
+            if state.forensic_box:
+                _coord_loop = asyncio.get_running_loop()
+                try:
+                    await _coord_loop.run_in_executor(
+                        None,
+                        lambda: state.forensic_box.record(
+                            {
+                                "event_id": f"{event_id}:coordination",
+                                "event_type": EventType.POLICY_VIOLATION,
+                                "agent_id": agent_id,
+                                "session_id": session_id,
+                                "method": method,
+                                "action": coordination_action,
+                                "risk_level": coordination_risk,
+                                "checks": {"coordination": coordination_check},
+                            }
+                        ),
+                    )
+                except Exception:
+                    logger.warning(
+                        "Coordination forensic record failed for event %s; bus event still emitted",
+                        event_id,
+                        exc_info=True,
+                    )
+            await governance_bus.emit(
+                BusGovernanceEvent(
+                    event_type=EventType.POLICY_VIOLATION,
+                    session_id=session_id,
+                    action=coordination_action,
+                    risk_level=coordination_risk,
+                    domain="agent_security",
+                    metadata=coordination_check,
+                )
+            )
+
+        _spawn(_observe())
 
     # ─── Respond based on governance decision ─────────────────
     if action == GovernanceAction.BLOCK:

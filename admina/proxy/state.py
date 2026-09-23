@@ -50,6 +50,8 @@ class ProxyState:
     pii_redactor: Any = None
     loop_breaker: Any = None
     egress_policy: Any = None
+    coordination: Any = None
+    quarantine_refresh: Any = None
 
     # Subsystems
     forensic_box: ForensicBlackBox | None = None
@@ -74,6 +76,13 @@ class ProxyState:
             "requests_blocked": 0,
             "requests_allowed": 0,
             "requests_redacted": 0,
+            # Coordination verdicts, one counter per conclusive status. They
+            # are separate keys rather than one labelled counter because
+            # `confirmed` is an enforcement action and the other two are not,
+            # and an alert rule has to be able to tell them apart.
+            "coordination_confirmed": 0,
+            "coordination_suspected": 0,
+            "coordination_degraded": 0,
             "avg_latency_ms": 0.0,
             "started_at": datetime.now(UTC).isoformat(),
         }

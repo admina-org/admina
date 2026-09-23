@@ -38,6 +38,7 @@ __all__ = [
     "EgressStatus",
     "EgressIntent",
     "analyze",
+    "payload_fields",
     "EgressDecision",
     "EgressPolicy",
     "resolve_egress_mode",
@@ -93,6 +94,16 @@ _PAYLOAD_KEYS = frozenset({"body", "data", "payload", "json", "content", "text",
 # A free-form string at or above this length, sitting beside a destination, is
 # treated as a payload. Below it, values look like flags and settings.
 _PAYLOAD_MIN_CHARS = 16
+
+# Payload fields fingerprinted per call, longest first. Two, because the echo
+# store's per-agent budget is two maximal sketches (coordination.EchoStore's
+# `cap`): at this number a call always fits that budget whole and is never
+# refused for its size. Beyond it, the longest fields are the ones most
+# likely to carry a message.
+_MAX_PAYLOAD_FIELDS = 2
+
+# Characters kept per field, counted from the end.
+_MAX_FIELD_CHARS = 2000
 
 # Remote annotations. Recorded, never trusted: see the module docstring.
 _REMOTE_HINT_KEYS = frozenset({"readonlyhint", "read_only_hint"})
@@ -226,6 +237,105 @@ def _classify_write_shaped(obj: Any, depth: int) -> str | None:
     return None
 
 
+def _collect_payload_fields(obj: Any, depth: int, found: list[str]) -> None:
+    """Append the payload-bearing strings of *obj* to *found*, in argument order.
+
+    Applies the same notion of "payload" as :func:`_classify_write_shaped` —
+    a value under a :data:`_PAYLOAD_KEYS` name, or a free-form string of at
+    least :data:`_PAYLOAD_MIN_CHARS` that is not itself a destination — so
+    the half of the system that decides a call is write-shaped and the half
+    that fingerprints what it carries agree on where the payload is.
+
+    Only values are collected, and each value stays a separate entry.
+    Argument *names*, the tool name, the method and every other structural
+    token are identical across every call to the same tool, so a fingerprint
+    taken over them measures the shape of the API rather than the content of
+    the message; joining the values has the same effect one level down,
+    because a header block and a template are also identical across every
+    call to the same tool and concatenating them produces shared runs of
+    text that no single field contained.
+
+    Only the *string* directly under a :data:`_NETWORK_KEYS` name is skipped,
+    because that string is the destination. A dict or list under the same
+    name is walked: ``{"webhook": {"url": ..., "text": ...}}`` declares a
+    destination and carries a payload, and the payload is what this
+    function is for.
+    """
+    if depth > _MAX_SCAN_DEPTH:
+        return
+    if isinstance(obj, str):
+        # A host or URL says where the call goes, which is what the fan-in
+        # trigger counts; it is not what the call carries.
+        if _host_from_string(obj, allow_bare_host=True):
+            return
+        value = obj.strip()
+        if len(value) >= _PAYLOAD_MIN_CHARS:
+            found.append(value)
+        return
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            name = key.lower() if isinstance(key, str) else ""
+            if name in _NETWORK_KEYS and isinstance(value, str):
+                continue
+            if name in _PAYLOAD_KEYS and isinstance(value, str):
+                text = value.strip()
+                if text:
+                    found.append(text)
+                continue
+            _collect_payload_fields(value, depth + 1, found)
+        return
+    if isinstance(obj, list):
+        for item in obj:
+            _collect_payload_fields(item, depth + 1, found)
+
+
+def payload_fields(params: Any) -> list[str]:
+    """The payload a tool call carries, one entry per payload-bearing field.
+
+    The coordination detector's echo phase asks whether what one agent wrote
+    toward a destination later turns up in another agent's content. That
+    question is about the message, so the fingerprint source has to be the
+    message: a serialisation of the whole request carries the tool name and
+    every argument name with it, and those are the same on every call to the
+    same tool, which is a property of the API rather than evidence of an
+    echo.
+
+    The fields are returned separately rather than joined for the same
+    reason at the level below. A user agent, a content type, a trace header
+    and a bearer token are each far too short to be a message, but
+    concatenated they are sixteen consecutive words that every agent in a
+    fleet sends, which is exactly the coherent run the echo phase's shingle
+    floor exists to require. Keeping them apart means the floor can only be
+    met by text that was together in one field to begin with.
+
+    At most :data:`_MAX_PAYLOAD_FIELDS` fields are returned, the longest
+    first, each cut to its last :data:`_MAX_FIELD_CHARS` characters. Two
+    fields of that size fingerprint to no more values than the echo store
+    holds per agent, so a call always fits its budget whole; and
+    fingerprinting a whole conversation would be quadratic and would match
+    an agent against its own past.
+
+    Returns [] when the call carries no payload text. The caller fingerprints
+    nothing in that case rather than falling back to a wider source.
+    """
+    found: list[str] = []
+    _collect_payload_fields(params, 0, found)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for text in found:
+        if text not in seen:
+            seen.add(text)
+            unique.append(text)
+    if len(unique) > _MAX_PAYLOAD_FIELDS:
+        keep = sorted(
+            sorted(range(len(unique)), key=lambda i: len(unique[i]), reverse=True)[
+                :_MAX_PAYLOAD_FIELDS
+            ]
+        )
+        unique = [unique[i] for i in keep]
+    return [text[-_MAX_FIELD_CHARS:] for text in unique]
+
+
 def _remote_hint(obj: Any, depth: int = 0) -> bool | None:
     if depth > _MAX_SCAN_DEPTH:
         return None
@@ -314,10 +424,14 @@ class EgressDecision:
 class EgressPolicy:
     """Destination allowlist, plus the operator settings the stage reads.
 
-    The policy also holds a quarantine set, but nothing in the shipped
-    proxy, SDK or CLI calls :meth:`set_quarantine`: in a real deployment the
-    set is always empty and the quarantine branch of :meth:`evaluate` cannot
-    fire. It is reserved for a future out-of-band consumer.
+    The policy also holds a quarantine set. It starts empty; the
+    coordination detector (``admina.domains.agent_security.coordination``)
+    populates it when it confirms undeclared multi-agent coordination, and
+    ``admina/proxy/main.py``'s startup loop calls ``refresh_quarantine_once``
+    every 5 seconds to hand the live set to this policy via
+    :meth:`set_quarantine`, so the quarantine branch of :meth:`evaluate` does
+    fire in a deployment running that proxy with Redis configured. See
+    MODEL_CARD.md §5c for what feeds the detector and what does not.
 
     ``read_only_tools`` holds the tool names the operator has declared
     non-mutating. It is carried here rather than looked up per call so the
@@ -364,7 +478,12 @@ class EgressPolicy:
             logger.warning("Skipping malformed egress allow entry %r", entry)
 
     def set_quarantine(self, hosts: frozenset[str]) -> None:
-        """Replace the quarantine set. Called by the out-of-band refresh."""
+        """Replace the quarantine set.
+
+        Called every 5 seconds by ``refresh_quarantine_once``, invoked from
+        the quarantine refresh loop started in ``admina/proxy/main.py``'s
+        startup.
+        """
         self._quarantine = hosts
 
     def _is_allowed(self, host: str) -> bool:

@@ -1,6 +1,6 @@
 import pytest
 
-from admina.domains.agent_security.egress import EgressStatus, analyze
+from admina.domains.agent_security.egress import EgressStatus, analyze, payload_fields
 
 
 def _nest(levels: int, leaf: dict) -> dict:
@@ -292,3 +292,110 @@ class TestTriState:
     def test_deep_but_complete_non_network_call_is_still_no_egress(self):
         """Nesting that stays within the cap is not truncation."""
         assert analyze(_nest(5, {"expression": "2 + 2"})).status is EgressStatus.NO_EGRESS
+
+
+class TestPayloadFields:
+    """The fingerprint source the coordination detector's echo phase uses.
+
+    It has to be the message, not the call that carried it: argument names,
+    the tool name and the JSON-RPC envelope are the same on every call to a
+    given tool, so a sketch taken over them matches every caller of that
+    tool and says nothing about content passing between agents. The same
+    holds for the values a fleet sends unchanged — a user agent, a content
+    type, a bearer token — which is why the fields come back separate and
+    are never joined into one text.
+    """
+
+    def test_it_returns_the_payload_value(self):
+        params = {"url": "https://api.corp/x", "content": "task 42 done, results in ZZZ_Page"}
+        assert payload_fields(params) == ["task 42 done, results in ZZZ_Page"]
+
+    def test_argument_names_are_not_part_of_it(self):
+        """Keys are identical across callers; only values can carry a message."""
+        params = {"url": "https://api.corp/x", "content": "a sufficiently long payload value"}
+        fields = payload_fields(params)
+        assert "content" not in "".join(fields)
+        assert "url" not in "".join(fields)
+
+    def test_the_destination_is_not_part_of_it(self):
+        """Where a call goes is what phase 1 counts, not what the call carries."""
+        params = {"url": "https://api.corp/v2/pages/44182031/child", "body": "the message body"}
+        assert payload_fields(params) == ["the message body"]
+
+    def test_short_structural_values_are_excluded(self):
+        """Flags and ids are constant per tool and below the payload floor."""
+        params = {
+            "url": "https://api.corp/x",
+            "space_key": "ENGINEERING",
+            "format": "storage",
+            "content": "the only real payload in this call",
+        }
+        assert payload_fields(params) == ["the only real payload in this call"]
+
+    def test_a_free_form_value_under_an_unconventional_key_is_included(self):
+        """_PAYLOAD_KEYS is not exhaustive; a long free-form value counts."""
+        params = {"url": "https://api.corp/x", "message": "a message under a key nobody listed"}
+        assert payload_fields(params) == ["a message under a key nobody listed"]
+
+    def test_a_nested_payload_is_found(self):
+        params = {"url": "https://api.corp/x", "body": {"note": "a sufficiently long value"}}
+        assert payload_fields(params) == ["a sufficiently long value"]
+
+    def test_a_payload_nested_under_a_destination_key_is_found(self):
+        """`{"webhook": {...}}` is the common Slack/webhook argument shape.
+
+        Skipping the whole subtree because its name declares a destination
+        made the call write-shaped to analyze() and empty here: counted by
+        the fan-in trigger and impossible to ever confirm.
+        """
+        params = {
+            "webhook": {
+                "url": "https://hooks.corp/services/T0/B0",
+                "text": "meet me at the shared queue when the run finishes",
+            }
+        }
+        assert payload_fields(params) == ["meet me at the shared queue when the run finishes"]
+        assert analyze(params).write_shaped is True, "the two halves must agree"
+        assert analyze(params).destinations == ["hooks.corp"]
+
+    def test_several_payload_values_stay_separate(self):
+        """Joined, a call's strings form runs of text no field contained."""
+        params = {"title": "the first long enough value", "content": "the second long value"}
+        assert payload_fields(params) == [
+            "the first long enough value",
+            "the second long value",
+        ]
+
+    def test_only_the_longest_fields_are_kept(self):
+        params = {
+            "a": "the shortest of the three values here",
+            "b": "a rather longer value than the first one carries",
+            "c": "the longest value of the three by a comfortable margin of text",
+        }
+        assert payload_fields(params) == [
+            "a rather longer value than the first one carries",
+            "the longest value of the three by a comfortable margin of text",
+        ]
+
+    def test_each_field_is_capped_on_its_own(self):
+        params = {"content": "y" * 3000, "note": "z" * 3000}
+        assert [len(f) for f in payload_fields(params)] == [2000, 2000]
+
+    def test_a_call_carrying_nothing_yields_no_fields(self):
+        """Nothing to fingerprint means the echo phase skips, not that it
+        falls back to a wider source."""
+        assert payload_fields({"url": "https://api.corp/items?id=1"}) == []
+
+    def test_arguments_below_the_scan_depth_limit_are_reached(self):
+        params = _nest(4, {"content": "a payload well below the depth cap"})
+        assert payload_fields(params) == ["a payload well below the depth cap"]
+
+    def test_arguments_past_the_scan_depth_limit_are_not_reached(self):
+        """Same cap as analyze(): a walk that stops is a walk that stops."""
+        assert payload_fields(_nest(9, {"content": "a payload past the depth cap"})) == []
+
+    def test_a_non_dict_argument_object_does_not_raise(self):
+        assert payload_fields(None) == []
+        assert payload_fields(["a list item long enough to count"]) == [
+            "a list item long enough to count"
+        ]
