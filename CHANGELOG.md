@@ -13,6 +13,13 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-09-23
+
+Minor release: destination-based egress control on tool calls and a
+cross-agent coordination detector. Egress enforcement is opt-in:
+`ADMINA_EGRESS_MODE` defaults to `observe`, under which destinations and
+quarantines are recorded and no call is refused.
+
 ### Added
 
 - **Destination-based egress control on tool calls.** A new pipeline stage
@@ -120,6 +127,25 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   primitives do not feed it, so coordination conducted through those
   surfaces is not seen. See `MODEL_CARD.md` §5c for the full limitations,
   including behaviour with no Redis (`degraded`, not `none`).
+
+### Changed
+
+- **Adapter SDK ceilings widened.** The `openai` extra now accepts
+  `openai>=1.0,<4` (was `<3`) and the `anthropic` extra
+  `anthropic>=0.39,<2` (was `<1`). The calls the adapters make
+  (`chat.completions.create`, `messages.create`) are unchanged in the new
+  majors; the lockfile resolves openai 3.7.0 and anthropic 1.3.0.
+- **The `[rust]` extra accepts admina-core 0.12.x** (`<0.13`, was `<0.12`).
+  The engine-bridge ABI is unchanged.
+
+### Fixed
+
+- **`/metrics` emitted `# HELP` and `# TYPE` once per sample rather than
+  once per metric family.** `admina_firewall_detections_total` carries one
+  sample per detection category, so a proxy that had recorded detections
+  in two or more categories served an exposition that Prometheus rejects,
+  failing the whole scrape and every Admina metric in it. Metadata is now
+  emitted once per family.
 
 ## [0.11.1] — 2026-07-16
 
@@ -771,7 +797,8 @@ environment in `docker-compose.benchmark.yml`.
 
 ---
 
-[Unreleased]: https://github.com/admina-org/admina/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/admina-org/admina/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/admina-org/admina/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/admina-org/admina/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/admina-org/admina/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/admina-org/admina/compare/v0.10.0...v0.10.1
