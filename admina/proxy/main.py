@@ -19,9 +19,7 @@ https://admina.org
 """
 
 import asyncio
-import base64
 import hashlib
-import hmac
 import inspect
 import json
 import logging
@@ -63,6 +61,7 @@ from admina.engines import (
     get_loop_breaker,
     get_pii_engine,
 )
+from admina.proxy import dashboard_session
 from admina.proxy.api.dashboard import create_dashboard_endpoints
 from admina.proxy.api.gateway import create_gateway_endpoints
 from admina.proxy.api.integration import create_integration_endpoints
@@ -541,7 +540,9 @@ _dashboard_router = create_dashboard_endpoints(
     get_otel_exporter=lambda: app.state.proxy.otel_exporter,
     get_governance_guards=lambda: app.state.proxy.governance_guards,
     get_config=lambda: _admina_config,
-    verify_credential=lambda **kw: verify_credential(**kw),
+    # The router's only credential check is the /api/dashboard/live upgrade,
+    # a read-only dashboard feed, so the browser session is admitted there.
+    verify_credential=lambda **kw: verify_credential(allow_session=True, **kw),
 )
 app.include_router(_dashboard_router)
 
@@ -588,49 +589,47 @@ def _dashboard_index_html() -> str:
     return html
 
 
-_DASHBOARD_COOKIE = "admina_session"
-# Dashboard session cookie lifetime (seconds). The signed token expires
-# after this window, after which the browser must re-load GET / to get a
-# fresh one (still gated by the API key check).
-_DASHBOARD_SESSION_TTL = 86400
+def _dashboard_enabled() -> bool:
+    """True if the bundled dashboard and its browser sign-in are served.
 
-
-def _issue_dashboard_token(now: int | None = None) -> str:
-    """Mint a signed, expiring session token for the dashboard cookie.
-
-    The token is ``<expiry>.<sig>`` where ``sig`` is an HMAC-SHA256 of the
-    expiry keyed by ``ADMINA_API_KEY``. The API key itself never leaves the
-    server — only a derived signature does — so the cookie carries no
-    clear-text secret (addresses CodeQL py/clear-text-storage).
+    Off when ``ADMINA_DASHBOARD_ENABLED=false`` or ``dashboard.enabled:
+    false`` in admina.yaml. The ``/api/dashboard/*`` data API is not affected:
+    it stays available to API-key clients either way.
     """
-    exp = (now if now is not None else int(time.time())) + _DASHBOARD_SESSION_TTL
-    payload = str(exp)
-    sig = hmac.new(
-        settings.ADMINA_API_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
-    raw = f"{payload}.{sig}".encode()
-    return base64.urlsafe_b64encode(raw).decode("ascii")
+    if not settings.ADMINA_DASHBOARD_ENABLED:
+        return False
+    dash_cfg = getattr(_admina_config, "dashboard", None)
+    return bool(getattr(dash_cfg, "enabled", True))
 
 
-def _verify_dashboard_token(token: str, now: int | None = None) -> bool:
-    """Validate a dashboard session token: signature intact and not expired."""
-    if not settings.ADMINA_API_KEY or not token:
+def _presented_api_key(headers: Any) -> str:
+    """Return the raw API key a request presents in X-API-Key / Bearer."""
+    auth_header = headers.get("Authorization") or headers.get("authorization") or ""
+    return (
+        headers.get("X-API-Key")
+        or headers.get("x-api-key")
+        or auth_header.removeprefix("Bearer ").strip()
+        or ""
+    )
+
+
+def _key_matches(presented: str) -> bool:
+    """Constant-time check of a presented key against ``ADMINA_API_KEY``.
+
+    Compared as UTF-8 bytes: ``compare_digest`` raises on non-ASCII ``str``.
+    """
+    expected = settings.ADMINA_API_KEY
+    if not expected or not presented:
         return False
-    try:
-        raw = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
-        payload, sig = raw.rsplit(".", 1)
-    except (ValueError, UnicodeDecodeError):
-        return False
-    expected = hmac.new(
-        settings.ADMINA_API_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
-    if not _secrets.compare_digest(sig, expected):
-        return False
-    try:
-        exp = int(payload)
-    except ValueError:
-        return False
-    return (now if now is not None else int(time.time())) < exp
+    return _secrets.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
+
+
+def _dashboard_session_expiry(cookies: Any) -> int | None:
+    """Expiry of the valid dashboard session in *cookies*, else ``None``."""
+    if not _dashboard_enabled() or not settings.ADMINA_API_KEY:
+        return None
+    token = (cookies or {}).get(dashboard_session.COOKIE_NAME, "")
+    return dashboard_session.token_expiry(settings.ADMINA_API_KEY, token)
 
 
 def verify_credential(
@@ -638,31 +637,103 @@ def verify_credential(
     headers: Any = None,
     query_params: Any = None,
     cookies: Any = None,
+    allow_session: bool = False,
 ) -> bool:
     """Authenticate from credential parts (header / query / cookie).
 
     Accepts the raw ``ADMINA_API_KEY`` via ``X-API-Key`` /
-    ``Authorization: Bearer`` / ``?api_key=`` (constant-time compare), OR the
-    signed ``admina_session`` cookie (verified, never the raw key). Single
-    source of truth shared by the HTTP middleware, the WebSocket upgrade, and
-    the API-key auth provider so they cannot drift.
+    ``Authorization: Bearer`` / ``?api_key=`` (constant-time compare). The
+    dashboard session cookie is considered only when *allow_session* is true,
+    which callers set for dashboard routes alone (see
+    :func:`admina.proxy.dashboard_session.session_allowed`). Single source of
+    truth shared by the HTTP middleware and the WebSocket upgrade so they
+    cannot drift.
     """
     headers = headers or {}
     query_params = query_params or {}
-    cookies = cookies or {}
     if not settings.ADMINA_API_KEY:
         return False
-    auth_header = headers.get("Authorization") or headers.get("authorization") or ""
-    raw = (
-        headers.get("X-API-Key")
-        or headers.get("x-api-key")
-        or auth_header.removeprefix("Bearer ").strip()
-        or query_params.get("api_key")
-        or ""
-    )
-    if raw and _secrets.compare_digest(raw, settings.ADMINA_API_KEY):
+    raw = _presented_api_key(headers) or query_params.get("api_key") or ""
+    if _key_matches(raw):
         return True
-    return _verify_dashboard_token(cookies.get(_DASHBOARD_COOKIE, ""))
+    if not allow_session:
+        return False
+    return _dashboard_session_expiry(cookies) is not None
+
+
+def _session_cookie_secure(request: Request) -> bool:
+    """Mark the session cookie ``Secure`` on HTTPS or when forced by config."""
+    return settings.DASHBOARD_COOKIE_SECURE or request.url.scheme == "https"
+
+
+_NO_STORE = {"Cache-Control": "no-store"}
+
+
+@app.get(dashboard_session.SESSION_PATH, include_in_schema=False)
+async def _dashboard_session_status(request: Request) -> JSONResponse:
+    """Report whether the caller is signed in (reached only when admitted)."""
+    expiry = _dashboard_session_expiry(request.cookies)
+    return JSONResponse(
+        {"authenticated": True, "session": expiry is not None, "expires_at": expiry},
+        headers=_NO_STORE,
+    )
+
+
+@app.post(dashboard_session.SESSION_PATH, include_in_schema=False)
+async def _dashboard_session_create(request: Request) -> JSONResponse:
+    """Exchange the API key for a short-lived dashboard browser session.
+
+    The key must be presented in ``X-API-Key`` or ``Authorization: Bearer``;
+    an existing session cannot mint a new one.
+    """
+    api_key = settings.ADMINA_API_KEY
+    if not api_key:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": "Not Found",
+                "detail": "Dashboard sign-in requires ADMINA_API_KEY to be set.",
+            },
+            headers=_NO_STORE,
+        )
+    if not _key_matches(_presented_api_key(request.headers)):
+        return JSONResponse(
+            status_code=401,
+            content={"error": "Unauthorized", "detail": "Invalid API key"},
+            headers=_NO_STORE,
+        )
+    ttl = settings.ADMINA_DASHBOARD_SESSION_TTL
+    now = int(time.time())
+    resp = JSONResponse(
+        {"authenticated": True, "session": True, "expires_at": now + ttl},
+        headers=_NO_STORE,
+    )
+    resp.set_cookie(
+        dashboard_session.COOKIE_NAME,
+        dashboard_session.issue_token(api_key, ttl=ttl, now=now),
+        max_age=ttl,
+        path=dashboard_session.COOKIE_PATH,
+        secure=_session_cookie_secure(request),
+        httponly=True,
+        samesite="strict",
+    )
+    resp.delete_cookie(dashboard_session.LEGACY_COOKIE_NAME, path="/")
+    return resp
+
+
+@app.delete(dashboard_session.SESSION_PATH, include_in_schema=False)
+async def _dashboard_session_delete(request: Request) -> JSONResponse:
+    """End the dashboard browser session (clears the cookie)."""
+    resp = JSONResponse({"authenticated": False, "session": False}, headers=_NO_STORE)
+    resp.delete_cookie(
+        dashboard_session.COOKIE_NAME,
+        path=dashboard_session.COOKIE_PATH,
+        secure=_session_cookie_secure(request),
+        httponly=True,
+        samesite="strict",
+    )
+    resp.delete_cookie(dashboard_session.LEGACY_COOKIE_NAME, path="/")
+    return resp
 
 
 if _DASHBOARD_DIR.is_dir():
@@ -684,30 +755,25 @@ if _DASHBOARD_DIR.is_dir():
 
     @app.get("/", include_in_schema=False)
     async def _dashboard_root() -> HTMLResponse:
-        # Issue a session cookie carrying the API key so subsequent
-        # /api/* fetches and the WebSocket auto-authenticate without
-        # the dashboard JS needing to know the key.
-        resp = HTMLResponse(_dashboard_index_html())
-        if settings.ADMINA_API_KEY:
-            resp.set_cookie(
-                _DASHBOARD_COOKIE,
-                # A signed, expiring token — NOT the API key itself, so the
-                # secret never leaves the server in clear text.
-                _issue_dashboard_token(),
-                httponly=True,
-                samesite="lax",
-                # Off by default for local HTTP dev; set
-                # DASHBOARD_COOKIE_SECURE=true behind HTTPS in production so
-                # the session cookie is never sent over plain HTTP.
-                secure=settings.DASHBOARD_COOKIE_SECURE,
-                max_age=_DASHBOARD_SESSION_TTL,
-            )
-        return resp
+        # The SPA shell is static and carries no credential. It never
+        # creates a session: the page asks for the API key and exchanges it
+        # at POST /api/dashboard/session.
+        return HTMLResponse(
+            _dashboard_index_html(),
+            headers={
+                "Cache-Control": "no-store",
+                "X-Frame-Options": "DENY",
+                "Content-Security-Policy": "frame-ancestors 'none'",
+                "X-Content-Type-Options": "nosniff",
+                "Referrer-Policy": "no-referrer",
+            },
+        )
 
 
 # ── Auth Middleware ───────────────────────────────────────────
-# /health and the OpenAPI docs are always public.
-# Dashboard static assets are also public so the SPA can boot.
+# /health, /metrics and the OpenAPI docs are public (the docs can be turned
+# off with ADMINA_API_DOCS_ENABLED=false). The dashboard shell and its static
+# assets are public so the sign-in page can load; they hold no credential.
 _AUTH_EXEMPT = {
     "/",
     "/health",
@@ -719,11 +785,40 @@ _AUTH_EXEMPT = {
 }
 _AUTH_EXEMPT_PREFIXES = ("/vendor/",)
 
+# Surfaces that answer 404 when switched off by configuration.
+_API_DOCS_PATHS = {"/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"}
+_DASHBOARD_SHELL_PATHS = {"/", "/heimdall.png", "/vendor", dashboard_session.SESSION_PATH}
+_DASHBOARD_SHELL_PREFIXES = ("/vendor/",)
+
+
+def _surface_disabled(path: str) -> bool:
+    if path in _API_DOCS_PATHS and not settings.ADMINA_API_DOCS_ENABLED:
+        return True
+    if path in _DASHBOARD_SHELL_PATHS or path.startswith(_DASHBOARD_SHELL_PREFIXES):
+        return not _dashboard_enabled()
+    return False
+
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next) -> JSONResponse:
     path = request.url.path
+    if _surface_disabled(path):
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
     if path in _AUTH_EXEMPT or path.startswith(_AUTH_EXEMPT_PREFIXES):
+        return await call_next(request)
+
+    # 0. Dashboard browser session: accepted only for read-only requests to
+    # the dashboard API. Everywhere else the cookie is ignored and the
+    # request must carry the API key.
+    if (
+        dashboard_session.session_allowed(request.method, path)
+        and _dashboard_session_expiry(request.cookies) is not None
+    ):
+        request.state.user = {
+            "user_id": "dashboard_session",
+            "roles": ["dashboard"],
+            "metadata": {},
+        }
         return await call_next(request)
 
     state = _get_state(request)
@@ -749,15 +844,12 @@ async def auth_middleware(request: Request, call_next) -> JSONResponse:
 
     # 2. Fallback: static ADMINA_API_KEY check.
     # API clients present the raw key via X-API-Key / Authorization: Bearer.
-    # Browsers present the `admina_session` cookie issued by the bundled
-    # dashboard at GET /, which holds a signed expiring token — verified by
-    # signature, never the raw key.
     # query-param key auth is WebSocket-only (browsers can't set WS headers); HTTP uses the header
     if settings.ADMINA_API_KEY:
         if not verify_credential(
             headers=request.headers,
             query_params={},
-            cookies=request.cookies,
+            cookies={},
         ):
             return JSONResponse(
                 status_code=401,

@@ -89,13 +89,25 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:8080"
 
     # Auth — set a strong random key in production: openssl rand -hex 32
-    # If empty, auth is disabled (local development only).
+    # If empty, protected routes are refused (fail-closed) unless
+    # ALLOW_UNAUTHENTICATED=true is set explicitly (local development only).
     ADMINA_API_KEY: str = ""
     ALLOW_UNAUTHENTICATED: bool = False
-    # Set the `Secure` flag on the dashboard session cookie so the browser
-    # only sends it over HTTPS. Default False because local dev is HTTP;
-    # set DASHBOARD_COOKIE_SECURE=true in any production / TLS deployment.
+    # Force the `Secure` flag on the dashboard session cookie. The flag is
+    # already set automatically when the request arrives over HTTPS; set
+    # DASHBOARD_COOKIE_SECURE=true when TLS terminates at a reverse proxy
+    # that does not forward the original scheme.
     DASHBOARD_COOKIE_SECURE: bool = False
+    # Bundled dashboard (GET /, /vendor/*, sign-in at /api/dashboard/session).
+    # false removes the SPA and browser sign-in; the /api/dashboard/* data
+    # API stays available with the API key. `dashboard.enabled: false` in
+    # admina.yaml has the same effect.
+    ADMINA_DASHBOARD_ENABLED: bool = True
+    # Lifetime in seconds of a dashboard browser session (60 s to 12 h).
+    # The browser signs in again with the API key when it expires.
+    ADMINA_DASHBOARD_SESSION_TTL: int = Field(default=3600, ge=60, le=43200)
+    # Public OpenAPI documentation (/docs, /redoc, /openapi.json).
+    ADMINA_API_DOCS_ENABLED: bool = True
 
     # Rate limiting (per session, requires Redis)
     RATE_LIMIT_MAX_REQUESTS: int = 100  # requests per window

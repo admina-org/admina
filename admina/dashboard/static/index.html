@@ -330,6 +330,33 @@
   .link-card:hover { border-color: var(--teal); }
   .link-card .lc-label { font-size: 11px; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
   .link-card .lc-title { font-size: 14px; font-weight: 600; }
+
+  /* ── Sign-in ─────────────────────────────────────────── */
+  .signin {
+    position: fixed; inset: 0; z-index: 300; background: var(--bg);
+    display: flex; align-items: center; justify-content: center; padding: 24px;
+  }
+  .signin-card {
+    width: 100%; max-width: 420px; background: var(--surface);
+    border: 1px solid var(--border2); border-radius: 12px; padding: 28px;
+  }
+  .signin-card .logo { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 700; margin-bottom: 16px; }
+  .signin-card .logo img { width: 32px; height: 32px; object-fit: contain; }
+  .signin-card .logo .accent { color: var(--teal); }
+  .signin-card p { font-size: 13px; color: var(--muted); line-height: 1.6; margin-bottom: 16px; }
+  .signin-card code { font-family: var(--mono); font-size: 12px; color: var(--text); }
+  .signin-card label { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 6px; }
+  .signin-card input {
+    width: 100%; padding: 9px 12px; border-radius: 6px; border: 1px solid var(--border2);
+    background: var(--surface2); color: var(--text); font-family: var(--mono); font-size: 13px;
+  }
+  .signin-card input:focus { outline: none; border-color: var(--teal); }
+  .signin-card button {
+    margin-top: 14px; width: 100%; padding: 9px 12px; border-radius: 6px; cursor: pointer;
+    background: var(--teal-dark); color: #fff; border: 1px solid var(--teal); font-size: 14px; font-weight: 600;
+  }
+  .signin-card button:disabled { opacity: 0.6; cursor: default; }
+  .signin-card .error { margin-top: 12px; font-size: 13px; color: var(--red); }
 </style>
 </head>
 <body>
@@ -338,6 +365,25 @@
      Alpine.js Dashboard Application
      ════════════════════════════════════════════════════════ -->
 <div x-data="dashboard()" x-init="init()">
+
+  <!-- Sign-in: the API key is exchanged for a short-lived browser session -->
+  <div class="signin" x-show="needsLogin" x-cloak>
+    <form class="signin-card" @submit.prevent="login()">
+      <div class="logo">
+        <img src="heimdall.png" alt="">
+        <span><span class="accent">Admina</span> Governance Dashboard</span>
+      </div>
+      <p>
+        Sign in with this instance's API key. In an <code>admina dev</code> project,
+        run <code>admina password show</code> to display it.
+      </p>
+      <label for="admina-api-key">API key</label>
+      <input id="admina-api-key" type="password" x-model="loginKey" x-ref="loginKey"
+             autocomplete="off" autocapitalize="off" spellcheck="false" required>
+      <button type="submit" :disabled="loginBusy || !loginKey">Sign in</button>
+      <div class="error" x-show="loginError" x-text="loginError" role="alert"></div>
+    </form>
+  </div>
 
   <!-- Top Bar -->
   <div class="topbar">
@@ -349,6 +395,9 @@
       <span class="ts" x-text="lastUpdate"></span>
       <div class="sep"></div>
       <button class="refresh-btn" @click="refresh()">Refresh</button>
+      <template x-if="sessionActive">
+        <button class="refresh-btn" @click="logout()">Sign out</button>
+      </template>
       <div class="sep"></div>
       <div class="status">
         <div class="dot" :style="{ background: healthy ? 'var(--green)' : 'var(--red)' }"></div>
@@ -807,7 +856,9 @@
  * Admina Governance Dashboard — Alpine.js application.
  *
  * Reads from the Phase 3.1 API endpoints. Does NOT write.
- * All API calls go through the nginx reverse proxy (/api/*).
+ * All API calls go to /api/* on the same origin: the proxy itself in
+ * `admina dev` local mode (browser session after sign-in), or the nginx
+ * reverse proxy of the Docker stack (which adds the API key).
  */
 function dashboard() {
   return {
@@ -824,6 +875,12 @@ function dashboard() {
     modelData: {},
     oisg: {},
     showAssessmentHelp: false,
+    needsLogin: false,
+    sessionActive: false,
+    loginKey: '',
+    loginError: '',
+    loginBusy: false,
+    _started: false,
     _ws: null,
     _feedId: 0,
     _refreshTimer: null,
@@ -920,10 +977,84 @@ function dashboard() {
 
     // ── Init ───────────────────────────────────────────
     async init() {
-      await this.refresh();
+      if (await this.checkSession()) this.start();
+    },
+
+    start() {
+      // Alpine calls init() both automatically and via x-init: start once.
+      if (this._started) return;
+      this._started = true;
+      this.refresh();
       this.connectWebSocket();
       // Auto-refresh every 10s
       this._refreshTimer = setInterval(() => this.refresh(), 10000);
+    },
+
+    // ── Session ────────────────────────────────────────
+    // Serving this page never signs the browser in. The API key is exchanged
+    // once for a short-lived HttpOnly session cookie that only the read-only
+    // dashboard API accepts. Behind the Docker nginx the proxy already
+    // receives the key, so no sign-in is needed there.
+    async checkSession() {
+      try {
+        const r = await fetch('/api/dashboard/session', { cache: 'no-store' });
+        if (r.status === 401) { this.showLogin(''); return false; }
+        if (r.ok) this.sessionActive = !!(await r.json()).session;
+      } catch (e) { /* network error: start anyway and show Disconnected */ }
+      return true;
+    },
+
+    async login() {
+      if (!this.loginKey) return;
+      this.loginBusy = true;
+      this.loginError = '';
+      try {
+        const r = await fetch('/api/dashboard/session', {
+          method: 'POST',
+          headers: { 'X-API-Key': this.loginKey },
+          cache: 'no-store',
+        });
+        if (r.ok) {
+          this.loginKey = '';
+          this.needsLogin = false;
+          this.sessionActive = true;
+          this.start();
+        } else if (r.status === 401) {
+          this.loginError = 'Invalid API key.';
+        } else {
+          let detail = '';
+          try { detail = (await r.json()).detail || ''; } catch (e) { /* not JSON */ }
+          this.loginError = detail || `Sign-in failed (HTTP ${r.status}).`;
+        }
+      } catch (e) {
+        this.loginError = 'Admina is not reachable.';
+      } finally {
+        this.loginBusy = false;
+      }
+    },
+
+    async logout() {
+      try { await fetch('/api/dashboard/session', { method: 'DELETE', cache: 'no-store' }); }
+      catch (e) { /* cookie expires on its own */ }
+      this.showLogin('');
+    },
+
+    showLogin(message) {
+      clearInterval(this._refreshTimer);
+      this._refreshTimer = null;
+      this._started = false;
+      if (this._ws) {
+        const ws = this._ws;
+        this._ws = null;
+        ws.onclose = null;
+        ws.close();
+      }
+      this.wsConnected = false;
+      this.sessionActive = false;
+      this.feedEvents = [];
+      this.loginError = message;
+      this.needsLogin = true;
+      this.$nextTick(() => this.$refs.loginKey && this.$refs.loginKey.focus());
     },
 
     // ── Fetch all data ─────────────────────────────────
@@ -931,6 +1062,11 @@ function dashboard() {
       // allSettled so one failing endpoint never blanks the whole dashboard.
       const okJson = async (url) => {
         const r = await fetch(url);
+        if (r.status === 401) {
+          const err = new Error(`${url} -> 401`);
+          err.unauthorized = true;
+          throw err;
+        }
         if (!r.ok) throw new Error(`${url} -> ${r.status}`);
         return r.json();
       };
@@ -944,6 +1080,10 @@ function dashboard() {
         okJson('/api/dashboard/models'),
         okJson('/api/dashboard/oisg'),
       ]);
+      if (results.some(r => r.status === 'rejected' && r.reason && r.reason.unauthorized)) {
+        this.showLogin('Your session has expired. Sign in again.');
+        return;
+      }
       const [scoreRes, compRes, sovRes, statsRes, feedRes, infraRes, modelsRes, oisgRes] =
         results.map(r => r.status === 'fulfilled' ? r.value : null);
 
@@ -998,8 +1138,9 @@ function dashboard() {
 
         this._ws.onclose = () => {
           this.wsConnected = false;
+          if (this.needsLogin) return;
           console.log('[Admina] WebSocket disconnected, reconnecting in 3s...');
-          setTimeout(() => this.connectWebSocket(), 3000);
+          setTimeout(() => { if (!this.needsLogin) this.connectWebSocket(); }, 3000);
         };
 
         this._ws.onerror = () => {
@@ -1007,7 +1148,7 @@ function dashboard() {
         };
       } catch (e) {
         this.wsConnected = false;
-        setTimeout(() => this.connectWebSocket(), 5000);
+        setTimeout(() => { if (!this.needsLogin) this.connectWebSocket(); }, 5000);
       }
     },
 

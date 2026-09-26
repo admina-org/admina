@@ -643,6 +643,7 @@ def _run_local(
                 click.echo(f"    http://{ip}:{port}  ({label})")
         else:
             click.echo(f"  Ready → http://{display_host}:{port}")
+        click.echo("  Dashboard sign-in: the API key (show it with `admina password show`)")
         if not no_browser:
             webbrowser.open(f"http://{display_host}:{port}")
     else:

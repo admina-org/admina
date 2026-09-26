@@ -537,54 +537,28 @@ class TestAPIKeyAuthProvider:
         assert _run(auth.authorize({"roles": ["admin"]}, "model.call")) is True
         assert _run(auth.authorize({"roles": []}, "model.call")) is False
 
-    def test_apikey_provider_accepts_signed_cookie(self):
-        import base64
-        import hashlib
-        import hmac
-        import time
-
+    def test_apikey_provider_ignores_cookies(self):
+        """The provider authenticates the API key only; dashboard browser
+        sessions are admitted by the proxy on the dashboard API alone."""
         from admina.plugins.builtin.auth.apikey import APIKeyAuthProvider
+        from admina.proxy import dashboard_session
 
         key = "supersecretkey123456"
         provider = APIKeyAuthProvider(api_key=key)
+        session = dashboard_session.issue_token(key, ttl=3600)
 
-        def _mint(k):
-            exp = int(time.time()) + 3600
-            payload = str(exp)
-            sig = hmac.new(k.encode(), payload.encode(), hashlib.sha256).hexdigest()
-            return base64.urlsafe_b64encode(f"{payload}.{sig}".encode()).decode("ascii")
-
-        # valid signed cookie → authenticated
-        user = _run(
-            provider.authenticate(
-                {"path": "/api/x", "headers": {}, "cookies": {"admina_session": _mint(key)}}
-            )
-        )
-        assert user and user.get("user_id")
-
-        # raw key as cookie → REJECTED (must be a signed token, not the raw key)
-        with pytest.raises(PermissionError):
-            _run(
-                provider.authenticate(
-                    {"path": "/api/x", "headers": {}, "cookies": {"admina_session": key}}
-                )
-            )
-
-        # tampered cookie → rejected
-        with pytest.raises(PermissionError):
-            _run(
-                provider.authenticate(
-                    {
-                        "path": "/api/x",
-                        "headers": {},
-                        "cookies": {"admina_session": "garbage.tampered"},
-                    }
-                )
-            )
+        for cookies in (
+            {dashboard_session.COOKIE_NAME: session},
+            {dashboard_session.LEGACY_COOKIE_NAME: session},
+            {dashboard_session.COOKIE_NAME: key},
+            {dashboard_session.LEGACY_COOKIE_NAME: key},
+        ):
+            with pytest.raises(PermissionError):
+                _run(provider.authenticate({"path": "/api/x", "headers": {}, "cookies": cookies}))
 
         # raw key via header still works
-        user2 = _run(provider.authenticate({"path": "/api/x", "headers": {"X-API-Key": key}}))
-        assert user2 and user2.get("user_id")
+        user = _run(provider.authenticate({"path": "/api/x", "headers": {"X-API-Key": key}}))
+        assert user and user.get("user_id")
 
     def test_is_configured_with_key(self):
         from admina.plugins.builtin.auth.apikey import APIKeyAuthProvider

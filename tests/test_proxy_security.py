@@ -210,91 +210,44 @@ class TestCORSWildcardValidation:
             assert len(cors_warnings) >= 1
 
 
-class TestDashboardSessionToken:
-    """The dashboard session cookie carries a signed, expiring token — never
-    the raw API key (CodeQL py/clear-text-storage). Verify the token logic."""
-
-    def _patch_key(self, monkeypatch, key="test-key-abcdef123456"):
-        from admina.proxy import main
-
-        monkeypatch.setattr(main.settings, "ADMINA_API_KEY", key)
-        return main
-
-    def test_valid_token_verifies(self, monkeypatch):
-        main = self._patch_key(monkeypatch)
-        assert main._verify_dashboard_token(main._issue_dashboard_token()) is True
-
-    def test_token_does_not_contain_api_key(self, monkeypatch):
-        import base64
-
-        main = self._patch_key(monkeypatch)
-        raw = base64.urlsafe_b64decode(main._issue_dashboard_token()).decode("utf-8")
-        assert "test-key-abcdef123456" not in raw
-
-    def test_tampered_token_rejected(self, monkeypatch):
-        main = self._patch_key(monkeypatch)
-        tok = main._issue_dashboard_token()
-        assert (
-            main._verify_dashboard_token(tok[:-2] + ("aa" if not tok.endswith("aa") else "bb"))
-            is False
-        )
-
-    def test_expired_token_rejected(self, monkeypatch):
-        import time
-
-        main = self._patch_key(monkeypatch)
-        old = main._issue_dashboard_token(now=int(time.time()) - 10 * 86400)
-        assert main._verify_dashboard_token(old) is False
-
-    def test_empty_and_garbage_rejected(self, monkeypatch):
-        main = self._patch_key(monkeypatch)
-        assert main._verify_dashboard_token("") is False
-        assert main._verify_dashboard_token("garbage") is False
-        assert main._verify_dashboard_token("notbase64.sig") is False
-
-    def test_token_from_other_key_rejected(self, monkeypatch):
-        # A token signed with a different key must not validate.
-        main = self._patch_key(monkeypatch, key="key-one-abcdef123456")
-        tok = main._issue_dashboard_token()
-        monkeypatch.setattr(main.settings, "ADMINA_API_KEY", "key-two-abcdef123456")
-        assert main._verify_dashboard_token(tok) is False
+# Token format, expiry and binding to the key are covered by
+# tests/test_proxy_dashboard_session.py (TestSessionToken).
 
 
-def test_verify_credential_accepts_raw_key_and_signed_cookie(monkeypatch):
+def test_verify_credential_accepts_raw_key_and_scoped_session(monkeypatch):
+    from admina.proxy import dashboard_session
     from admina.proxy import main as m
 
-    monkeypatch.setattr(m.settings, "ADMINA_API_KEY", "supersecretkey123456", raising=False)
-    token = m._issue_dashboard_token()
+    key = "supersecretkey123456"
+    monkeypatch.setattr(m.settings, "ADMINA_API_KEY", key, raising=False)
+    monkeypatch.setattr(m.settings, "ADMINA_DASHBOARD_ENABLED", True, raising=False)
+    token = dashboard_session.issue_token(key, ttl=3600)
+    session = {dashboard_session.COOKIE_NAME: token}
 
+    assert m.verify_credential(headers={"X-API-Key": key}, query_params={}, cookies={}) is True
     assert (
-        m.verify_credential(
-            headers={"X-API-Key": "supersecretkey123456"}, query_params={}, cookies={}
-        )
+        m.verify_credential(headers={"Authorization": f"Bearer {key}"}, query_params={}, cookies={})
         is True
     )
+    assert m.verify_credential(headers={}, query_params={"api_key": key}, cookies={}) is True
+
+    # The session cookie counts only where the caller admits it (dashboard routes).
+    assert m.verify_credential(headers={}, query_params={}, cookies=session) is False
     assert (
-        m.verify_credential(
-            headers={"Authorization": "Bearer supersecretkey123456"}, query_params={}, cookies={}
-        )
+        m.verify_credential(headers={}, query_params={}, cookies=session, allow_session=True)
         is True
     )
-    assert (
-        m.verify_credential(
-            headers={}, query_params={"api_key": "supersecretkey123456"}, cookies={}
-        )
-        is True
-    )
-    assert (
-        m.verify_credential(headers={}, query_params={}, cookies={"admina_session": token}) is True
-    )
+
     assert m.verify_credential(headers={"X-API-Key": "nope"}, query_params={}, cookies={}) is False
-    assert (
-        m.verify_credential(
-            headers={}, query_params={}, cookies={"admina_session": "supersecretkey123456"}
+    # The raw key is never accepted as a cookie value, under either name.
+    for name in (dashboard_session.COOKIE_NAME, dashboard_session.LEGACY_COOKIE_NAME):
+        assert (
+            m.verify_credential(
+                headers={}, query_params={}, cookies={name: key}, allow_session=True
+            )
+            is False
         )
-        is False
-    )
-    assert m.verify_credential(headers={}, query_params={}, cookies={}) is False
+    assert m.verify_credential(headers={}, query_params={}, cookies={}, allow_session=True) is False
 
 
 def test_verify_credential_false_when_no_key_configured(monkeypatch):
