@@ -13,6 +13,51 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+Patch release: hardened dashboard session handling. Upgrading is
+recommended.
+
+### Security
+
+- **Hardened dashboard session handling.** The bundled dashboard now signs
+  in by exchanging the API key for a browser session at
+  `POST /api/dashboard/session`; loading the dashboard page no longer
+  creates a session. The session cookie (`admina_dashboard_session`) is
+  `HttpOnly`, `SameSite=Strict`, `Secure` over HTTPS (or with
+  `DASHBOARD_COOKIE_SECURE=true`), scoped to `/api/`, signed with a key
+  derived from `ADMINA_API_KEY` and valid for one hour by default. It is
+  accepted only for read-only requests to the dashboard API
+  (`/api/dashboard/*`, `/api/stats`); the MCP proxy, the OpenAI-compatible
+  gateway and the integration and compliance APIs require the API key.
+  Sessions issued by earlier releases are no longer accepted.
+- `SECURITY.md` lists 0.12.x as the supported release line.
+
+### Added
+
+- `ADMINA_DASHBOARD_ENABLED` (default `true`): `false` stops serving the
+  bundled dashboard (`/`, `/vendor/*`, `/heimdall.png`) and its sign-in
+  endpoint. `dashboard.enabled: false` in `admina.yaml`, previously
+  ignored by the proxy, now has the same effect. The `/api/dashboard/*`
+  data API remains available with the API key.
+- `ADMINA_API_DOCS_ENABLED` (default `true`): `false` stops serving
+  `/docs`, `/redoc` and `/openapi.json`.
+- `ADMINA_DASHBOARD_SESSION_TTL` (default `3600`, 60 to 43200 seconds):
+  lifetime of a dashboard browser session.
+- The dashboard shows a sign-in form, signs out from the top bar and asks
+  to sign in again when the session expires. The bundled dashboard page is
+  served with `X-Frame-Options: DENY` and `Cache-Control: no-store`.
+
+### Changed
+
+- **The bundled dashboard asks for the API key** once per session (in an
+  `admina dev` project, `admina password show` displays it). The dashboard
+  of the Docker stack, served by nginx, is unaffected: nginx already
+  presents the key to the proxy.
+- The built-in `apikey` auth provider authenticates the API key only
+  (`X-API-Key` or `Authorization: Bearer`) and no longer reads cookies;
+  dashboard sessions are handled by the proxy.
+- `verify_credential()` in `admina.proxy.main` considers the dashboard
+  session only when called with `allow_session=True`.
+
 ## [0.12.0] — 2026-09-23
 
 Minor release: destination-based egress control on tool calls and a

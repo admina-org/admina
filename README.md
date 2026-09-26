@@ -305,6 +305,10 @@ Real-time governance dashboard on port 3000:
 
 API backend: `GET /api/dashboard/score`, `/feed`, `/compliance`, `/sovereignty`, `/infra`, `/models`
 
+In `admina dev` local mode the dashboard asks for the API key (`admina password show`)
+and keeps a short-lived browser session that only the read-only dashboard API accepts.
+Set `ADMINA_DASHBOARD_ENABLED=false` to stop serving the bundled dashboard.
+
 ## Configuration
 
 Admina uses `admina.yaml` as the primary config file (with `.env` fallback for backward compatibility):

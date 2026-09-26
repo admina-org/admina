@@ -198,6 +198,8 @@ domains:
       endpoint: "http://localhost:4317"
 
 dashboard:
+  # false: the proxy stops serving the bundled dashboard and its browser
+  # sign-in (same as ADMINA_DASHBOARD_ENABLED=false).
   enabled: true
   port: 3000
 
