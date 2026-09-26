@@ -543,6 +543,8 @@ _dashboard_router = create_dashboard_endpoints(
     # The router's only credential check is the /api/dashboard/live upgrade,
     # a read-only dashboard feed, so the browser session is admitted there.
     verify_credential=lambda **kw: verify_credential(allow_session=True, **kw),
+    # A live feed opened with a browser session is closed when it expires.
+    session_expiry=lambda **kw: _live_feed_session_expiry(**kw),
 )
 app.include_router(_dashboard_router)
 
@@ -659,6 +661,21 @@ def verify_credential(
     if not allow_session:
         return False
     return _dashboard_session_expiry(cookies) is not None
+
+
+def _live_feed_session_expiry(
+    *, headers: Any = None, query_params: Any = None, cookies: Any = None
+) -> int | None:
+    """Expiry of the browser session behind a live-feed connection.
+
+    ``None`` when the connection presents the API key itself (nothing to
+    enforce) or carries no valid session.
+    """
+    headers = headers or {}
+    query_params = query_params or {}
+    if _key_matches(_presented_api_key(headers) or query_params.get("api_key") or ""):
+        return None
+    return _dashboard_session_expiry(cookies)
 
 
 def _session_cookie_secure(request: Request) -> bool:

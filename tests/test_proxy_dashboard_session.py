@@ -604,6 +604,77 @@ def test_live_feed_ignores_session_when_dashboard_disabled(proxy_app, monkeypatc
     assert excinfo.value.code == 1008
 
 
+def _live_feed(app, headers: list[tuple[bytes, bytes]], *, timeout: float = 5.0) -> list[dict]:
+    """Open the live feed as an idle client; return what the server sent.
+
+    The client never sends a message, so the server only ends the connection
+    on its own initiative. Raises ``TimeoutError`` if it is still open after
+    *timeout* seconds.
+    """
+    scope = {
+        "type": "websocket",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "scheme": "ws",
+        "server": ("test", 80),
+        "client": ("127.0.0.1", 1234),
+        "root_path": "",
+        "path": "/api/dashboard/live",
+        "raw_path": b"/api/dashboard/live",
+        "query_string": b"",
+        "headers": [(b"host", b"test"), *headers],
+        "subprotocols": [],
+    }
+    sent: list[dict] = []
+
+    async def go():
+        connected = False
+        idle = asyncio.Event()
+
+        async def receive():
+            nonlocal connected
+            if not connected:
+                connected = True
+                return {"type": "websocket.connect"}
+            await idle.wait()  # an idle client: never sends anything
+
+        async def send(message):
+            sent.append(message)
+
+        await asyncio.wait_for(app(scope, receive, send), timeout=timeout)
+
+    asyncio.run(go())
+    return sent
+
+
+def test_live_feed_closes_when_the_session_expires(proxy_app):
+    """A live feed opened with a browser session does not outlive it."""
+    from admina.proxy import dashboard_session as ds
+
+    # Valid now, expires within two seconds.
+    token = ds.issue_token(_KEY, ttl=60, now=int(time.time()) - 58)
+    sent = _live_feed(proxy_app, [(b"cookie", f"{_COOKIE}={token}".encode())])
+
+    assert [m["type"] for m in sent] == ["websocket.accept", "websocket.close"]
+    assert sent[-1]["code"] == 1008
+
+
+def test_live_feed_session_expiry_applies_to_sessions_only(proxy_app):
+    from admina.proxy import dashboard_session as ds
+    from admina.proxy import main as proxy_main
+
+    now = int(time.time())
+    token = ds.issue_token(_KEY, ttl=600, now=now)
+    session = {_COOKIE: token}
+    expiry = proxy_main._live_feed_session_expiry
+
+    assert expiry(headers={}, query_params={}, cookies=session) == now + 600
+    # The API key itself carries no expiry, with or without a session cookie.
+    assert expiry(headers={"x-api-key": _KEY}, query_params={}, cookies=session) is None
+    assert expiry(headers={}, query_params={"api_key": _KEY}, cookies=session) is None
+    assert expiry(headers={}, query_params={}, cookies={}) is None
+
+
 # ── Settings ────────────────────────────────────────────────
 
 

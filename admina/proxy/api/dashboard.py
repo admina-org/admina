@@ -175,6 +175,7 @@ def create_dashboard_endpoints(
     get_governance_guards: Any = None,
     get_config: Any = None,
     verify_credential: Any = None,
+    session_expiry: Any = None,
 ) -> APIRouter:
     """Create a new APIRouter with dashboard endpoints.
 
@@ -200,6 +201,11 @@ def create_dashboard_endpoints(
             Shared credential verifier for header/query/cookie auth.  When
             provided, the WebSocket live endpoint routes all auth through it
             so the signed session cookie is validated correctly.
+        session_expiry: Callable(headers, query_params, cookies) -> int | None.
+            Expiry (Unix seconds) of the browser session that authorized a
+            live-feed connection, or None when the API key itself was
+            presented. A connection opened with a session is closed when the
+            session expires.
 
     Returns:
         The configured APIRouter.
@@ -231,34 +237,49 @@ def create_dashboard_endpoints(
                 return
 
         expected = getattr(settings, "ADMINA_API_KEY", "") or ""
+        # Unix time at which the connection must end: set when a browser
+        # session (not the API key) authorized it, so the feed never
+        # outlives the session.
+        deadline: int | None = None
         if expected:
-            ok = (
-                bool(
-                    verify_credential(
-                        headers=dict(websocket.headers),
-                        query_params=dict(websocket.query_params),
-                        cookies=dict(websocket.cookies),
-                    )
-                )
-                if verify_credential is not None
-                else False
-            )
+            credentials = {
+                "headers": dict(websocket.headers),
+                "query_params": dict(websocket.query_params),
+                "cookies": dict(websocket.cookies),
+            }
+            ok = bool(verify_credential(**credentials)) if verify_credential is not None else False
             if not ok:
                 await websocket.close(code=1008)
                 return
+            if session_expiry is not None:
+                deadline = session_expiry(**credentials)
         elif not getattr(settings, "ALLOW_UNAUTHENTICATED", False):
             await websocket.close(code=1008)
             return
 
         await websocket.accept()
         _ws_clients.add(websocket)
+        expired = False
         try:
             while True:
-                await websocket.receive_text()
+                if deadline is None:
+                    await websocket.receive_text()
+                    continue
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    expired = True
+                    break
+                try:
+                    await asyncio.wait_for(websocket.receive_text(), timeout=remaining)
+                except TimeoutError:
+                    expired = True
+                    break
         except WebSocketDisconnect:
             pass
         finally:
             _ws_clients.discard(websocket)
+        if expired:
+            await websocket.close(code=1008)
 
     @router.get("/score")
     async def dashboard_score() -> dict[str, Any]:
