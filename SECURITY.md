@@ -66,9 +66,11 @@ Out of scope:
   to `/api/`, signed with a key derived from `ADMINA_API_KEY` (rotating the key ends every
   session) and valid for `ADMINA_DASHBOARD_SESSION_TTL` seconds (default 3600). The
   session is accepted only for read-only requests to the dashboard API
-  (`/api/dashboard/*`, `/api/stats`); the MCP proxy, the OpenAI-compatible gateway and the
-  integration and compliance APIs always require the API key. Deployments that do not use
-  the bundled dashboard should set `ADMINA_DASHBOARD_ENABLED=false`.
+  (`/api/dashboard/*`, `/api/stats`, the `/api/dashboard/live` feed, which is closed when
+  the session expires); the MCP proxy, the OpenAI-compatible gateway and the integration
+  and compliance APIs always require the API key. Signing out clears the cookie in the
+  browser; to end every outstanding session at once, rotate `ADMINA_API_KEY`. Deployments
+  that do not use the bundled dashboard should set `ADMINA_DASHBOARD_ENABLED=false`.
 - **Secrets**: Never commit `.env` to version control. Use `.env.example` as a template.
 - **Network isolation**: The Docker Compose setup isolates ClickHouse and Redis on an
   internal network — do not expose their ports to the internet.

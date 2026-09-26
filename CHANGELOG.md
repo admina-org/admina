@@ -20,15 +20,16 @@ recommended.
 
 - **Hardened dashboard session handling.** The bundled dashboard now signs
   in by exchanging the API key for a browser session at
-  `POST /api/dashboard/session`; loading the dashboard page no longer
-  creates a session. The session cookie (`admina_dashboard_session`) is
-  `HttpOnly`, `SameSite=Strict`, `Secure` over HTTPS (or with
-  `DASHBOARD_COOKIE_SECURE=true`), scoped to `/api/`, signed with a key
-  derived from `ADMINA_API_KEY` and valid for one hour by default. It is
-  accepted only for read-only requests to the dashboard API
-  (`/api/dashboard/*`, `/api/stats`); the MCP proxy, the OpenAI-compatible
-  gateway and the integration and compliance APIs require the API key.
-  Sessions issued by earlier releases are no longer accepted.
+  `POST /api/dashboard/session`. The session cookie
+  (`admina_dashboard_session`) is `HttpOnly`, `SameSite=Strict`, `Secure`
+  over HTTPS (or with `DASHBOARD_COOKIE_SECURE=true`), scoped to `/api/`,
+  signed with a key derived from `ADMINA_API_KEY` and valid for one hour by
+  default. It is accepted only for read-only requests to the dashboard API
+  (`/api/dashboard/*`, `/api/stats`, the live feed); the MCP proxy, the
+  OpenAI-compatible gateway and the integration and compliance APIs require
+  the API key. A live-feed connection opened with a session is closed when
+  the session expires. Sessions issued by earlier releases are no longer
+  accepted.
 - `SECURITY.md` lists 0.12.x as the supported release line.
 
 ### Added
