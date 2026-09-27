@@ -55,22 +55,26 @@ Out of scope:
 ## Security Design Notes
 
 - **API key authentication**: Set `ADMINA_API_KEY` (generated with `openssl rand -hex 32`)
-  to protect the API. `/health` and `/metrics` are public. The OpenAPI docs (`/docs`,
-  `/redoc`, `/openapi.json`) are public unless `ADMINA_API_DOCS_ENABLED=false`. Without a
-  key the proxy is fail-closed: protected requests are rejected with 401 unless
+  to protect the API. `/health` is public; `/metrics` is public unless
+  `ADMINA_METRICS_REQUIRE_AUTH=true`. The OpenAPI docs (`/docs`, `/redoc`,
+  `/openapi.json`) are public unless `ADMINA_API_DOCS_ENABLED=false` (removed) or
+  `ADMINA_API_DOCS_REQUIRE_AUTH=true` (behind the key). Without a key the proxy is
+  fail-closed: protected requests are rejected with 401 unless
   `ALLOW_UNAUTHENTICATED=true` is set explicitly (local dev only).
 - **Dashboard sessions**: The bundled dashboard page and its static assets are public and
   carry no credential. The browser signs in by presenting the API key to
   `POST /api/dashboard/session`, which sets a session cookie that is `HttpOnly`,
-  `SameSite=Strict`, `Secure` over HTTPS (or with `DASHBOARD_COOKIE_SECURE=true`), scoped
-  to `/api/`, signed with a key derived from `ADMINA_API_KEY` (rotating the key ends every
-  session) and valid for `ADMINA_DASHBOARD_SESSION_TTL` seconds (default 3600). The
-  session is accepted only for read-only requests to the dashboard API
-  (`/api/dashboard/*`, `/api/stats`, the `/api/dashboard/live` feed, which is closed when
-  the session expires); the MCP proxy, the OpenAI-compatible gateway and the integration
-  and compliance APIs always require the API key. Signing out clears the cookie in the
-  browser; to end every outstanding session at once, rotate `ADMINA_API_KEY`. Deployments
-  that do not use the bundled dashboard should set `ADMINA_DASHBOARD_ENABLED=false`.
+  `SameSite=Strict`, `Secure` over HTTPS (or with `DASHBOARD_COOKIE_SECURE=true`; with
+  `DASHBOARD_COOKIE_SECURE=auto` also on plain HTTP unless the dashboard is addressed as
+  localhost or a loopback address), scoped to `/api/`, signed with a key derived from
+  `ADMINA_API_KEY` (rotating the key ends every session) and valid for
+  `ADMINA_DASHBOARD_SESSION_TTL` seconds (default 3600). The session is accepted only for
+  read-only requests to the dashboard API (`/api/dashboard/*`, `/api/stats`, the
+  `/api/dashboard/live` feed, which is closed when the session expires); the MCP proxy,
+  the OpenAI-compatible gateway and the integration and compliance APIs always require the
+  API key. Signing out clears the cookie in the browser; to end every outstanding session
+  at once, rotate `ADMINA_API_KEY`. Deployments that do not use the bundled dashboard
+  should set `ADMINA_DASHBOARD_ENABLED=false`.
 - **Secrets**: Never commit `.env` to version control. Use `.env.example` as a template.
 - **Network isolation**: The Docker Compose setup isolates ClickHouse and Redis on an
   internal network — do not expose their ports to the internet.

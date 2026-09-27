@@ -17,7 +17,7 @@ Admina — Configuration & Data Models
 """
 
 import warnings
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -27,6 +27,7 @@ from admina.core.secretfile import resolve_secret
 from admina.core.types import EventType, GovernanceAction, RiskLevel
 from admina.domains.agent_security.scan_policy import SCAN_ROLES, parse_scan_roles
 from admina.domains.governance import normalize_guard_fail_mode
+from admina.proxy.dashboard_session import parse_cookie_secure
 from admina.proxy.log_format import LOG_FORMATS
 from admina.proxy.surfaces import parse_surfaces
 
@@ -107,11 +108,15 @@ class Settings(BaseSettings):
     # file, not both; a missing, unreadable or empty file stops the proxy.
     ADMINA_API_KEY_FILE: str = ""
     ALLOW_UNAUTHENTICATED: bool = False
-    # Force the `Secure` flag on the dashboard session cookie. The flag is
-    # already set automatically when the request arrives over HTTPS; set
-    # DASHBOARD_COOKIE_SECURE=true when TLS terminates at a reverse proxy
-    # that does not forward the original scheme.
-    DASHBOARD_COOKIE_SECURE: bool = False
+    # `Secure` flag of the dashboard session cookie. It is always set when the
+    # request arrives over HTTPS. Over plain HTTP:
+    #   false (default): not set;
+    #   auto: set unless the dashboard is addressed as localhost, *.localhost
+    #         or a loopback address (a browser does not keep a Secure cookie
+    #         received on any other plain http:// address);
+    #   true: always set, e.g. when TLS terminates at a reverse proxy that
+    #         does not forward the original scheme.
+    DASHBOARD_COOKIE_SECURE: bool | Literal["auto"] = False
     # Bundled dashboard (GET /, /vendor/*, sign-in at /api/dashboard/session).
     # false removes the SPA and browser sign-in; the /api/dashboard/* data
     # API stays available with the API key. `dashboard.enabled: false` in
@@ -258,6 +263,11 @@ class Settings(BaseSettings):
     # flagged in enforce mode, replaced by the block message; a streamed one
     # is scanned when the stream ends and the result is only recorded.
     ADMINA_GATEWAY_SCAN_RESPONSE: bool = False
+
+    @field_validator("DASHBOARD_COOKIE_SECURE", mode="before")
+    @classmethod
+    def validate_dashboard_cookie_secure(cls, v: object) -> bool | str:
+        return parse_cookie_secure(v)
 
     @field_validator("ADMINA_ENABLED_SURFACES")
     @classmethod

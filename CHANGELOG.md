@@ -204,6 +204,11 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 - `ADMINA_METRICS_REQUIRE_AUTH` and `ADMINA_API_DOCS_REQUIRE_AUTH` (default
   `false`): put `/metrics`, and `/docs`, `/redoc`, `/openapi.json`, behind
   the API key.
+- `DASHBOARD_COOKIE_SECURE=auto`: the dashboard session cookie is `Secure`
+  over HTTPS and, over plain HTTP, whenever the dashboard is addressed by a
+  host other than `localhost`, a `*.localhost` name or a loopback address.
+  `true` and `false` (default) keep their meaning; the usual boolean
+  spellings are accepted and any other value stops the proxy.
 
 ### Changed
 

@@ -852,3 +852,174 @@ def test_session_scope(method, path, allowed):
     from admina.proxy import dashboard_session as ds
 
     assert ds.session_allowed(method, path) is allowed
+
+
+# ── Secure flag: DASHBOARD_COOKIE_SECURE ─────────────────────
+
+
+def _secure_flag(app, base_url: str) -> bool:
+    async def steps(c):
+        return await _login(c)
+
+    resp = _run(app, steps, base_url=base_url)
+    assert resp.status_code == 200
+    return "secure" in _attrs(_set_cookie(resp, _COOKIE))
+
+
+_LOOPBACK_URLS = [
+    "http://localhost:8080",
+    "http://LOCALHOST",
+    "http://app.localhost:3000",
+    "http://127.0.0.1:8080",
+    "http://127.0.0.2",
+    "http://[::1]:8080",
+]
+_OTHER_URLS = [
+    "http://test",
+    "http://admina.example.com:8080",
+    "http://localhost.example.com",
+    "http://192.168.1.10:3000",
+    "http://10.0.0.5",
+    "http://[fe80::1]:8080",
+]
+
+
+@pytest.mark.parametrize("base_url", _LOOPBACK_URLS)
+def test_auto_leaves_the_secure_flag_off_on_loopback_hosts(proxy_app, monkeypatch, base_url):
+    from admina.proxy import main as proxy_main
+
+    monkeypatch.setattr(proxy_main.settings, "DASHBOARD_COOKIE_SECURE", "auto")
+    assert _secure_flag(proxy_app, base_url) is False
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [*_OTHER_URLS, "https://localhost:8443", "https://admina.example.com"],
+)
+def test_auto_sets_the_secure_flag_off_loopback_and_on_https(proxy_app, monkeypatch, base_url):
+    from admina.proxy import main as proxy_main
+
+    monkeypatch.setattr(proxy_main.settings, "DASHBOARD_COOKIE_SECURE", "auto")
+    assert _secure_flag(proxy_app, base_url) is True
+
+
+@pytest.mark.parametrize("base_url", [*_LOOPBACK_URLS, *_OTHER_URLS])
+def test_false_sets_the_secure_flag_on_https_only(proxy_app, base_url):
+    # The fixture sets DASHBOARD_COOKIE_SECURE=false, the default.
+    assert _secure_flag(proxy_app, base_url) is False
+    assert _secure_flag(proxy_app, base_url.replace("http://", "https://", 1)) is True
+
+
+@pytest.mark.parametrize("base_url", _LOOPBACK_URLS)
+def test_true_sets_the_secure_flag_on_loopback_hosts_too(proxy_app, monkeypatch, base_url):
+    from admina.proxy import main as proxy_main
+
+    monkeypatch.setattr(proxy_main.settings, "DASHBOARD_COOKIE_SECURE", True)
+    assert _secure_flag(proxy_app, base_url) is True
+
+
+def test_auto_applies_to_sign_out_too(proxy_app, monkeypatch):
+    from admina.proxy import main as proxy_main
+
+    monkeypatch.setattr(proxy_main.settings, "DASHBOARD_COOKIE_SECURE", "auto")
+
+    async def steps(c):
+        return await c.delete("/api/dashboard/session", headers={"X-API-Key": _KEY})
+
+    remote = _run(proxy_app, steps, base_url="http://admina.example.com")
+    local = _run(proxy_app, steps, base_url="http://localhost:8080")
+    assert remote.status_code == local.status_code == 200
+    assert "secure" in _attrs(_set_cookie(remote, _COOKIE))
+    assert "secure" not in _attrs(_set_cookie(local, _COOKIE))
+
+
+def test_cookie_secure_default_is_false(monkeypatch):
+    from admina.proxy.config import Settings
+
+    monkeypatch.delenv("DASHBOARD_COOKIE_SECURE", raising=False)
+    assert Settings(_env_file=None).DASHBOARD_COOKIE_SECURE is False
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("auto", "auto"),
+        ("AUTO", "auto"),
+        (" Auto ", "auto"),
+        ("true", True),
+        ("True", True),
+        ("1", True),
+        ("yes", True),
+        ("on", True),
+        ("false", False),
+        ("0", False),
+        ("no", False),
+        ("off", False),
+        ("", False),
+    ],
+)
+def test_cookie_secure_setting_values(monkeypatch, raw, expected):
+    from admina.proxy.config import Settings
+
+    monkeypatch.setenv("DASHBOARD_COOKIE_SECURE", raw)
+    value = Settings(_env_file=None).DASHBOARD_COOKIE_SECURE
+    assert value == expected
+    assert type(value) is type(expected)
+
+
+@pytest.mark.parametrize("raw", ["maybe", "secure", "2", "loopback"])
+def test_cookie_secure_setting_rejects_other_values(monkeypatch, raw):
+    from pydantic import ValidationError
+
+    from admina.proxy.config import Settings
+
+    monkeypatch.setenv("DASHBOARD_COOKIE_SECURE", raw)
+    with pytest.raises(ValidationError, match="DASHBOARD_COOKIE_SECURE"):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize(
+    ("host", "loopback"),
+    [
+        ("localhost", True),
+        ("LocalHost", True),
+        ("localhost.", True),
+        ("app.localhost", True),
+        ("127.0.0.1", True),
+        ("127.255.255.254", True),
+        ("::1", True),
+        ("[::1]", True),
+        ("::ffff:127.0.0.1", True),
+        ("localhost.example.com", False),
+        ("mylocalhost", False),
+        ("example.com", False),
+        ("192.168.1.10", False),
+        ("0.0.0.0", False),
+        ("::", False),
+        ("fe80::1", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_is_loopback_host(host, loopback):
+    from admina.proxy import dashboard_session as ds
+
+    assert ds.is_loopback_host(host) is loopback
+
+
+@pytest.mark.parametrize(
+    ("mode", "scheme", "host", "secure"),
+    [
+        (False, "http", "admina.example.com", False),
+        (False, "https", "admina.example.com", True),
+        (True, "http", "localhost", True),
+        ("auto", "http", "localhost", False),
+        ("auto", "http", "admina.example.com", True),
+        ("auto", "https", "localhost", True),
+        ("auto", "http", None, True),
+    ],
+)
+def test_cookie_secure(mode, scheme, host, secure):
+    from admina.proxy import dashboard_session as ds
+
+    assert ds.cookie_secure(mode, scheme=scheme, host=host) is secure

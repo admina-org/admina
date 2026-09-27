@@ -31,6 +31,11 @@ safe:
   ending the session itself. The MCP proxy, the OpenAI-compatible gateway and
   the integration and compliance APIs always require the API key.
 
+The ``Secure`` flag of the cookie follows ``DASHBOARD_COOKIE_SECURE``
+(:func:`cookie_secure`): always over HTTPS; over plain HTTP ``true`` sets it,
+``auto`` sets it unless the host is a loopback name or address, ``false``
+(the default) does not.
+
 Token format (base64url, unpadded)::
 
     v2.<expiry-unix-seconds>.<nonce-hex>.<hmac-sha256-hex>
@@ -44,6 +49,7 @@ import base64
 import binascii
 import hashlib
 import hmac
+import ipaddress
 import secrets
 import time
 
@@ -131,3 +137,63 @@ def session_allowed(method: str, path: str) -> bool:
     if method not in _READ_METHODS:
         return False
     return path.startswith(_SCOPE_PREFIX) or path in _SCOPE_PATHS
+
+
+# ── Secure flag of the session cookie (DASHBOARD_COOKIE_SECURE) ──
+
+#: DASHBOARD_COOKIE_SECURE value that decides the flag from the request host.
+COOKIE_SECURE_AUTO = "auto"
+
+_TRUE = frozenset({"1", "true", "t", "yes", "y", "on"})
+_FALSE = frozenset({"", "0", "false", "f", "no", "n", "off"})
+
+
+def parse_cookie_secure(value: object) -> bool | str:
+    """``DASHBOARD_COOKIE_SECURE`` as ``True``, ``False`` or ``"auto"``.
+
+    Booleans and the usual boolean spellings are accepted, in any case; an
+    empty value is ``False``. Any other value raises ``ValueError``.
+    """
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text == COOKIE_SECURE_AUTO:
+        return COOKIE_SECURE_AUTO
+    if text in _TRUE:
+        return True
+    if text in _FALSE:
+        return False
+    raise ValueError("DASHBOARD_COOKIE_SECURE must be true, false or auto")
+
+
+def is_loopback_host(host: str | None) -> bool:
+    """True for ``localhost``, a ``*.localhost`` name or a loopback address
+    (``127.0.0.0/8``, ``::1``, an IPv4-mapped loopback address)."""
+    if not host:
+        return False
+    name = host.strip().lower().rstrip(".")
+    if name.startswith("[") and name.endswith("]"):
+        name = name[1:-1]
+    if name == "localhost" or name.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(name.split("%", 1)[0])
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return address.ipv4_mapped.is_loopback
+    return address.is_loopback
+
+
+def cookie_secure(mode: bool | str, *, scheme: str, host: str | None) -> bool:
+    """Whether the session cookie is marked ``Secure``.
+
+    Always over HTTPS. Over plain HTTP: ``True`` → always; ``"auto"`` → unless
+    *host* (the host the browser addressed) is a loopback name or address;
+    ``False`` → never.
+    """
+    if scheme == "https" or mode is True:
+        return True
+    if mode == COOKIE_SECURE_AUTO:
+        return not is_loopback_host(host)
+    return False

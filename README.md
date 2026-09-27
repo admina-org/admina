@@ -312,6 +312,10 @@ API backend: `GET /api/dashboard/score`, `/feed`, `/compliance`, `/sovereignty`,
 In `admina dev` local mode the dashboard asks for the API key (`admina password show`)
 and keeps a short-lived browser session that only the read-only dashboard API accepts.
 Set `ADMINA_DASHBOARD_ENABLED=false` to stop serving the bundled dashboard.
+The session cookie is `Secure` over HTTPS. `DASHBOARD_COOKIE_SECURE=auto` marks it
+`Secure` on plain HTTP too, unless the dashboard is opened as `localhost` or a loopback
+address: other hosts then sign in over HTTPS only. `DASHBOARD_COOKIE_SECURE=true` always
+marks it `Secure`; `false` (the default) only over HTTPS.
 
 ## Configuration
 

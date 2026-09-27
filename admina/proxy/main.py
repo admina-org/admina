@@ -816,8 +816,12 @@ def _live_feed_session_expiry(
 
 
 def _session_cookie_secure(request: Request) -> bool:
-    """Mark the session cookie ``Secure`` on HTTPS or when forced by config."""
-    return settings.DASHBOARD_COOKIE_SECURE or request.url.scheme == "https"
+    """The ``Secure`` flag of the session cookie (DASHBOARD_COOKIE_SECURE)."""
+    return dashboard_session.cookie_secure(
+        settings.DASHBOARD_COOKIE_SECURE,
+        scheme=request.url.scheme,
+        host=request.url.hostname,
+    )
 
 
 _NO_STORE = {"Cache-Control": "no-store"}
