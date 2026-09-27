@@ -126,7 +126,10 @@ ci-python:
 	printf '\nPython test summary (-m "not benchmark"):\n%b' "$$summary"; \
 	exit $$failed
 
+# The rust-tests job of ci.yml, preceded by the rustfmt check that the
+# cargo-fmt pre-commit hook runs.
 ci-rust:
+	cd core-rust && cargo fmt --all -- --check
 	cd core-rust && PYO3_PYTHON="$$(uv python find 3.11)" cargo test --lib
 	cd core-rust && PYO3_PYTHON="$$(uv python find 3.11)" cargo clippy -- -D warnings
 
@@ -192,7 +195,8 @@ help:
 	@echo "  make up         — Generate secrets + build + launch"
 	@echo "  make status     — Show engine status (rust/python)"
 	@echo "  make ci-local   — Run the CI checks locally (versions, ruff, bandit,"
-	@echo "                    pytest on 3.11/3.12/3.13, Rust tests + clippy, wheel)"
+	@echo "                    pytest on 3.11/3.12/3.13, rustfmt, Rust tests + clippy,"
+	@echo "                    wheel)"
 	@echo "  make ci-linux   — Run the Python test suite in a Linux container (Docker)"
 	@echo "  make ci-audit   — Audit Rust dependencies (cargo audit, needs network)"
 	@echo "  make clean      — Remove build artifacts"
