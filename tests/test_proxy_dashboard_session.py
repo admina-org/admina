@@ -121,6 +121,7 @@ def proxy_app(request, monkeypatch):
         loop_breaker=_FakeLoop(),
         router=MultiUpstreamRouter(default_upstream="http://upstream"),
         http_client=_FakeHTTP(),
+        gateway_http_client=_FakeHTTP(),
         redis=None,
         clickhouse=None,
         forensic_box=None,

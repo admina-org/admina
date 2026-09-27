@@ -92,6 +92,7 @@ def _settings(**over):
         GOVERNANCE_MODE="enforce",
         GUARD_FAIL_MODE="open",
         MAX_REQUEST_TOKENS=100000,
+        ADMINA_GATEWAY_TIMEOUT_TOTAL=0.0,
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -118,7 +119,7 @@ def _state(http, **over):
         egress_policy=None,
         governance_guards=[],
         forensic_box=None,
-        http_client=http,
+        gateway_http_client=http,
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -232,7 +233,7 @@ def test_chat_completions_nonstream_allow_upstream_unreachable_returns_502():
 
     resp = asyncio.run(go())
     assert resp.status_code == 502
-    assert resp.json()["detail"] == "Gateway upstream unreachable"
+    assert resp.json()["error"]["code"] == "upstream_error"
 
 
 # ── POST /v1/chat/completions — BLOCK ─────────────────────────
@@ -282,6 +283,9 @@ def test_chat_completions_stream_block_returns_synthetic_sse():
 
 
 class _FakeStreamCM:
+    status_code = 200
+    headers = {"content-type": "text/event-stream"}
+
     def __init__(self, lines):
         self._lines = lines
 
@@ -346,7 +350,7 @@ def test_chat_completions_stream_allow_upstream_unreachable_returns_502():
 
     resp = asyncio.run(go())
     assert resp.status_code == 502
-    assert resp.json()["detail"] == "Gateway upstream unreachable"
+    assert resp.json()["error"]["code"] == "upstream_error"
     assert http.last_stream is not None  # the connection attempt did happen
 
 

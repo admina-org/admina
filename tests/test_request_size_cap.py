@@ -146,6 +146,7 @@ class _Proxy:
             loop_breaker=_Loop(),
             router=MultiUpstreamRouter(default_upstream="http://mcp.upstream.test"),
             http_client=self.upstream,
+            gateway_http_client=self.upstream,
             forensic_box=self.forensic,
             governance_guards=[],
             alert_channels=[],

@@ -1,0 +1,15 @@
+{
+  "description": "reasoning_content deltas before the content deltas.",
+  "request": {
+    "stream": true
+  },
+  "chunks": [
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"The question asks for a greeting.\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\" One short sentence is enough.\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"! How can I help?\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\",\"stop_reason\":null}]}\n\n",
+    "data: [DONE]\n\n"
+  ]
+}

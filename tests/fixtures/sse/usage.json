@@ -1,0 +1,16 @@
+{
+  "description": "stream_options.include_usage: usage null on every chunk, then a final usage chunk with choices [].",
+  "request": {
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "chunks": [
+    "data: {\"id\":\"chatcmpl-0002\",\"object\":\"chat.completion.chunk\",\"created\":1767225601,\"model\":\"example-model\",\"system_fingerprint\":\"fp_example\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}],\"usage\":null}\n\n",
+    "data: {\"id\":\"chatcmpl-0002\",\"object\":\"chat.completion.chunk\",\"created\":1767225601,\"model\":\"example-model\",\"system_fingerprint\":\"fp_example\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Four words, no more.\"},\"logprobs\":null,\"finish_reason\":null}],\"usage\":null}\n\n",
+    "data: {\"id\":\"chatcmpl-0002\",\"object\":\"chat.completion.chunk\",\"created\":1767225601,\"model\":\"example-model\",\"system_fingerprint\":\"fp_example\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
+    "data: {\"id\":\"chatcmpl-0002\",\"object\":\"chat.completion.chunk\",\"created\":1767225601,\"model\":\"example-model\",\"system_fingerprint\":\"fp_example\",\"choices\":[],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":4,\"total_tokens\":13}}\n\n",
+    "data: [DONE]\n\n"
+  ]
+}

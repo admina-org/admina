@@ -1,0 +1,15 @@
+{
+  "description": "SSE comment lines (keep-alives) before and between the events.",
+  "request": {
+    "stream": true
+  },
+  "chunks": [
+    ": keep-alive\n\n",
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n",
+    ":\n\n",
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Still here.\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n",
+    ": keep-alive\n\n",
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\",\"stop_reason\":null}]}\n\n",
+    "data: [DONE]\n\n"
+  ]
+}

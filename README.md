@@ -413,6 +413,39 @@ key is set both directly and as a file, when a route is malformed or when
 representation and are not logged. The caller's `Authorization`, `X-API-Key`,
 `Cookie` and `X-Admina-Upstream` headers are not forwarded upstream.
 
+#### Upstream responses, errors and timeouts
+
+`ADMINA_GATEWAY_STREAM_MODE`, or `gateway.stream_mode` in `admina.yaml` (the
+environment variable wins), sets how streamed chat completions are relayed:
+
+| Mode | Behaviour |
+|---|---|
+| `passthrough` (default) | While no response transformation is active (`PII_REDACTION_ENABLED=false`), the client receives the upstream bytes unchanged, every field included, each SSE event as soon as it is complete. With PII redaction on, the gateway relays as in `governed`. |
+| `governed` | Each SSE chunk is parsed and re-serialised. |
+
+A non-streaming response is forwarded unchanged unless PII redaction is on;
+then the gateway parses it, and a successful response that is not a JSON
+object gets 502 (code `upstream_invalid_response`). An upstream error (4xx,
+5xx) reaches the client with its status, body and content type, streaming or
+not.
+
+The gateway talks to its upstreams through a client of its own:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `ADMINA_GATEWAY_TIMEOUT_CONNECT` | `30` | seconds to open a connection or get a free one from the pool |
+| `ADMINA_GATEWAY_TIMEOUT_READ` | `30` | seconds to wait for the next upstream bytes (and for each write of the request) |
+| `ADMINA_GATEWAY_TIMEOUT_TOTAL` | `0` | seconds for the whole upstream exchange, from the request to the last byte |
+| `ADMINA_GATEWAY_MAX_CONNECTIONS` | `100` | size of the connection pool |
+| `ADMINA_GATEWAY_MAX_KEEPALIVE_CONNECTIONS` | `20` | idle connections kept open |
+
+A timeout of `0` means no limit. A timeout before the response starts gets
+504, any other connection failure 502, both with an OpenAI-style body
+(`{"error": {"message", "type": "upstream_error", "param", "code"}}`, code
+`upstream_timeout` or `upstream_error`). A failure during a stream ends it
+with one `data: {"error": {...}}` event and no `data: [DONE]`. When the client
+disconnects, the gateway closes the upstream request.
+
 <a id="compliance-scope"></a>
 
 <details open>

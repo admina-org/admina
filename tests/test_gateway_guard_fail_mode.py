@@ -98,6 +98,7 @@ def _settings(**over):
         GOVERNANCE_MODE="enforce",
         GUARD_FAIL_MODE="open",
         MAX_REQUEST_TOKENS=100000,
+        ADMINA_GATEWAY_TIMEOUT_TOTAL=0.0,
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -124,7 +125,7 @@ def _state(http, **over):
         egress_policy=None,
         governance_guards=[_RaisingGuard()],
         forensic_box=None,
-        http_client=http,
+        gateway_http_client=http,
     )
     base.update(over)
     return SimpleNamespace(**base)

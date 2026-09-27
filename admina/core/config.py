@@ -37,7 +37,11 @@ except ImportError:  # pragma: no cover
     _HAS_YAML = False
 
 
-__all__ = ["AdminaConfig", "load_config"]
+__all__ = ["GATEWAY_STREAM_MODES", "AdminaConfig", "load_config"]
+
+# How the gateway relays streamed responses (``gateway.stream_mode`` and
+# ADMINA_GATEWAY_STREAM_MODE); the first one is the default.
+GATEWAY_STREAM_MODES = ("passthrough", "governed")
 
 # ── Section dataclasses ──────────────────────────────────────
 
@@ -226,6 +230,8 @@ class GatewayConfig:
     upstreams: dict[str, GatewayUpstreamConfig] = field(default_factory=dict)
     # Route used when a request names none; empty = the first route.
     default_upstream: str = ""
+    # One of GATEWAY_STREAM_MODES; empty = not set here.
+    stream_mode: str = ""
     # Shape errors found while parsing the section. Parsing never raises, so
     # the other readers of admina.yaml are unaffected; the proxy reports
     # these at startup and does not start.
@@ -323,7 +329,19 @@ def _parse_gateway(raw: Any) -> GatewayConfig:
     if default is not None and not isinstance(default, str):
         errors.append("gateway.default_upstream must be a route name")
         default = None
-    return GatewayConfig(upstreams=upstreams, default_upstream=default or "", errors=errors)
+
+    stream_mode = raw.get("stream_mode")
+    if stream_mode is not None:
+        stream_mode = stream_mode.strip().lower() if isinstance(stream_mode, str) else ""
+        if stream_mode not in GATEWAY_STREAM_MODES:
+            errors.append("gateway.stream_mode must be one of: " + " | ".join(GATEWAY_STREAM_MODES))
+            stream_mode = None
+    return GatewayConfig(
+        upstreams=upstreams,
+        default_upstream=default or "",
+        stream_mode=stream_mode or "",
+        errors=errors,
+    )
 
 
 def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:

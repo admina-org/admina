@@ -81,7 +81,7 @@ def _inject(monkeypatch, *, api_key: str, allow_unauth: bool):
         pii_redactor=_FakePII(),
         loop_breaker=_FakeLoop(),
         router=MultiUpstreamRouter(default_upstream="http://upstream"),
-        http_client=_FakeHTTP(),
+        gateway_http_client=_FakeHTTP(),
         redis=None,
         clickhouse=None,
         forensic_box=None,

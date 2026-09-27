@@ -22,6 +22,7 @@ from typing import Any
 from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from admina.core.config import GATEWAY_STREAM_MODES
 from admina.core.types import EventType, GovernanceAction, RiskLevel
 from admina.domains.governance import normalize_guard_fail_mode
 
@@ -178,6 +179,38 @@ class Settings(BaseSettings):
     # Optional comma-separated allow-list applied to GET /v1/models.
     # Empty = passthrough of the upstream's full model list.
     ADMINA_GATEWAY_MODELS_ALLOWLIST: str = ""
+    # How streamed chat completions (stream=true) are relayed:
+    #   "passthrough": the upstream bytes are forwarded unchanged, each SSE
+    #       event as soon as it is complete, while no response transformation
+    #       is active (PII_REDACTION_ENABLED=false); otherwise as "governed".
+    #   "governed": each SSE chunk is parsed, transformed and re-serialised.
+    # Empty = gateway.stream_mode of admina.yaml, else "passthrough".
+    ADMINA_GATEWAY_STREAM_MODE: str = ""
+    # Upstream timeouts of the gateway, in seconds (0 = no limit):
+    #   CONNECT: opening a connection, or waiting for a free one in the pool;
+    #   READ: waiting for the next bytes from the upstream (also bounds
+    #         each write of the request);
+    #   TOTAL: the whole upstream exchange, from sending the request to the
+    #          last byte of the response.
+    # A timeout before the response starts gets 504; during a stream, one
+    # SSE error event ends the stream (without data: [DONE]).
+    ADMINA_GATEWAY_TIMEOUT_CONNECT: float = Field(default=30.0, ge=0)
+    ADMINA_GATEWAY_TIMEOUT_READ: float = Field(default=30.0, ge=0)
+    ADMINA_GATEWAY_TIMEOUT_TOTAL: float = Field(default=0.0, ge=0)
+    # Connection pool of the gateway's upstream client (all routes).
+    ADMINA_GATEWAY_MAX_CONNECTIONS: int = Field(default=100, ge=1)
+    ADMINA_GATEWAY_MAX_KEEPALIVE_CONNECTIONS: int = Field(default=20, ge=0)
+
+    @field_validator("ADMINA_GATEWAY_STREAM_MODE")
+    @classmethod
+    def validate_gateway_stream_mode(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v and v not in GATEWAY_STREAM_MODES:
+            raise ValueError(
+                "ADMINA_GATEWAY_STREAM_MODE must be one of: "
+                f"{' | '.join(GATEWAY_STREAM_MODES)} (got {v!r})"
+            )
+        return v
 
     @field_validator("GOVERNANCE_MODE")
     @classmethod

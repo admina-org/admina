@@ -146,7 +146,7 @@ def _call(
                 egress_policy=None,
                 governance_guards=[],
                 forensic_box=forensic_box,
-                http_client=http,
+                gateway_http_client=http,
                 gateway_upstreams=upstreams,
             )
             app = FastAPI()

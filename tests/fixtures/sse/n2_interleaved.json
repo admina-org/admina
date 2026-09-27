@@ -1,0 +1,18 @@
+{
+  "description": "n=2: deltas of choices 0 and 1 interleaved, each with its own finish chunk.",
+  "request": {
+    "stream": true,
+    "n": 2
+  },
+  "chunks": [
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":1,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Red\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":1,\"delta\":{\"content\":\"Blue\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" apples\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":1,\"delta\":{\"content\":\" skies\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":1,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\",\"stop_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\",\"stop_reason\":null}]}\n\n",
+    "data: [DONE]\n\n"
+  ]
+}

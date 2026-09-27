@@ -140,7 +140,7 @@ def _gateway_state(http, policy, forensic_box=None) -> SimpleNamespace:
         egress_policy=policy,
         governance_guards=[],
         forensic_box=forensic_box,
-        http_client=http,
+        gateway_http_client=http,
     )
 
 
@@ -154,6 +154,7 @@ def _gateway_settings() -> SimpleNamespace:
         GOVERNANCE_MODE="enforce",
         GUARD_FAIL_MODE="open",
         MAX_REQUEST_TOKENS=100000,
+        ADMINA_GATEWAY_TIMEOUT_TOTAL=0.0,
     )
 
 

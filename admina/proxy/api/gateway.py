@@ -29,12 +29,26 @@ request header, or to the default route without it (see
 :mod:`admina.proxy.gateway_upstreams`). An unknown route name is answered
 with 400 before anything else happens. The upstream receives the route's
 own API key, if any, never the caller's credentials or headers.
+
+Upstream responses (stream mode, timeouts and connection pool: see
+:mod:`admina.proxy.gateway_transport`):
+
+- An upstream error (non-2xx) reaches the client with its status, body and
+  content type, streaming or not.
+- Without a response transformation (PII redaction off) a JSON body is
+  forwarded unchanged, and so is a stream in ``passthrough`` mode, each SSE
+  event as soon as it is complete. Otherwise each SSE chunk is parsed and
+  re-serialised (``governed``).
+- A timeout before the response starts gets 504, any other transport
+  failure 502, with an OpenAI-style error body. A failure during a stream
+  ends it with one ``data: {"error": ...}`` event and no ``data: [DONE]``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 import uuid
@@ -43,12 +57,15 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from admina.core.types import EventType
 from admina.domains.agent_security.egress import resolve_egress_mode
 from admina.domains.governance import redact_response_result, run_pipeline, safe_serialize
+from admina.proxy.gateway_transport import DEFAULT_STREAM_MODE, total_deadline
 from admina.proxy.gateway_upstreams import UPSTREAM_HEADER, GatewayUpstream, GatewayUpstreams
+
+logger = logging.getLogger("admina.proxy.gateway")
 
 # Longest X-Admina-Upstream value considered, as for X-Session-Id.
 _ROUTE_HEADER_MAX = 128
@@ -307,6 +324,140 @@ async def _record_forensic(
     )
 
 
+# ── Upstream exchange ────────────────────────────────────────
+
+# Error bodies (OpenAI format) for failures the gateway answers itself. They
+# never carry the exception text, which can name hosts and ports.
+_UPSTREAM_TIMEOUT = {
+    "message": "The upstream did not respond in time.",
+    "type": "upstream_error",
+    "param": None,
+    "code": "upstream_timeout",
+}
+_UPSTREAM_FAILED = {
+    "message": "The upstream connection failed.",
+    "type": "upstream_error",
+    "param": None,
+    "code": "upstream_error",
+}
+_UPSTREAM_INVALID = {
+    "message": "The upstream response could not be read.",
+    "type": "upstream_error",
+    "param": None,
+    "code": "upstream_invalid_response",
+}
+
+# End of an SSE event: a blank line, with any of the three line endings.
+_EVENT_ENDS = (b"\n\n", b"\r\r", b"\r\n\r\n")
+
+
+def _error_response(status: int, error: dict) -> JSONResponse:
+    return JSONResponse(status_code=status, content={"error": error})
+
+
+def _failure(route: GatewayUpstream, exc: Exception) -> tuple[int, dict]:
+    """Status and error body for a failed upstream exchange: 504 for a
+    timeout (httpx or the total deadline), 502 for any other failure."""
+    logger.warning("Gateway upstream %r failed: %s", route.name, type(exc).__name__)
+    if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+        return 504, _UPSTREAM_TIMEOUT
+    return 502, _UPSTREAM_FAILED
+
+
+def _failure_response(route: GatewayUpstream, exc: Exception) -> JSONResponse:
+    return _error_response(*_failure(route, exc))
+
+
+def _is_success(status: int) -> bool:
+    return 200 <= status < 300
+
+
+def _transforms_response(cfg: Any) -> bool:
+    """True when the gateway rewrites upstream responses (PII redaction)."""
+    return bool(cfg.PII_REDACTION_ENABLED)
+
+
+def _as_received(status: int, headers: Any, content: bytes) -> Response:
+    """The upstream response as received: status, body and content type."""
+    content_type = headers.get("content-type")
+    return Response(
+        content=content,
+        status_code=status,
+        headers={"content-type": content_type} if content_type else None,
+    )
+
+
+def _json_object(content: bytes) -> dict | None:
+    """*content* parsed as a JSON object, or None."""
+    try:
+        data = json.loads(content)
+    except ValueError:  # includes JSONDecodeError and UnicodeDecodeError
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _event_end(buf: bytearray, start: int) -> int:
+    """Offset just past the last blank line in *buf* at or after *start*;
+    0 when there is none."""
+    end = 0
+    for sep in _EVENT_ENDS:
+        at = buf.rfind(sep, start)
+        if at >= 0:
+            end = max(end, at + len(sep))
+    return end
+
+
+async def _sse_events(chunks: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    """Upstream bytes, unchanged, cut at SSE event boundaries.
+
+    Complete events are yielded as soon as their blank line arrives; bytes
+    after the last boundary wait for the next read. Whatever is left when
+    the body ends is yielded as it is.
+    """
+    pending = bytearray()
+    async for chunk in chunks:
+        if not chunk:
+            continue
+        # A boundary can straddle two reads: look back 3 bytes.
+        start = max(len(pending) - 3, 0)
+        pending += chunk
+        end = _event_end(pending, start)
+        if end:
+            yield bytes(pending[:end])
+            del pending[:end]
+    if pending:
+        yield bytes(pending)
+
+
+async def _relay(
+    chunks: AsyncIterator[Any],
+    stream_cm: Any,
+    deadline: float | None,
+    route: GatewayUpstream,
+) -> AsyncIterator[Any]:
+    """Send *chunks* on as they come, within the total *deadline*.
+
+    An upstream failure ends the stream with one ``data: {"error": ...}``
+    event and no ``data: [DONE]``. The upstream response is closed in every
+    case, also when the client goes away.
+    """
+    try:
+        iterator = aiter(chunks)
+        while True:
+            try:
+                async with asyncio.timeout_at(deadline):
+                    chunk = await anext(iterator)
+            except StopAsyncIteration:
+                return
+            except (TimeoutError, httpx.RequestError) as exc:
+                _status, error = _failure(route, exc)
+                yield _sse_format({"error": error})
+                return
+            yield chunk
+    finally:
+        await stream_cm.__aexit__(None, None, None)
+
+
 def create_gateway_endpoints(
     *,
     get_state: Any,
@@ -320,27 +471,33 @@ def create_gateway_endpoints(
     Args:
         get_state: Callable returning the ProxyState (firewall, pii_redactor,
             loop_breaker, egress_policy, governance_guards, forensic_box,
-            http_client, gateway_upstreams).
+            gateway_http_client, gateway_upstreams, gateway_stream_mode).
         get_settings: Callable returning the settings object.
     """
     router = APIRouter(prefix="/v1", tags=["gateway"])
 
     @router.get("/models", summary="List models (passthrough with optional allow-list)")
-    async def list_models(request: Request) -> JSONResponse:
+    async def list_models(request: Request) -> Response:
         state = get_state()
         cfg = get_settings()
         route = _select_upstream(request, state, cfg)
         if route is None:
             return _unknown_upstream()
-        url = f"{route.url}/models"
         try:
-            resp = await state.http_client.get(url, headers=route.auth_headers())
-        except httpx.ConnectError:
-            raise HTTPException(status_code=502, detail="Gateway upstream unreachable")
-        data = resp.json()
+            async with asyncio.timeout_at(total_deadline(cfg)):
+                resp = await state.gateway_http_client.get(
+                    f"{route.url}/models", headers=route.auth_headers()
+                )
+        except (TimeoutError, httpx.RequestError) as exc:
+            return _failure_response(route, exc)
         allow = [m.strip() for m in cfg.ADMINA_GATEWAY_MODELS_ALLOWLIST.split(",") if m.strip()]
-        if allow and isinstance(data.get("data"), list):
-            data["data"] = [m for m in data["data"] if m.get("id") in allow]
+        if not allow or not _is_success(resp.status_code):
+            return _as_received(resp.status_code, resp.headers, resp.content)
+        data = _json_object(resp.content)
+        if data is None:
+            return _error_response(502, _UPSTREAM_INVALID)
+        if isinstance(data.get("data"), list):
+            data["data"] = [m for m in data["data"] if isinstance(m, dict) and m.get("id") in allow]
         return JSONResponse(content=data, status_code=resp.status_code)
 
     @router.post("/chat/completions", summary="Governed OpenAI chat completions")
@@ -418,49 +575,65 @@ def create_gateway_endpoints(
         pii_count = pre.checks.get("pii_redaction", {}).get("count", 0)
         fwd_messages = pre.redacted_body["params"]["messages"] if pii_count > 0 else messages
         forward_body = {**body, "messages": fwd_messages}
+        client = state.gateway_http_client
+        deadline = total_deadline(cfg)
 
         if stream:
             forward_body["stream"] = True
 
-            if cfg.PII_REDACTION_ENABLED:
-                from admina.sdk.streaming import StreamRedactor
-
-                redactor = StreamRedactor(state.pii_redactor)
-            else:
-                redactor = _PassthroughRedactor()
-
-            # Open the upstream connection eagerly, before the
-            # StreamingResponse is constructed. Once the response is
-            # returned, Starlette sends the HTTP status line before pulling
-            # the first chunk from the body generator — so a ConnectError
-            # raised from *inside* the generator can no longer become a
-            # clean 502 (the 200 has already gone out). Entering the
-            # context manager here, synchronously, keeps the connect-time
-            # failure catchable, mirroring the non-streaming path below.
-            stream_cm = state.http_client.stream("POST", url, json=forward_body, headers=headers)
+            # Open the upstream response here, before the StreamingResponse
+            # exists: until the upstream has answered, a failure can still
+            # get a status of its own (504/502), and an upstream error keeps
+            # its status and body.
+            stream_cm = client.stream("POST", url, json=forward_body, headers=headers)
             try:
-                upstream_resp = await stream_cm.__aenter__()
-            except httpx.ConnectError:
-                raise HTTPException(status_code=502, detail="Gateway upstream unreachable")
+                async with asyncio.timeout_at(deadline):
+                    upstream = await stream_cm.__aenter__()
+            except (TimeoutError, httpx.RequestError) as exc:
+                return _failure_response(route, exc)
 
-            async def _proxy() -> AsyncIterator[str]:
+            if not _is_success(upstream.status_code):
                 try:
-                    async for sse in _governed_sse_stream(
-                        upstream_resp.aiter_lines(), redactor, model
-                    ):
-                        yield sse
+                    async with asyncio.timeout_at(deadline):
+                        content = await upstream.aread()
+                except (TimeoutError, httpx.RequestError) as exc:
+                    return _failure_response(route, exc)
                 finally:
                     await stream_cm.__aexit__(None, None, None)
+                return _as_received(upstream.status_code, upstream.headers, content)
 
-            return StreamingResponse(_proxy(), media_type="text/event-stream")
+            passthrough = getattr(
+                state, "gateway_stream_mode", DEFAULT_STREAM_MODE
+            ) == "passthrough" and not _transforms_response(cfg)
+            if passthrough:
+                chunks: AsyncIterator[Any] = _sse_events(upstream.aiter_bytes())
+                content_type = upstream.headers.get("content-type") or "text/event-stream"
+            else:
+                if cfg.PII_REDACTION_ENABLED:
+                    from admina.sdk.streaming import StreamRedactor
 
-        # non-streaming passthrough
+                    redactor = StreamRedactor(state.pii_redactor)
+                else:
+                    redactor = _PassthroughRedactor()
+                chunks = _governed_sse_stream(upstream.aiter_lines(), redactor, model)
+                content_type = "text/event-stream"
+            return StreamingResponse(
+                _relay(chunks, stream_cm, deadline, route),
+                status_code=upstream.status_code,
+                headers={"content-type": content_type},
+            )
+
         try:
-            resp = await state.http_client.post(url, json=forward_body, headers=headers)
-        except httpx.ConnectError:
-            raise HTTPException(status_code=502, detail="Gateway upstream unreachable")
-        data = resp.json()
-        if cfg.PII_REDACTION_ENABLED and isinstance(data.get("choices"), list):
+            async with asyncio.timeout_at(deadline):
+                resp = await client.post(url, json=forward_body, headers=headers)
+        except (TimeoutError, httpx.RequestError) as exc:
+            return _failure_response(route, exc)
+        if not (_transforms_response(cfg) and _is_success(resp.status_code)):
+            return _as_received(resp.status_code, resp.headers, resp.content)
+        data = _json_object(resp.content)
+        if data is None:
+            return _error_response(502, _UPSTREAM_INVALID)
+        if isinstance(data.get("choices"), list):
             data["choices"], _ = redact_response_result(data["choices"], state.pii_redactor)
         return JSONResponse(content=data, status_code=resp.status_code)
 

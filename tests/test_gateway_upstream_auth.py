@@ -147,7 +147,7 @@ def _state(http, upstreams, forensic_box=None) -> SimpleNamespace:
         egress_policy=None,
         governance_guards=[],
         forensic_box=forensic_box,
-        http_client=http,
+        gateway_http_client=http,
         gateway_upstreams=upstreams,
     )
 
@@ -604,7 +604,7 @@ def test_key_never_leaks_through_the_running_proxy(monkeypatch, tmp_path, caplog
         lifespan_app = FastAPI()
         async with proxy_main.lifespan(lifespan_app):
             state = lifespan_app.state.proxy
-            own_client = state.http_client
+            own_client = state.gateway_http_client
             state.auth_providers = []
             state.forensic_box = fbox
             proxy_main.app.state.proxy = state
@@ -631,11 +631,11 @@ def test_key_never_leaks_through_the_running_proxy(monkeypatch, tmp_path, caplog
                     ):
                         mock = httpx.MockTransport(handler)
                         async with httpx.AsyncClient(transport=mock) as http:
-                            state.http_client = http
+                            state.gateway_http_client = http
                             for kw in requests:
                                 responses.append(await c.request(**kw))
             finally:
-                state.http_client = own_client
+                state.gateway_http_client = own_client
             return responses
 
     try:

@@ -67,6 +67,7 @@ from admina.proxy.api.gateway import create_gateway_endpoints
 from admina.proxy.api.integration import create_integration_endpoints
 from admina.proxy.body_limit import BodyLimitMiddleware
 from admina.proxy.config import GovernanceEvent, settings
+from admina.proxy.gateway_transport import build_gateway_http_client, resolve_stream_mode
 from admina.proxy.gateway_upstreams import build_gateway_upstreams
 from admina.proxy.multi_upstream import MultiUpstreamRouter
 from admina.proxy.state import ProxyState
@@ -204,13 +205,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     # Gateway upstream routes and keys: resolved (key files read) once, here.
     # A misconfiguration raises and the proxy does not start.
-    gateway_upstreams = build_gateway_upstreams(
-        settings, _admina_config.gateway if _admina_config else None
-    )
+    gateway_config = _admina_config.gateway if _admina_config else None
+    gateway_upstreams = build_gateway_upstreams(settings, gateway_config)
 
     # Build ProxyState
     state = ProxyState(
         gateway_upstreams=gateway_upstreams,
+        gateway_stream_mode=resolve_stream_mode(settings, gateway_config),
         firewall=get_firewall(),
         pii_redactor=get_pii_engine(),
         loop_breaker=get_loop_breaker(
@@ -421,6 +422,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     # HTTP Client for upstream MCP
     state.http_client = httpx.AsyncClient(timeout=30.0)
+    # HTTP client of the gateway: its own timeouts and connection pool.
+    state.gateway_http_client = build_gateway_http_client(settings)
 
     # Multi-upstream router (for OpenClaw integration)
     routing_path = os.environ.get("ROUTING_CONFIG_PATH", "")
@@ -446,6 +449,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         ", ".join(gateway_upstreams.names()),
         gateway_upstreams.default,
     )
+    logger.info("  Gateway stream mode: %s", state.gateway_stream_mode)
     logger.info(
         "  Auth: %s",
         "ON" if settings.ADMINA_API_KEY else "OFF (set ADMINA_API_KEY for production)",
@@ -470,6 +474,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         await state.redis.close()
     if state.http_client:
         await state.http_client.aclose()
+    if state.gateway_http_client:
+        await state.gateway_http_client.aclose()
     logger.info("Admina Proxy stopped")
 
 

@@ -218,6 +218,11 @@ gateway:
   #   main: { url: "http://main.upstream.test/v1", api_key_file: /run/secrets/upstream_api_key }
   #   util: { url: "http://util.upstream.test/v1", api_key_file: /run/secrets/upstream_api_key }
   # default_upstream: main
+  # How streamed chat completions are relayed. passthrough (default): the
+  # upstream bytes, unchanged, while PII redaction is off (otherwise as
+  # governed); governed: each chunk parsed and re-serialised.
+  # ADMINA_GATEWAY_STREAM_MODE, when set, takes precedence.
+  # stream_mode: passthrough
 
 dashboard:
   # false: the proxy stops serving the bundled dashboard and its browser

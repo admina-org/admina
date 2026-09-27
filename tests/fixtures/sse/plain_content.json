@@ -1,0 +1,14 @@
+{
+  "description": "Content deltas, a finish chunk and [DONE]; one delta carries non-ASCII UTF-8 text.",
+  "request": {
+    "stream": true
+  },
+  "chunks": [
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"The quick brown fox\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" jumps over the lazy dog.\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\" Café, naïve, 東京.\"},\"logprobs\":null,\"finish_reason\":null}]}\n\n",
+    "data: {\"id\":\"chatcmpl-0001\",\"object\":\"chat.completion.chunk\",\"created\":1767225600,\"model\":\"example-model\",\"choices\":[{\"index\":0,\"delta\":{},\"logprobs\":null,\"finish_reason\":\"stop\",\"stop_reason\":null}]}\n\n",
+    "data: [DONE]\n\n"
+  ]
+}

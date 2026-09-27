@@ -30,6 +30,7 @@ from admina.domains.compliance.gdpr import ProcessingActivitiesRegistry
 from admina.domains.compliance.nis2 import NIS2Compliance
 from admina.domains.compliance.otel import OTELGovernanceExporter
 from admina.plugins.registry import PluginRegistry
+from admina.proxy.gateway_transport import DEFAULT_STREAM_MODE
 from admina.proxy.gateway_upstreams import GatewayUpstreams
 from admina.proxy.multi_upstream import MultiUpstreamRouter
 
@@ -44,7 +45,11 @@ class ProxyState:
     # Connections
     redis: aioredis.Redis | None = None
     clickhouse: Any = None
+    # Upstream client of /mcp and the dashboard's health checks.
     http_client: httpx.AsyncClient | None = None
+    # Upstream client of the OpenAI-compatible gateway: its own timeouts
+    # and connection pool (admina.proxy.gateway_transport).
+    gateway_http_client: httpx.AsyncClient | None = None
 
     # Governance engines (set by engine_bridge)
     firewall: Any = None
@@ -62,6 +67,8 @@ class ProxyState:
     router: MultiUpstreamRouter | None = None
     # Upstream routes of the OpenAI-compatible gateway, resolved at startup.
     gateway_upstreams: GatewayUpstreams | None = None
+    # How the gateway relays streamed responses, resolved at startup.
+    gateway_stream_mode: str = DEFAULT_STREAM_MODE
     registry: PluginRegistry = field(default_factory=PluginRegistry)
 
     # Plugins
