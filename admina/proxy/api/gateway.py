@@ -40,6 +40,11 @@ or whose pipeline raises, is blocked in every governance mode and recorded
 with ``checks["pipeline"]``. A guard contract error is handled inside the
 pipeline, as ``ADMINA_GUARD_FAIL_MODE`` says.
 
+PII redaction of the completions (see below) runs in the same worker threads
+and time budget. A non-streaming completion whose redaction does not finish
+(over the budget, or raising) is replaced by the block message; a stream
+whose redaction does not finish ends with one ``data: {"error": ...}`` event.
+
 With ``ADMINA_GATEWAY_SCAN_RESPONSE`` the firewall also checks the completion
 text (see :mod:`admina.proxy.gateway_response_scan`): a non-streaming
 completion before it is returned, blocked when flagged in enforce mode; a
@@ -73,8 +78,8 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Coroutine
-from functools import cache
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
+from functools import cache, partial
 from typing import Any
 
 import httpx
@@ -165,6 +170,11 @@ def _default_executor() -> PipelineExecutor:
     return PipelineExecutor()
 
 
+def _executor(state: Any) -> PipelineExecutor:
+    """The worker threads built at startup, or a default pool."""
+    return getattr(state, "pipeline_executor", None) or _default_executor()
+
+
 async def _govern(
     state: Any,
     cfg: Any,
@@ -180,11 +190,10 @@ async def _govern(
     here: the pipeline handles them itself, as ``ADMINA_GUARD_FAIL_MODE``
     says.)
     """
-    executor = getattr(state, "pipeline_executor", None) or _default_executor()
     budget = cfg.ADMINA_GATEWAY_PIPELINE_TIMEOUT
     started = time.perf_counter()
     try:
-        return await executor.run_coroutine(pipeline, timeout=budget)
+        return await _executor(state).run_coroutine(pipeline, timeout=budget)
     except PipelineTimeout:
         logger.warning("Gateway governance exceeded its time budget (%g s): blocked", budget)
         check: dict[str, Any] = {
@@ -203,6 +212,24 @@ async def _govern(
         request_id=request_id,
         latency_ms=(time.perf_counter() - started) * 1000,
     )
+
+
+async def _redacted(state: Any, cfg: Any, job: Callable[[], Any]) -> Any:
+    """The result of the redaction *job*, run in the worker threads within
+    the time budget; None when it ran over the budget or raised."""
+    budget = cfg.ADMINA_GATEWAY_PIPELINE_TIMEOUT
+    try:
+        return await _executor(state).run(job, timeout=budget)
+    except PipelineTimeout:
+        logger.warning("Gateway completion redaction exceeded its time budget (%g s)", budget)
+    except Exception as exc:  # noqa: BLE001 — the unredacted text is not sent
+        logger.error("Gateway completion redaction failed: %s", type(exc).__name__)
+        logger.debug("Gateway completion redaction failure", exc_info=True)
+    return None
+
+
+async def _inline(job: Callable[[], Any]) -> Any:
+    return job()
 
 
 def _error(message: str, error_type: str, code: str) -> dict:
@@ -552,8 +579,32 @@ class _StreamedText:
         return item
 
 
+# Last event of a stream whose redaction did not finish.
+_RESPONSE_NOT_REDACTED = _error(
+    "The response could not be redacted.", "server_error", "response_redaction_failed"
+)
+
+
+def _governed_events(text: _StreamedText, line: str) -> list[str]:
+    """The SSE events to send for one upstream *line*."""
+    if line.startswith(":"):
+        return [f"{text.comment(line.rstrip())}\n\n"]
+    if line[len("data:") :].strip() == "[DONE]":
+        return [*_remainder_events(text), "data: [DONE]\n\n"]
+    chunk = _parse_sse_data(line)
+    return [] if chunk is None else [_sse_format(text.chunk(chunk))]
+
+
+def _remainder_events(text: _StreamedText) -> list[str]:
+    """A last chunk with the text still held back, if any."""
+    last = text.remainder()
+    return [] if last is None else [_sse_format(last)]
+
+
 async def _governed_sse_stream(
-    lines: AsyncIterator[str], pii_redactor: Any = None
+    lines: AsyncIterator[str],
+    pii_redactor: Any = None,
+    redact: Callable[[Callable[[], list[str]]], Awaitable[list[str] | None]] | None = None,
 ) -> AsyncIterator[str]:
     """Re-emit upstream SSE lines as governed SSE, one chunk per chunk.
 
@@ -563,26 +614,29 @@ async def _governed_sse_stream(
     data that is not a JSON object is dropped. ``data: [DONE]`` is forwarded when the
     upstream sends it, after a chunk with any text still held back; a
     stream that ends without it gets only that chunk.
+
+    With a redactor, the events of each line are built by *redact* (the
+    gateway runs them in its worker threads, see :func:`_redacted`), or in
+    place without it. When *redact* returns None the stream ends there, with
+    one ``data: {"error": ...}`` event and none of that line's text.
     """
     text = _StreamedText(pii_redactor)
+    run = redact if redact is not None and pii_redactor is not None else _inline
     async for line in lines:
-        if line.startswith(":"):
-            yield f"{text.comment(line.rstrip())}\n\n"
+        if not line.startswith((":", "data:")):
             continue
-        if not line.startswith("data:"):
-            continue
-        if line[len("data:") :].strip() == "[DONE]":
-            last = text.remainder()
-            if last is not None:
-                yield _sse_format(last)
-            yield "data: [DONE]\n\n"
-            continue
-        chunk = _parse_sse_data(line)
-        if chunk is not None:
-            yield _sse_format(text.chunk(chunk))
-    last = text.remainder()
-    if last is not None:
-        yield _sse_format(last)
+        events = await run(partial(_governed_events, text, line))
+        if events is None:
+            yield _sse_format({"error": _RESPONSE_NOT_REDACTED})
+            return
+        for event in events:
+            yield event
+    events = await run(partial(_remainder_events, text))
+    if events is None:
+        yield _sse_format({"error": _RESPONSE_NOT_REDACTED})
+        return
+    for event in events:
+        yield event
 
 
 async def _record_forensic(
@@ -910,7 +964,9 @@ async def _chat_completion(
             content_type = upstream.headers.get("content-type") or "text/event-stream"
         else:
             pii = state.pii_redactor if cfg.PII_REDACTION_ENABLED else None
-            chunks = _governed_sse_stream(upstream.aiter_lines(), pii)
+            chunks = _governed_sse_stream(
+                upstream.aiter_lines(), pii, partial(_redacted, state, cfg)
+            )
             content_type = "text/event-stream"
         scan = None
         if _scans_response(cfg):
@@ -960,9 +1016,10 @@ async def _chat_completion(
     data = _json_object(resp.content)
     if data is None:
         return _error_response(502, _UPSTREAM_INVALID)
-    return JSONResponse(
-        content=_redacted_completion(data, state.pii_redactor), status_code=resp.status_code
-    )
+    redacted = await _redacted(state, cfg, partial(_redacted_completion, data, state.pii_redactor))
+    if redacted is None:
+        return JSONResponse(content=_synthetic_completion(model, block_message))
+    return JSONResponse(content=redacted, status_code=resp.status_code)
 
 
 def create_gateway_endpoints(

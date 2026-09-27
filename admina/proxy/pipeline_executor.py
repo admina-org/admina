@@ -15,8 +15,9 @@
 """Bounded pool of worker threads for the governance pipeline.
 
 The gateway runs the pipeline (firewall, PII redaction, egress analysis,
-governance guards) here, so that scanning a long prompt does not hold up
-the event loop that serves every other request and stream.
+governance guards) and the PII redaction of completions here, so that
+scanning a long prompt does not hold up the event loop that serves every
+other request and stream.
 
 - At most ``workers`` jobs run at once; further jobs wait for a free thread.
   The threads, each with its event loop, start with the executor, not on

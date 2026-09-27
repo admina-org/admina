@@ -216,7 +216,8 @@ class Settings(BaseSettings):
     # such caller is trusted to scan what it declares as scanned.
     ADMINA_GATEWAY_SCAN_POLICY_ENABLED: bool = False
     # The gateway runs the governance pipeline (firewall, PII redaction,
-    # guards) in a pool of worker threads, off the event loop.
+    # guards) and the PII redaction of completions in a pool of worker
+    # threads, off the event loop.
     #   WORKERS: threads in the pool, the most requests governed at once
     #       (0 = the number of CPUs); further requests wait for a thread.
     #   TIMEOUT: seconds a request waits for its governance decision, the

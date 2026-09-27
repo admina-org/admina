@@ -24,6 +24,9 @@ threads, with a per-request time budget.
 - A request whose pipeline raises is blocked and recorded, in every
   governance mode. ``ADMINA_GUARD_FAIL_MODE`` still decides what a guard
   contract error does, which the pipeline handles itself.
+- PII redaction of completions, streamed or not, runs in the worker threads
+  too, within the time budget: a completion whose redaction does not finish
+  is never sent as it is.
 """
 
 from __future__ import annotations
@@ -38,7 +41,15 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from _gateway_stream import FakeFirewall, FakePII, MockUpstream, settings, through
+from _gateway_stream import (
+    EMAIL,
+    FakeFirewall,
+    FakePII,
+    MockUpstream,
+    post_through,
+    settings,
+    through,
+)
 
 SLOW = "slow marker"
 _COMPLETION = {
@@ -393,6 +404,161 @@ def test_guards_run_off_the_event_loop_thread():
     resp = through(_upstream(), _body("hello"), state={"governance_guards": [guard]})
     assert not _blocked(resp)
     assert guard.on_main_thread is False
+
+
+# ── Completion redaction runs in the worker threads ──────────
+
+ANSWER = "answer marker"
+
+
+class _AnswerPII(FakePII):
+    """Redacts :data:`EMAIL`; records the threads it ran on. On text with
+    :data:`ANSWER` it sleeps *delay* seconds, or raises when *fail*."""
+
+    def __init__(self, delay: float = 0.0, fail: bool = False) -> None:
+        self.delay = delay
+        self.fail = fail
+        self.threads: set[str] = set()
+        self._lock = threading.Lock()
+
+    def redact(self, text: str) -> dict:
+        with self._lock:
+            self.threads.add(threading.current_thread().name)
+        if ANSWER in text:
+            if self.fail:
+                raise KeyError("redaction failure")
+            time.sleep(self.delay)
+        return super().redact(text)
+
+
+def _answer_completion() -> MockUpstream:
+    completion = {
+        **_COMPLETION,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": f"{ANSWER}: write to {EMAIL}"},
+                "finish_reason": "stop",
+            }
+        ],
+    }
+    return MockUpstream([json.dumps(completion).encode()], content_type="application/json")
+
+
+def _answer_stream() -> MockUpstream:
+    def event(content: str, finish: str | None = None) -> bytes:
+        chunk = {
+            "id": "c1",
+            "object": "chat.completion.chunk",
+            "model": "example-model",
+            "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": finish}],
+        }
+        return f"data: {json.dumps(chunk)}\n\n".encode()
+
+    return MockUpstream(
+        [
+            b": keep-alive\n\n",
+            event("The first part. " * 10),  # longer than the redaction window
+            event(f"{ANSWER}: write to {EMAIL} "),
+            event("today.", "stop"),
+            b"data: [DONE]\n\n",
+        ]
+    )
+
+
+def _redacting(**over):
+    return settings(PII_REDACTION_ENABLED=True, **over)
+
+
+def _run_with_gap(coro_factory):
+    """The result of the coroutine and the largest event loop stall while
+    it ran."""
+
+    async def scenario():
+        stop = asyncio.Event()
+        gap = asyncio.create_task(_largest_gap(stop))
+        await asyncio.sleep(0.01)
+        try:
+            return await coro_factory(), gap
+        finally:
+            stop.set()
+
+    async def main():
+        result, gap = await scenario()
+        return result, await gap
+
+    return asyncio.run(main())
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_completion_redaction_runs_off_the_event_loop(stream):
+    pii = _AnswerPII(delay=0.3)
+    upstream = _answer_stream() if stream else _answer_completion()
+    resp, largest_gap = _run_with_gap(
+        lambda: post_through(
+            upstream,
+            _body("hello", stream=stream),
+            _redacting(),
+            stream_mode="governed",
+            state={"pii_redactor": pii},
+        )
+    )
+    assert resp.status_code == 200
+    assert EMAIL not in resp.text
+    assert "[EMAIL]" in resp.text
+    assert threading.main_thread().name not in pii.threads
+    assert all(name.startswith("admina-pipeline") for name in pii.threads)
+    assert largest_gap < 0.1, largest_gap
+
+
+def test_completion_redaction_over_the_budget_is_not_returned():
+    upstream = _answer_completion()
+    resp = through(
+        upstream,
+        _body("hello"),
+        _redacting(ADMINA_GATEWAY_PIPELINE_TIMEOUT=0.1),
+        state={"pii_redactor": _AnswerPII(delay=0.6)},
+    )
+    assert len(upstream.requests) == 1
+    assert _blocked(resp)
+    assert ANSWER not in resp.text
+    assert EMAIL not in resp.text
+
+
+def test_completion_redaction_error_is_not_returned():
+    upstream = _answer_completion()
+    resp = through(
+        upstream, _body("hello"), _redacting(), state={"pii_redactor": _AnswerPII(fail=True)}
+    )
+    assert _blocked(resp)
+    assert EMAIL not in resp.text
+
+
+@pytest.mark.parametrize(
+    ("over", "pii"),
+    [
+        ({"ADMINA_GATEWAY_PIPELINE_TIMEOUT": 0.1}, _AnswerPII(delay=0.6)),
+        ({}, _AnswerPII(fail=True)),
+    ],
+    ids=["over-the-budget", "error"],
+)
+def test_stream_redaction_failure_ends_the_stream(over, pii):
+    resp = through(
+        _answer_stream(),
+        _body("hello", stream=True),
+        _redacting(**over),
+        stream_mode="governed",
+        state={"pii_redactor": pii},
+    )
+    assert resp.status_code == 200
+    events = [e for e in resp.text.split("\n\n") if e]
+    assert "The first part." in resp.text
+    assert EMAIL not in resp.text
+    assert ANSWER not in resp.text
+    assert "today." not in resp.text
+    assert "data: [DONE]" not in events
+    last = json.loads(events[-1].removeprefix("data: "))
+    assert last["error"]["code"] == "response_redaction_failed"
 
 
 # ── PipelineExecutor ──────────────────────────────────────────

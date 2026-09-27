@@ -461,8 +461,8 @@ disconnects, the gateway closes the upstream request.
 #### Governance pipeline threads and time budget
 
 The gateway runs the governance pipeline (firewall, PII redaction, egress
-analysis, governance guards) in a pool of worker threads, so that scanning one
-request does not hold up the others:
+analysis, governance guards) and the PII redaction of completions in a pool of
+worker threads, so that scanning one request does not hold up the others:
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -480,6 +480,14 @@ since its checks may not have run; the record has `checks.pipeline =
 (`ValueError`, `RuntimeError`, `OSError` or `TypeError` from a guard) is
 handled inside the pipeline and follows `ADMINA_GUARD_FAIL_MODE`, as on the
 other surfaces.
+
+With PII redaction on, the redaction of each completion, and of each line of
+a stream, runs in the worker threads within the same time budget. A
+non-streaming completion whose redaction runs over the budget or raises is
+replaced by the block message (`finish_reason: "content_filter"`); a stream
+whose redaction runs over the budget or raises ends with one
+`data: {"error": {...}}` event (code `response_redaction_failed`) and no
+`data: [DONE]`. The text of that completion or line is not sent.
 Governance guards run in the worker threads too, each thread with an event loop
 of its own.
 
