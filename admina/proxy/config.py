@@ -19,13 +19,16 @@ Admina — Configuration & Data Models
 import warnings
 from typing import Any
 
-from pydantic import BaseModel, Field, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from admina.core.config import GATEWAY_STREAM_MODES
+from admina.core.secretfile import resolve_secret
 from admina.core.types import EventType, GovernanceAction, RiskLevel
 from admina.domains.agent_security.scan_policy import SCAN_ROLES, parse_scan_roles
 from admina.domains.governance import normalize_guard_fail_mode
+from admina.proxy.log_format import LOG_FORMATS
+from admina.proxy.surfaces import parse_surfaces
 
 
 # ── Environment Config ──────────────────────────────────────
@@ -34,6 +37,8 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        # Validation errors name the setting, never its value (keys included).
+        hide_input_in_errors=True,
     )
 
     # Storage
@@ -88,12 +93,19 @@ class Settings(BaseSettings):
     # Proxy
     UPSTREAM_MCP_URL: str = "http://localhost:9000"
     LOG_LEVEL: str = "INFO"
+    # Log output: "text" (default) or "json", one JSON object per line with
+    # timestamp, level, logger, message and, if any, the exception text.
+    ADMINA_LOG_FORMAT: str = LOG_FORMATS[0]
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:8080"
 
     # Auth — set a strong random key in production: openssl rand -hex 32
     # If empty, protected routes are refused (fail-closed) unless
     # ALLOW_UNAUTHENTICATED=true is set explicitly (local development only).
     ADMINA_API_KEY: str = ""
+    # Or a file holding the key (a Docker or Kubernetes secret, for example):
+    # read once at startup, one trailing newline removed. Set the key or the
+    # file, not both; a missing, unreadable or empty file stops the proxy.
+    ADMINA_API_KEY_FILE: str = ""
     ALLOW_UNAUTHENTICATED: bool = False
     # Force the `Secure` flag on the dashboard session cookie. The flag is
     # already set automatically when the request arrives over HTTPS; set
@@ -110,6 +122,21 @@ class Settings(BaseSettings):
     ADMINA_DASHBOARD_SESSION_TTL: int = Field(default=3600, ge=60, le=43200)
     # Public OpenAPI documentation (/docs, /redoc, /openapi.json).
     ADMINA_API_DOCS_ENABLED: bool = True
+    # true: the OpenAPI documentation needs the API key, like every other
+    # route (default false: public).
+    ADMINA_API_DOCS_REQUIRE_AUTH: bool = False
+    # true: GET /metrics needs the API key (default false: public).
+    ADMINA_METRICS_REQUIRE_AUTH: bool = False
+    # Surfaces the proxy serves, comma-separated (empty = all of them):
+    #   gateway      /v1/* (OpenAI-compatible gateway)
+    #   mcp          /mcp, /mcp/*
+    #   integration  /api/v1/*
+    #   compliance   /api/compliance/*
+    #   dashboard    /api/dashboard/*, /api/stats, /api/events, the dashboard
+    #                shell (/, /vendor/*) and its browser sign-in
+    # A disabled surface answers 404 (before authentication) and its routes
+    # are not mounted. /health and /metrics are always served.
+    ADMINA_ENABLED_SURFACES: str = ""
 
     # Rate limiting (per session, requires Redis)
     RATE_LIMIT_MAX_REQUESTS: int = 100  # requests per window
@@ -232,6 +259,21 @@ class Settings(BaseSettings):
     # is scanned when the stream ends and the result is only recorded.
     ADMINA_GATEWAY_SCAN_RESPONSE: bool = False
 
+    @field_validator("ADMINA_ENABLED_SURFACES")
+    @classmethod
+    def validate_enabled_surfaces(cls, v: str) -> str:
+        return ",".join(parse_surfaces(v))
+
+    @field_validator("ADMINA_LOG_FORMAT")
+    @classmethod
+    def validate_log_format(cls, v: str) -> str:
+        v = v.strip().lower() or LOG_FORMATS[0]
+        if v not in LOG_FORMATS:
+            raise ValueError(
+                f"ADMINA_LOG_FORMAT must be one of: {' | '.join(LOG_FORMATS)} (got {v!r})"
+            )
+        return v
+
     @field_validator("ADMINA_GATEWAY_SCAN_ROLES")
     @classmethod
     def validate_gateway_scan_roles(cls, v: str) -> str:
@@ -299,12 +341,27 @@ class Settings(BaseSettings):
     @field_validator("ADMINA_API_KEY")
     @classmethod
     def warn_short_api_key(cls, v: str) -> str:
-        if v and len(v) < 16:
-            warnings.warn(
-                "ADMINA_API_KEY is shorter than 16 characters — use a stronger key in production",
-                stacklevel=2,
-            )
+        _warn_if_short_api_key(v)
         return v
+
+    @model_validator(mode="after")
+    def read_api_key_file(self) -> "Settings":
+        """Take ADMINA_API_KEY from ADMINA_API_KEY_FILE when that is set."""
+        if self.ADMINA_API_KEY_FILE:
+            key = resolve_secret(
+                self.ADMINA_API_KEY, self.ADMINA_API_KEY_FILE, setting="ADMINA_API_KEY"
+            )
+            _warn_if_short_api_key(key or "")
+            self.ADMINA_API_KEY = key or ""
+        return self
+
+
+def _warn_if_short_api_key(key: str) -> None:
+    if key and len(key) < 16:
+        warnings.warn(
+            "ADMINA_API_KEY is shorter than 16 characters — use a stronger key in production",
+            stacklevel=3,
+        )
 
 
 settings = Settings()

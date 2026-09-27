@@ -19,10 +19,9 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
-import redis.asyncio as aioredis
 
 from admina.domains.compliance.eu_ai_act import EUAIActCompliance
 from admina.domains.compliance.forensic import ForensicBlackBox
@@ -36,6 +35,10 @@ from admina.proxy.gateway_upstreams import GatewayUpstreams
 from admina.proxy.loop_lag import EventLoopLagMonitor
 from admina.proxy.multi_upstream import MultiUpstreamRouter
 from admina.proxy.pipeline_executor import PipelineExecutor
+
+if TYPE_CHECKING:
+    # Only for the annotation: redis is imported when REDIS_URL is set.
+    import redis.asyncio as aioredis
 
 
 @dataclass

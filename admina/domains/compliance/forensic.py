@@ -22,11 +22,13 @@ import hmac
 import json
 import logging
 import os
+import tempfile
 import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from admina.core.secretfile import secret_from_env
 from admina.plugins.base import BaseForensicStore
 
 logger = logging.getLogger("admina.forensic_blackbox")
@@ -67,7 +69,8 @@ class ForensicBlackBox(BaseForensicStore):
         # Retry policy for transient S3 errors
         s3_max_retries: int = 5,
         s3_base_delay_s: float = 0.2,
-        # Optional HMAC key for the chain-state file (else ADMINA_FORENSIC_STATE_KEY)
+        # Optional HMAC key for the chain-state file (else ADMINA_FORENSIC_STATE_KEY,
+        # or the file named by ADMINA_FORENSIC_STATE_KEY_FILE)
         state_signing_key: str | None = None,
     ):
         self.boto3_client = boto3_client
@@ -81,7 +84,9 @@ class ForensicBlackBox(BaseForensicStore):
         self.chain_head: str = "GENESIS"
         self.record_count: int = 0
         self._write_lock = threading.Lock()
-        self._state_signing_key = state_signing_key or os.environ.get("ADMINA_FORENSIC_STATE_KEY")
+        # Result of the last record write to S3 (None before the first one).
+        self._s3_last_write_ok: bool | None = None
+        self._state_signing_key = state_signing_key or secret_from_env("ADMINA_FORENSIC_STATE_KEY")
         if self.filesystem_dir is not None:
             self.filesystem_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_bucket()
@@ -377,12 +382,14 @@ class ForensicBlackBox(BaseForensicStore):
                 put_kwargs["ObjectLockRetainUntilDate"] = retain_until
             try:
                 self._s3_call(self.boto3_client.put_object, **put_kwargs)
+                self._s3_last_write_ok = True
                 logger.debug(
                     "Stored forensic record (S3%s): %s",
                     " + lock" if self.s3_object_lock else "",
                     key,
                 )
             except Exception:  # noqa: BLE001
+                self._s3_last_write_ok = False
                 logger.exception("Failed to store forensic record %s", key)
             return
         if self.filesystem_dir is not None:
@@ -395,6 +402,20 @@ class ForensicBlackBox(BaseForensicStore):
                 logger.exception("Failed to write forensic record %s", path)
             return
         # No backend → in-memory only, nothing to do
+
+    def writable(self) -> bool | None:
+        """Whether the backend accepts writes.
+
+        - filesystem: a probe file is created in the directory, written,
+          fsynced and removed; ``False`` when any of it fails;
+        - S3: the result of the last record write, ``None`` before the first;
+        - in-memory: ``None`` (nothing is persisted).
+        """
+        if self.boto3_client is not None:
+            return self._s3_last_write_ok
+        if self.filesystem_dir is None:
+            return None
+        return _probe_directory(self.filesystem_dir)
 
     def verify_records(self, records: list[dict]) -> dict:
         """
@@ -535,3 +556,24 @@ class ForensicBlackBox(BaseForensicStore):
             "chain_head": self.chain_head[:16] + "...",
             "storage_available": (self.boto3_client is not None or self.filesystem_dir is not None),
         }
+
+
+def _probe_directory(directory: Path) -> bool:
+    """Create, write, fsync and remove a probe file in *directory*."""
+    try:
+        fd, name = tempfile.mkstemp(prefix=".write-probe-", suffix=".tmp", dir=directory)
+    except OSError:
+        return False
+    ok = True
+    try:
+        os.write(fd, b"probe")
+        os.fsync(fd)
+    except OSError:
+        ok = False
+    finally:
+        os.close(fd)
+    try:
+        os.unlink(name)
+    except OSError:
+        ok = False
+    return ok

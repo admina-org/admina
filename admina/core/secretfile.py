@@ -26,9 +26,10 @@ Error messages name the setting and the file path, never the content.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
-__all__ = ["SecretFileError", "read_secret_file", "resolve_secret"]
+__all__ = ["SecretFileError", "read_secret_file", "resolve_secret", "secret_from_env"]
 
 
 class SecretFileError(ValueError):
@@ -87,6 +88,18 @@ def resolve_secret(value: str | None, file_path: str | None, *, setting: str) ->
     if file_path:
         return read_secret_file(file_path, setting=f"{setting}_FILE")
     return value or None
+
+
+def secret_from_env(setting: str, environ: Mapping[str, str] | None = None) -> str | None:
+    """Return the secret of the environment variable *setting* or of the
+    file named by ``<setting>_FILE`` (see :func:`resolve_secret`).
+
+    Args:
+        setting: Name of the variable, for example ``"ADMINA_FORENSIC_STATE_KEY"``.
+        environ: Variables to read; defaults to ``os.environ``.
+    """
+    env = os.environ if environ is None else environ
+    return resolve_secret(env.get(setting), env.get(f"{setting}_FILE"), setting=setting)
 
 
 def _decode(raw: bytes) -> str | None:

@@ -33,10 +33,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import clickhouse_connect
 import httpx
-import redis.asyncio as aioredis
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -74,9 +72,11 @@ from admina.proxy.gateway_scan import (
 )
 from admina.proxy.gateway_transport import build_gateway_http_client, resolve_stream_mode
 from admina.proxy.gateway_upstreams import build_gateway_upstreams
+from admina.proxy.log_format import configure_logging
 from admina.proxy.multi_upstream import MultiUpstreamRouter
 from admina.proxy.pipeline_executor import PipelineExecutor
 from admina.proxy.state import ProxyState
+from admina.proxy.surfaces import parse_surfaces, surface_of
 
 # ── Admina config (for OISG score) ──────────────────────────
 try:
@@ -97,11 +97,40 @@ def _validate_identifier(name: str, label: str = "identifier") -> None:
 
 
 # ── Logging ──────────────────────────────────────────────────
-logging.basicConfig(
-    level=getattr(logging, settings.LOG_LEVEL),
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-)
+configure_logging(settings.LOG_LEVEL, settings.ADMINA_LOG_FORMAT)
 logger = logging.getLogger("admina.proxy")
+
+
+# ── Surfaces ─────────────────────────────────────────────────
+def enabled_surfaces() -> tuple[str, ...]:
+    """The surfaces ADMINA_ENABLED_SURFACES switches on (see admina.proxy.surfaces)."""
+    return parse_surfaces(settings.ADMINA_ENABLED_SURFACES)
+
+
+# Surfaces whose routes are mounted: fixed when the app is built.
+_MOUNTED_SURFACES = enabled_surfaces()
+
+# The surfaces that run the loop breaker.
+_LOOP_BREAKER_SURFACES = frozenset({"mcp", "integration"})
+
+
+# ── Optional backends ────────────────────────────────────────
+# redis, clickhouse_connect and boto3 are imported only when their backend
+# is configured, so a proxy without them installed starts as long as they
+# are not configured.
+def _redis_errors() -> tuple[type[Exception], ...]:
+    """What a Redis call raises. Evaluated only by the ``except`` clause of
+    code that runs with a Redis client, so redis is installed by then."""
+    from redis.exceptions import RedisError
+
+    return (OSError, RedisError)
+
+
+def _clickhouse_errors() -> tuple[type[Exception], ...]:
+    """What a ClickHouse call raises (see :func:`_redis_errors`)."""
+    from clickhouse_connect.driver.exceptions import DatabaseError
+
+    return (OSError, DatabaseError)
 
 
 # ── Background tasks ─────────────────────────────────────────
@@ -213,6 +242,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # A misconfiguration raises and the proxy does not start.
     gateway_config = _admina_config.gateway if _admina_config else None
     gateway_upstreams = build_gateway_upstreams(settings, gateway_config)
+    surfaces = enabled_surfaces()
 
     # Build ProxyState
     state = ProxyState(
@@ -220,17 +250,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         gateway_stream_mode=resolve_stream_mode(settings, gateway_config),
         firewall=get_firewall(),
         pii_redactor=get_pii_engine(),
-        loop_breaker=get_loop_breaker(
-            window_size=settings.LOOP_WINDOW_SIZE,
-            similarity_threshold=settings.LOOP_SIMILARITY_THRESHOLD,
-            max_consecutive=settings.LOOP_MAX_CONSECUTIVE,
+        loop_breaker=(
+            _build_loop_breaker() if _LOOP_BREAKER_SURFACES.intersection(surfaces) else None
         ),
         egress_policy=get_egress_policy(),
         router=MultiUpstreamRouter(default_upstream=settings.UPSTREAM_MCP_URL),
     )
     # The ruleset of the firewall just built: its engine, admina.yaml rules.
     state.gateway_scan = build_gateway_scan_config(state.firewall, _admina_config)
-    state.pipeline_executor = PipelineExecutor(settings.ADMINA_GATEWAY_PIPELINE_WORKERS)
+    # The gateway's pipeline threads: started only when the gateway is served.
+    if "gateway" in surfaces:
+        state.pipeline_executor = PipelineExecutor(settings.ADMINA_GATEWAY_PIPELINE_WORKERS)
     state.loop_lag.start()
 
     # ── Plugin discovery ──────────────────────────────────────
@@ -306,24 +336,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         )
 
     # Redis — optional, skip gracefully if URL is empty or malformed
-    state.redis = None
-    if settings.REDIS_URL and settings.REDIS_URL.startswith(("redis://", "rediss://", "unix://")):
-        try:
-            state.redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
-            await state.redis.ping()
-            logger.info("Redis connected")
-        except (OSError, ValueError, aioredis.RedisError) as e:
-            logger.warning("Redis not available: %s — continuing without rate-limit cache", e)
-            state.redis = None
-    else:
-        logger.info("Redis disabled (REDIS_URL is empty or non-redis scheme)")
+    state.redis = await _connect_redis(settings.REDIS_URL)
 
     # ── Coordination detector — feeds EgressPolicy's quarantine set ────
     # The event bus carries no agent_id (see admina/core/event_bus.py), so
     # the detector is fed here, the same way the forensic store, ClickHouse
     # and the alert channels already are: by the caller that holds identity.
+    # Only /mcp traffic feeds it: without the mcp surface neither the
+    # detector nor its refresh loop runs.
     _eg_cfg = _admina_config.agent_security.egress if _admina_config else None
-    if state.egress_policy is not None and _eg_cfg is not None:
+    if "mcp" in surfaces and state.egress_policy is not None and _eg_cfg is not None:
         from admina.domains.agent_security.coordination import (
             QuarantineStore,
             refresh_quarantine_once,
@@ -413,22 +435,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         )
 
     # ClickHouse — optional, skip if host is empty
-    state.clickhouse = None
-    if settings.CLICKHOUSE_HOST:
-        try:
-            state.clickhouse = clickhouse_connect.get_client(
-                host=settings.CLICKHOUSE_HOST,
-                port=settings.CLICKHOUSE_PORT,
-                database=settings.CLICKHOUSE_DB,
-                password=settings.CLICKHOUSE_PASSWORD,
-            )
-            _init_clickhouse_tables(state.clickhouse)
-            logger.info("ClickHouse connected")
-        except (OSError, clickhouse_connect.driver.exceptions.DatabaseError) as e:
-            logger.warning("ClickHouse not available: %s — analytics disabled", e)
-            state.clickhouse = None
-    else:
-        logger.info("ClickHouse disabled (CLICKHOUSE_HOST is empty)")
+    state.clickhouse = _connect_clickhouse()
 
     # HTTP Client for upstream MCP
     state.http_client = httpx.AsyncClient(timeout=30.0)
@@ -453,20 +460,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         else "%s (install admina-core for Rust speed)" % _eng["engine"].upper()
     )
     logger.info("  Engine: %s", _eng_label)
-    logger.info("  Upstream MCP: %s", settings.UPSTREAM_MCP_URL)
-    logger.info(
-        "  Gateway upstream routes: %s (default: %s)",
-        ", ".join(gateway_upstreams.names()),
-        gateway_upstreams.default,
-    )
-    logger.info("  Gateway stream mode: %s", state.gateway_stream_mode)
-    logger.info(
-        "  Gateway pipeline: %d worker thread(s), time budget %s",
-        state.pipeline_executor.workers,
-        f"{settings.ADMINA_GATEWAY_PIPELINE_TIMEOUT:g} s"
-        if settings.ADMINA_GATEWAY_PIPELINE_TIMEOUT
-        else "none",
-    )
+    logger.info("  Surfaces: %s", ", ".join(surfaces))
+    if "mcp" in surfaces:
+        logger.info("  Upstream MCP: %s", settings.UPSTREAM_MCP_URL)
+    if state.pipeline_executor is not None:
+        logger.info(
+            "  Gateway upstream routes: %s (default: %s)",
+            ", ".join(gateway_upstreams.names()),
+            gateway_upstreams.default,
+        )
+        logger.info("  Gateway stream mode: %s", state.gateway_stream_mode)
+        logger.info(
+            "  Gateway pipeline: %d worker thread(s), time budget %s",
+            state.pipeline_executor.workers,
+            f"{settings.ADMINA_GATEWAY_PIPELINE_TIMEOUT:g} s"
+            if settings.ADMINA_GATEWAY_PIPELINE_TIMEOUT
+            else "none",
+        )
     logger.info(
         "  Firewall ruleset: %s (%s engine)",
         state.gateway_scan.ruleset_sha256,
@@ -478,11 +488,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     )
     logger.info(
         "  Rate Limiting: %s",
-        "ON (Redis)" if state.redis else "OFF (Redis unavailable)",
+        "ON (Redis)"
+        if state.redis
+        else ("OFF (Redis unavailable)" if settings.REDIS_URL else "OFF (REDIS_URL not set)"),
     )
     if state.router.is_multi_upstream:
         logger.info("  OpenClaw mode: routing %d MCP servers", len(state.router.routes))
-    logger.info("  Firewall: ON | PII Redaction: ON | Loop Breaker: ON")
+    logger.info(
+        "  Firewall: ON | PII Redaction: ON | Loop Breaker: %s",
+        "ON" if state.loop_breaker is not None else "OFF",
+    )
     logger.info("=" * 60)
 
     yield
@@ -499,8 +514,80 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         await state.http_client.aclose()
     if state.gateway_http_client:
         await state.gateway_http_client.aclose()
-    state.pipeline_executor.shutdown()
+    if state.pipeline_executor is not None:
+        state.pipeline_executor.shutdown()
     logger.info("Admina Proxy stopped")
+
+
+def _build_loop_breaker() -> Any:
+    """The loop breaker of the mcp and integration surfaces."""
+    try:
+        return get_loop_breaker(
+            window_size=settings.LOOP_WINDOW_SIZE,
+            similarity_threshold=settings.LOOP_SIMILARITY_THRESHOLD,
+            max_consecutive=settings.LOOP_MAX_CONSECUTIVE,
+        )
+    except ImportError as exc:
+        raise RuntimeError(
+            "The mcp and integration surfaces need the loop breaker, whose Python "
+            f"engine needs numpy and scikit-learn ({exc}). Install "
+            "admina-framework[proxy] (or admina-framework[rust]), or serve only the "
+            "gateway: ADMINA_ENABLED_SURFACES=gateway."
+        ) from exc
+
+
+async def _connect_redis(url: str) -> Any:
+    """A Redis client for *url*, or None when Redis is not configured or
+    not reachable. redis is imported only for a URL with a Redis scheme."""
+    if not url or not url.startswith(("redis://", "rediss://", "unix://")):
+        logger.info("Redis disabled (REDIS_URL is empty or non-redis scheme)")
+        return None
+    try:
+        import redis.asyncio as aioredis
+    except ImportError:
+        logger.warning(
+            "REDIS_URL is set but the redis package is not installed "
+            "(pip install 'admina-framework[proxy]') — continuing without rate-limit cache"
+        )
+        return None
+    try:
+        client = aioredis.from_url(url, decode_responses=True)
+        await client.ping()
+        logger.info("Redis connected")
+        return client
+    except (OSError, ValueError, aioredis.RedisError) as e:
+        logger.warning("Redis not available: %s — continuing without rate-limit cache", e)
+        return None
+
+
+def _connect_clickhouse() -> Any:
+    """A ClickHouse client, or None when CLICKHOUSE_HOST is empty or the
+    server is not reachable. clickhouse_connect is imported only for a
+    non-empty host."""
+    if not settings.CLICKHOUSE_HOST:
+        logger.info("ClickHouse disabled (CLICKHOUSE_HOST is empty)")
+        return None
+    try:
+        import clickhouse_connect
+    except ImportError:
+        logger.warning(
+            "CLICKHOUSE_HOST is set but clickhouse-connect is not installed "
+            "(pip install 'admina-framework[proxy]') — analytics disabled"
+        )
+        return None
+    try:
+        client = clickhouse_connect.get_client(
+            host=settings.CLICKHOUSE_HOST,
+            port=settings.CLICKHOUSE_PORT,
+            database=settings.CLICKHOUSE_DB,
+            password=settings.CLICKHOUSE_PASSWORD,
+        )
+        _init_clickhouse_tables(client)
+        logger.info("ClickHouse connected")
+        return client
+    except _clickhouse_errors() as e:
+        logger.warning("ClickHouse not available: %s — analytics disabled", e)
+        return None
 
 
 def _init_clickhouse_tables(client):
@@ -567,6 +654,12 @@ def _get_state(request: Request) -> ProxyState:
     return request.app.state.proxy
 
 
+def _mount(surface: str, router: APIRouter) -> None:
+    """Mount *router* when *surface* is enabled (ADMINA_ENABLED_SURFACES)."""
+    if surface in _MOUNTED_SURFACES:
+        app.include_router(router)
+
+
 # ── Dashboard & Integration API Routers ──────────────────────
 # The lambdas close over `app` so they resolve state at call time (after lifespan).
 _dashboard_router = create_dashboard_endpoints(
@@ -590,7 +683,7 @@ _dashboard_router = create_dashboard_endpoints(
     # A live feed opened with a browser session is closed when it expires.
     session_expiry=lambda **kw: _live_feed_session_expiry(**kw),
 )
-app.include_router(_dashboard_router)
+_mount("dashboard", _dashboard_router)
 
 _integration_router = create_integration_endpoints(
     get_firewall=lambda: app.state.proxy.firewall,
@@ -600,13 +693,13 @@ _integration_router = create_integration_endpoints(
     get_settings=lambda: settings,
     get_egress_policy=lambda: app.state.proxy.egress_policy,
 )
-app.include_router(_integration_router)
+_mount("integration", _integration_router)
 
 _gateway_router = create_gateway_endpoints(
     get_state=lambda: app.state.proxy,
     get_settings=lambda: settings,
 )
-app.include_router(_gateway_router)
+_mount("gateway", _gateway_router)
 
 
 # ── Bundled dashboard (no-Docker dev mode) ────────────────────
@@ -729,8 +822,11 @@ def _session_cookie_secure(request: Request) -> bool:
 
 _NO_STORE = {"Cache-Control": "no-store"}
 
+# Browser sign-in and shell of the bundled dashboard (dashboard surface).
+_dashboard_shell = APIRouter()
 
-@app.get(dashboard_session.SESSION_PATH, include_in_schema=False)
+
+@_dashboard_shell.get(dashboard_session.SESSION_PATH, include_in_schema=False)
 async def _dashboard_session_status(request: Request) -> JSONResponse:
     """Report whether the caller is signed in (reached only when admitted)."""
     expiry = _dashboard_session_expiry(request.cookies)
@@ -740,7 +836,7 @@ async def _dashboard_session_status(request: Request) -> JSONResponse:
     )
 
 
-@app.post(dashboard_session.SESSION_PATH, include_in_schema=False)
+@_dashboard_shell.post(dashboard_session.SESSION_PATH, include_in_schema=False)
 async def _dashboard_session_create(request: Request) -> JSONResponse:
     """Exchange the API key for a short-lived dashboard browser session.
 
@@ -782,7 +878,7 @@ async def _dashboard_session_create(request: Request) -> JSONResponse:
     return resp
 
 
-@app.delete(dashboard_session.SESSION_PATH, include_in_schema=False)
+@_dashboard_shell.delete(dashboard_session.SESSION_PATH, include_in_schema=False)
 async def _dashboard_session_delete(request: Request) -> JSONResponse:
     """End the dashboard browser session (clears the cookie)."""
     resp = JSONResponse({"authenticated": False, "session": False}, headers=_NO_STORE)
@@ -801,20 +897,21 @@ if _DASHBOARD_DIR.is_dir():
     from fastapi.responses import HTMLResponse
     from fastapi.staticfiles import StaticFiles
 
-    app.mount(
-        "/vendor",
-        StaticFiles(directory=_DASHBOARD_DIR / "vendor"),
-        name="dashboard-vendor",
-    )
+    if "dashboard" in _MOUNTED_SURFACES:
+        app.mount(
+            "/vendor",
+            StaticFiles(directory=_DASHBOARD_DIR / "vendor"),
+            name="dashboard-vendor",
+        )
 
-    @app.get("/heimdall.png", include_in_schema=False)
+    @_dashboard_shell.get("/heimdall.png", include_in_schema=False)
     async def _dashboard_logo() -> Response:
         return Response(
             content=(_DASHBOARD_DIR / "heimdall.png").read_bytes(),
             media_type="image/png",
         )
 
-    @app.get("/", include_in_schema=False)
+    @_dashboard_shell.get("/", include_in_schema=False)
     async def _dashboard_root() -> HTMLResponse:
         # The SPA shell is static and carries no credential. It never
         # creates a session: the page asks for the API key and exchanges it
@@ -831,10 +928,15 @@ if _DASHBOARD_DIR.is_dir():
         )
 
 
+_mount("dashboard", _dashboard_shell)
+
+
 # ── Auth Middleware ───────────────────────────────────────────
 # /health, /metrics and the OpenAPI docs are public (the docs can be turned
-# off with ADMINA_API_DOCS_ENABLED=false). The dashboard shell and its static
-# assets are public so the sign-in page can load; they hold no credential.
+# off with ADMINA_API_DOCS_ENABLED=false; ADMINA_METRICS_REQUIRE_AUTH and
+# ADMINA_API_DOCS_REQUIRE_AUTH put /metrics and the docs behind the API key).
+# The dashboard shell and its static assets are public so the sign-in page
+# can load; they hold no credential.
 _AUTH_EXEMPT = {
     "/",
     "/health",
@@ -855,9 +957,32 @@ _DASHBOARD_SHELL_PREFIXES = ("/vendor/",)
 def _surface_disabled(path: str) -> bool:
     if path in _API_DOCS_PATHS and not settings.ADMINA_API_DOCS_ENABLED:
         return True
+    surface = surface_of(path)
+    if surface is not None and surface not in enabled_surfaces():
+        return True
     if path in _DASHBOARD_SHELL_PATHS or path.startswith(_DASHBOARD_SHELL_PREFIXES):
         return not _dashboard_enabled()
     return False
+
+
+def _key_required(path: str) -> bool:
+    """True for /metrics or the OpenAPI docs when their setting puts them
+    behind the API key."""
+    if path == "/metrics":
+        return settings.ADMINA_METRICS_REQUIRE_AUTH
+    if path in _API_DOCS_PATHS:
+        return settings.ADMINA_API_DOCS_REQUIRE_AUTH
+    return False
+
+
+def _invalid_key_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=401,
+        content={
+            "error": "Unauthorized",
+            "detail": "Provide your API key via X-API-Key header or Authorization: Bearer <key>",
+        },
+    )
 
 
 @app.middleware("http")
@@ -865,8 +990,15 @@ async def auth_middleware(request: Request, call_next) -> JSONResponse:
     path = request.url.path
     if _surface_disabled(path):
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
-    if path in _AUTH_EXEMPT or path.startswith(_AUTH_EXEMPT_PREFIXES):
+    key_required = _key_required(path)
+    if not key_required and (path in _AUTH_EXEMPT or path.startswith(_AUTH_EXEMPT_PREFIXES)):
         return await call_next(request)
+    if key_required and settings.ADMINA_API_KEY:
+        # The API key itself: the public paths an auth provider may declare
+        # do not apply to a route the operator put behind the key.
+        if verify_credential(headers=request.headers, query_params={}, cookies={}):
+            return await call_next(request)
+        return _invalid_key_response()
 
     # 0. Dashboard browser session: accepted only for read-only requests to
     # the dashboard API. Everywhere else the cookie is ignored and the
@@ -916,13 +1048,7 @@ async def auth_middleware(request: Request, call_next) -> JSONResponse:
             query_params={},
             cookies={},
         ):
-            return JSONResponse(
-                status_code=401,
-                content={
-                    "error": "Unauthorized",
-                    "detail": "Provide your API key via X-API-Key header or Authorization: Bearer <key>",
-                },
-            )
+            return _invalid_key_response()
         return await call_next(request)
 
     # 3. No API key and no auth providers — block unless explicitly allowed
@@ -961,14 +1087,35 @@ app.add_middleware(
 
 # ── Admin API ─────────────────────────────────────────────────
 @app.get("/health", tags=["admin"], summary="Liveness probe")
-async def health() -> dict[str, Any]:
+async def health(request: Request) -> dict[str, Any]:
+    """Liveness probe, with the configuration a deployment checks.
+
+    ``mode``: the governance mode; ``surfaces``: the enabled surfaces;
+    ``ruleset_sha256``: the active firewall ruleset (the value of
+    ``X-Admina-Ruleset``); ``forensic_writable``: whether the forensic store
+    accepts writes (filesystem: a probe file is written, fsynced and removed
+    on each call; S3: the last record write; in-memory: ``null``).
+    """
+    state = getattr(request.app.state, "proxy", None)
     return {
         "status": "healthy",
         "service": "admina-proxy",
         "version": __version__,
+        "mode": settings.GOVERNANCE_MODE,
+        "surfaces": list(enabled_surfaces()),
+        "ruleset_sha256": scan_config_of(state).ruleset_sha256,
+        "forensic_writable": await _forensic_writable(state),
         "engine": engine_status(),
         "timestamp": datetime.now(UTC).isoformat(),
     }
+
+
+async def _forensic_writable(state: Any) -> bool | None:
+    """The forensic store's own write check, run off the event loop."""
+    probe = getattr(getattr(state, "forensic_box", None), "writable", None)
+    if probe is None:
+        return None
+    return await asyncio.get_running_loop().run_in_executor(None, probe)
 
 
 @app.get(
@@ -1112,14 +1259,18 @@ async def prometheus_metrics(request: Request) -> Response:
     return Response(content=body, media_type="text/plain; version=0.0.4; charset=utf-8")
 
 
-@app.get("/api/stats", tags=["admin"], summary="Proxy and engine statistics")
+# Proxy statistics and recent events (dashboard surface).
+_stats_router = APIRouter()
+
+
+@_stats_router.get("/api/stats", tags=["admin"], summary="Proxy and engine statistics")
 async def get_stats(request: Request) -> dict[str, Any]:
     state = _get_state(request)
     return {
         "proxy": state.metrics,
         "engine": engine_status(),
         "firewall": state.firewall.get_stats(),
-        "loop_breaker": state.loop_breaker.get_stats(),
+        "loop_breaker": state.loop_breaker.get_stats() if state.loop_breaker else {},
         "pii_redactor": state.pii_redactor.get_stats(),
         "forensic_blackbox": (state.forensic_box.get_stats() if state.forensic_box else {}),
         "compliance": state.compliance.get_stats(),
@@ -1127,7 +1278,7 @@ async def get_stats(request: Request) -> dict[str, Any]:
     }
 
 
-@app.get("/api/events", tags=["admin"], summary="Recent governance events")
+@_stats_router.get("/api/events", tags=["admin"], summary="Recent governance events")
 async def get_events(request: Request, limit: int = 50) -> dict[str, Any]:
     """Retrieve recent governance events from ClickHouse."""
     state = _get_state(request)
@@ -1147,13 +1298,19 @@ async def get_events(request: Request, limit: int = 50) -> dict[str, Any]:
         )
         events = [dict(zip(result.column_names, row)) for row in result.result_rows]
         return {"events": events, "count": len(events)}
-    except (OSError, clickhouse_connect.driver.exceptions.DatabaseError) as e:
+    except _clickhouse_errors() as e:
         logger.warning("events query failed: %s", e)
         return {"events": [], "error": "Events query failed"}
 
 
+_mount("dashboard", _stats_router)
+
+# EU AI Act, NIS2, GDPR and cross-regulation APIs (compliance surface).
+_compliance_router = APIRouter()
+
+
 # ── EU AI Act API ────────────────────────────────────────────
-@app.post(
+@_compliance_router.post(
     "/api/compliance/classify",
     tags=["compliance"],
     summary="Classify a system under the EU AI Act risk taxonomy",
@@ -1168,7 +1325,7 @@ async def classify_risk(request: Request, body: dict) -> dict[str, Any]:
     return result
 
 
-@app.post(
+@_compliance_router.post(
     "/api/compliance/gap-analysis",
     tags=["compliance"],
     summary="Compute the compliance gap report for a risk category",
@@ -1182,7 +1339,7 @@ async def gap_analysis(request: Request, body: dict) -> dict[str, Any]:
     return result
 
 
-@app.post(
+@_compliance_router.post(
     "/api/compliance/report",
     tags=["compliance"],
     summary="Generate a structured EU AI Act compliance report",
@@ -1207,7 +1364,7 @@ async def generate_compliance_report(request: Request, body: dict) -> dict[str, 
 
 
 # ── NIS2 API ────────────────────────────────────────────────
-@app.get(
+@_compliance_router.get(
     "/api/compliance/nis2/areas",
     tags=["compliance"],
     summary="List NIS2 Art. 21 measure areas and their controls",
@@ -1217,7 +1374,7 @@ async def nis2_areas(request: Request) -> dict[str, Any]:
     return {"areas": state.nis2.list_areas(), "stats": state.nis2.get_stats()}
 
 
-@app.post(
+@_compliance_router.post(
     "/api/compliance/nis2/assess",
     tags=["compliance"],
     summary="Run NIS2 self-assessment (returns coverage score and gaps)",
@@ -1228,7 +1385,7 @@ async def nis2_assess(request: Request, body: dict) -> dict[str, Any]:
 
 
 # ── GDPR API ────────────────────────────────────────────────
-@app.get(
+@_compliance_router.get(
     "/api/compliance/gdpr/records",
     tags=["compliance"],
     summary="List Art. 30 records of processing activities",
@@ -1238,7 +1395,7 @@ async def gdpr_list_records(request: Request) -> dict[str, Any]:
     return {"records": state.gdpr.list(), "stats": state.gdpr.get_stats()}
 
 
-@app.post(
+@_compliance_router.post(
     "/api/compliance/gdpr/records",
     tags=["compliance"],
     summary="Create a new Art. 30 record",
@@ -1248,7 +1405,7 @@ async def gdpr_create_record(request: Request, body: dict) -> dict[str, Any]:
     return state.gdpr.create(payload=body)
 
 
-@app.get(
+@_compliance_router.get(
     "/api/compliance/gdpr/records/{activity_id}",
     tags=["compliance"],
     summary="Get a single Art. 30 record",
@@ -1261,7 +1418,7 @@ async def gdpr_get_record(request: Request, activity_id: str) -> dict[str, Any]:
     return rec
 
 
-@app.put(
+@_compliance_router.put(
     "/api/compliance/gdpr/records/{activity_id}",
     tags=["compliance"],
     summary="Update an Art. 30 record",
@@ -1274,7 +1431,7 @@ async def gdpr_update_record(request: Request, activity_id: str, body: dict) -> 
     return rec
 
 
-@app.delete(
+@_compliance_router.delete(
     "/api/compliance/gdpr/records/{activity_id}",
     tags=["compliance"],
     summary="Delete an Art. 30 record",
@@ -1286,7 +1443,7 @@ async def gdpr_delete_record(request: Request, activity_id: str) -> dict[str, An
     return {"deleted": True, "id": activity_id}
 
 
-@app.post(
+@_compliance_router.post(
     "/api/compliance/gdpr/dpia/template",
     tags=["compliance"],
     summary="Render an Art. 35 DPIA scaffold (Markdown) from operator-supplied facts",
@@ -1300,7 +1457,7 @@ async def gdpr_dpia_template(body: dict) -> Response:
 
 
 # ── Consolidated compliance report ──────────────────────────
-@app.get(
+@_compliance_router.get(
     "/api/compliance/report",
     tags=["compliance"],
     summary="Consolidated compliance snapshot (EU AI Act + NIS2 + GDPR + cross-matrix)",
@@ -1444,7 +1601,7 @@ async def consolidated_compliance_report(
 
 
 # ── Cross-regulation matrix API ─────────────────────────────
-@app.get(
+@_compliance_router.get(
     "/api/compliance/matrix",
     tags=["compliance"],
     summary="Cross-regulation control matrix (AI Act ↔ NIS2 ↔ GDPR)",
@@ -1467,9 +1624,15 @@ async def compliance_matrix(format: str = "json") -> Any:
     }
 
 
+_mount("compliance", _compliance_router)
+
+
 # ── MCP Proxy Endpoint ──────────────────────────────────────
-@app.post("/mcp", tags=["proxy"], summary="MCP JSON-RPC governance proxy")
-@app.post("/mcp/{path:path}", tags=["proxy"], include_in_schema=False)
+_mcp_router = APIRouter()
+
+
+@_mcp_router.post("/mcp", tags=["proxy"], summary="MCP JSON-RPC governance proxy")
+@_mcp_router.post("/mcp/{path:path}", tags=["proxy"], include_in_schema=False)
 async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
     """
     Main MCP proxy endpoint.
@@ -1509,7 +1672,7 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                         },
                     },
                 )
-        except (OSError, aioredis.RedisError) as e:
+        except _redis_errors() as e:
             logger.warning("Rate limit check failed: %s", e)
 
         # Per-IP rate limit (non-bypassable fallback)
@@ -1537,7 +1700,7 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                         },
                     },
                 )
-        except (OSError, aioredis.RedisError) as e:
+        except _redis_errors() as e:
             logger.warning("IP rate limit check failed: %s", e)
 
     try:
@@ -1949,6 +2112,9 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
         )
 
 
+_mount("mcp", _mcp_router)
+
+
 # ── Helpers ──────────────────────────────────────────────────
 
 
@@ -2001,7 +2167,7 @@ def _store_event_sync(clickhouse_client, event: GovernanceEvent):
                 "response_hash",
             ],
         )
-    except (OSError, clickhouse_connect.driver.exceptions.DatabaseError) as e:
+    except _clickhouse_errors() as e:
         logger.warning("Failed to store event: %s", e)
 
 

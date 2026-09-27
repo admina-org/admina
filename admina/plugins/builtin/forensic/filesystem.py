@@ -26,11 +26,11 @@ import hashlib
 import hmac
 import json
 import logging
-import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+from admina.core.secretfile import secret_from_env
 from admina.plugins.base import BaseForensicStore
 
 logger = logging.getLogger("admina.plugins.forensic.filesystem")
@@ -52,7 +52,7 @@ class FilesystemForensicStore(BaseForensicStore):
         self._base_dir.mkdir(parents=True, exist_ok=True)
         self._chain_head: str = "GENESIS"
         self._record_count: int = 0
-        self._state_signing_key = state_signing_key or os.environ.get("ADMINA_FORENSIC_STATE_KEY")
+        self._state_signing_key = state_signing_key or secret_from_env("ADMINA_FORENSIC_STATE_KEY")
         self._lock = asyncio.Lock()
         self._restore_chain_state()
 
