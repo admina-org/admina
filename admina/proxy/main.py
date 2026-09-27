@@ -71,6 +71,7 @@ from admina.proxy.gateway_scan import build_gateway_scan_config
 from admina.proxy.gateway_transport import build_gateway_http_client, resolve_stream_mode
 from admina.proxy.gateway_upstreams import build_gateway_upstreams
 from admina.proxy.multi_upstream import MultiUpstreamRouter
+from admina.proxy.pipeline_executor import PipelineExecutor
 from admina.proxy.state import ProxyState
 
 # ── Admina config (for OISG score) ──────────────────────────
@@ -225,6 +226,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     )
     # The ruleset of the firewall just built: its engine, admina.yaml rules.
     state.gateway_scan = build_gateway_scan_config(state.firewall, _admina_config)
+    state.pipeline_executor = PipelineExecutor(settings.ADMINA_GATEWAY_PIPELINE_WORKERS)
 
     # ── Plugin discovery ──────────────────────────────────────
     _plugin_modules = list(_admina_config.plugins) if _admina_config else []
@@ -454,6 +456,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     )
     logger.info("  Gateway stream mode: %s", state.gateway_stream_mode)
     logger.info(
+        "  Gateway pipeline: %d worker thread(s), time budget %s",
+        state.pipeline_executor.workers,
+        f"{settings.ADMINA_GATEWAY_PIPELINE_TIMEOUT:g} s"
+        if settings.ADMINA_GATEWAY_PIPELINE_TIMEOUT
+        else "none",
+    )
+    logger.info(
         "  Firewall ruleset: %s (%s engine)",
         state.gateway_scan.ruleset_sha256,
         state.gateway_scan.engine,
@@ -484,6 +493,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         await state.http_client.aclose()
     if state.gateway_http_client:
         await state.gateway_http_client.aclose()
+    state.pipeline_executor.shutdown()
     logger.info("Admina Proxy stopped")
 
 

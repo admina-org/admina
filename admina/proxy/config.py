@@ -209,6 +209,15 @@ class Settings(BaseSettings):
     # other role are always scanned. A request can narrow the scan further
     # with X-Admina-Scan-Policy, never widen it.
     ADMINA_GATEWAY_SCAN_ROLES: str = ",".join(SCAN_ROLES)
+    # The gateway runs the governance pipeline (firewall, PII redaction,
+    # guards) in a pool of worker threads, off the event loop.
+    #   WORKERS: threads in the pool, the most requests governed at once
+    #       (0 = the number of CPUs); further requests wait for a thread.
+    #   TIMEOUT: seconds a request waits for its governance decision, the
+    #       wait for a thread included (0 = no limit). Past it the request
+    #       is blocked, in every governance mode, and recorded.
+    ADMINA_GATEWAY_PIPELINE_WORKERS: int = Field(default=0, ge=0)
+    ADMINA_GATEWAY_PIPELINE_TIMEOUT: float = Field(default=0.0, ge=0)
 
     @field_validator("ADMINA_GATEWAY_SCAN_ROLES")
     @classmethod

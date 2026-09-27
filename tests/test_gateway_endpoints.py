@@ -94,6 +94,7 @@ def _settings(**over):
         ADMINA_GATEWAY_MAX_PROMPT_CHARS=0,
         ADMINA_GATEWAY_TIMEOUT_TOTAL=0.0,
         ADMINA_GATEWAY_SCAN_ROLES="system,user,assistant,tool",
+        ADMINA_GATEWAY_PIPELINE_TIMEOUT=0.0,
     )
     base.update(over)
     return SimpleNamespace(**base)

@@ -458,6 +458,27 @@ A timeout of `0` means no limit. A timeout before the response starts gets
 with one `data: {"error": {...}}` event and no `data: [DONE]`. When the client
 disconnects, the gateway closes the upstream request.
 
+#### Governance pipeline threads and time budget
+
+The gateway runs the governance pipeline (firewall, PII redaction, egress
+analysis, governance guards) in a pool of worker threads, so that scanning one
+request does not hold up the others:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `ADMINA_GATEWAY_PIPELINE_WORKERS` | `0` | threads in the pool, the most requests governed at once (`0` = the number of CPUs); further requests wait for a free thread |
+| `ADMINA_GATEWAY_PIPELINE_TIMEOUT` | `0` | seconds a request waits for its governance decision, the wait for a free thread included (`0` = no limit) |
+
+A request whose decision takes longer than `ADMINA_GATEWAY_PIPELINE_TIMEOUT` is
+blocked, in every governance mode, and never forwarded; its forensic record has
+`checks.pipeline = {"action": "BLOCK", "reason": "time_budget_exceeded",
+"budget_ms": <budget>}`. The thread that was scanning it stays busy until the
+scan ends. An exception inside the pipeline follows `ADMINA_GUARD_FAIL_MODE`:
+`open` forwards the request, `closed` blocks it; the record has
+`checks.pipeline = {"action": "ERROR", "error": "<exception class>"}`.
+Governance guards run in the worker threads too, each thread with an event loop
+of its own.
+
 #### Firewall ruleset
 
 `ruleset_sha256()` (`admina.domains.agent_security.ruleset`) names the firewall

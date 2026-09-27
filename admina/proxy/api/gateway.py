@@ -32,6 +32,13 @@ scans the messages of the roles in ``ADMINA_GATEWAY_SCAN_ROLES``, narrowed
 by an accepted ``X-Admina-Scan-Policy`` (see
 :mod:`admina.domains.agent_security.scan_policy`).
 
+The governance pipeline runs in the worker threads of
+:mod:`admina.proxy.pipeline_executor`, within the time budget
+``ADMINA_GATEWAY_PIPELINE_TIMEOUT``: a request whose decision takes longer
+is blocked, in every governance mode. An exception inside the pipeline
+follows ``ADMINA_GUARD_FAIL_MODE``: ``open`` lets the request through,
+``closed`` blocks it. Both outcomes are recorded as ``checks["pipeline"]``.
+
 Both forward to the upstream route named by the ``X-Admina-Upstream``
 request header, or to the default route without it (see
 :mod:`admina.proxy.gateway_upstreams`). An unknown route name is answered
@@ -60,7 +67,8 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Coroutine
+from functools import cache
 from typing import Any
 
 import httpx
@@ -78,7 +86,12 @@ from admina.domains.agent_security.scan_policy import (
     resolve_scan_scope,
     scope_texts,
 )
-from admina.domains.governance import run_pipeline, safe_serialize
+from admina.domains.governance import (
+    GovernanceResult,
+    run_pipeline,
+    safe_serialize,
+    unfinished_pipeline_result,
+)
 from admina.proxy.gateway_scan import (
     RULESET_HEADER,
     GatewayScanConfig,
@@ -86,6 +99,7 @@ from admina.proxy.gateway_scan import (
 )
 from admina.proxy.gateway_transport import DEFAULT_STREAM_MODE, total_deadline
 from admina.proxy.gateway_upstreams import UPSTREAM_HEADER, GatewayUpstream, GatewayUpstreams
+from admina.proxy.pipeline_executor import PipelineExecutor, PipelineTimeout
 
 logger = logging.getLogger("admina.proxy.gateway")
 
@@ -130,6 +144,46 @@ def _scan_scope(request: Request, state: Any, cfg: Any, scan: GatewayScanConfig)
     if scope.status != "none" and inc_metric is not None:
         inc_metric(f"prescan_{scope.status}")
     return scope
+
+
+@cache
+def _default_executor() -> PipelineExecutor:
+    return PipelineExecutor()
+
+
+async def _govern(
+    state: Any,
+    cfg: Any,
+    pipeline: Callable[[], Coroutine[Any, Any, GovernanceResult]],
+    request_id: str,
+) -> GovernanceResult:
+    """The result of *pipeline*, run in the worker threads (those built at
+    startup, or a default pool) within the time budget."""
+    executor = getattr(state, "pipeline_executor", None) or _default_executor()
+    budget = cfg.ADMINA_GATEWAY_PIPELINE_TIMEOUT
+    started = time.perf_counter()
+    try:
+        return await executor.run_coroutine(pipeline, timeout=budget)
+    except PipelineTimeout:
+        logger.warning("Gateway governance exceeded its time budget (%g s): blocked", budget)
+        check: dict[str, Any] = {
+            "action": "BLOCK",
+            "reason": "time_budget_exceeded",
+            "budget_ms": round(budget * 1000),
+        }
+        block, mode = True, "enforce"  # the budget blocks in every governance mode
+    except Exception as exc:  # noqa: BLE001 — any failure is a governance decision
+        logger.error("Gateway governance pipeline failed: %s", type(exc).__name__)
+        logger.debug("Gateway governance pipeline failure", exc_info=True)
+        check = {"action": "ERROR", "error": type(exc).__name__}
+        block, mode = cfg.GUARD_FAIL_MODE == "closed", cfg.GOVERNANCE_MODE
+    return unfinished_pipeline_result(
+        check,
+        block=block,
+        mode=mode,
+        request_id=request_id,
+        latency_ms=(time.perf_counter() - started) * 1000,
+    )
 
 
 def _error(message: str, error_type: str, code: str) -> dict:
@@ -701,26 +755,30 @@ async def _chat_completion(
     event_id = uuid.uuid4().hex
     scope = _scan_scope(request, state, cfg, scan)
 
-    pre = await run_pipeline(
-        body={"params": {"messages": messages}},
-        content_str=prompt_text,
-        session_id=session_id,
-        agent_id=agent_id,
-        request_id=event_id,
-        params={"messages": messages},
-        firewall=state.firewall,
-        pii_redactor=state.pii_redactor,
-        loop_breaker=state.loop_breaker,
-        governance_guards=state.governance_guards,
-        injection_enabled=cfg.INJECTION_FAST_PATH_ENABLED,
-        pii_enabled=cfg.PII_REDACTION_ENABLED,
-        loop_enabled=False,
-        mode=cfg.GOVERNANCE_MODE,
-        guard_fail_mode=cfg.GUARD_FAIL_MODE,
-        egress_policy=state.egress_policy,
-        egress_mode=resolve_egress_mode(cfg.GOVERNANCE_MODE),
-        scan_texts=scope_texts(messages, scope),
-    )
+    def pipeline() -> Coroutine[Any, Any, GovernanceResult]:
+        # Called in a worker thread: selecting the texts to scan runs there too.
+        return run_pipeline(
+            body={"params": {"messages": messages}},
+            content_str=prompt_text,
+            session_id=session_id,
+            agent_id=agent_id,
+            request_id=event_id,
+            params={"messages": messages},
+            firewall=state.firewall,
+            pii_redactor=state.pii_redactor,
+            loop_breaker=state.loop_breaker,
+            governance_guards=state.governance_guards,
+            injection_enabled=cfg.INJECTION_FAST_PATH_ENABLED,
+            pii_enabled=cfg.PII_REDACTION_ENABLED,
+            loop_enabled=False,
+            mode=cfg.GOVERNANCE_MODE,
+            guard_fail_mode=cfg.GUARD_FAIL_MODE,
+            egress_policy=state.egress_policy,
+            egress_mode=resolve_egress_mode(cfg.GOVERNANCE_MODE),
+            scan_texts=scope_texts(messages, scope),
+        )
+
+    pre = await _govern(state, cfg, pipeline, event_id)
     action = pre.gov_response.action  # uppercase: ALLOW/BLOCK/CIRCUIT_BREAK
 
     await _record_forensic(

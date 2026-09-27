@@ -240,6 +240,38 @@ async def run_pipeline(
     return result
 
 
+def unfinished_pipeline_result(
+    check: dict[str, Any],
+    *,
+    block: bool,
+    mode: str,
+    request_id: str,
+    latency_ms: float,
+) -> GovernanceResult:
+    """The result for a pipeline run that did not complete.
+
+    *check* is stored as ``checks["pipeline"]``. With *block* the action is
+    BLOCK (risk HIGH), downgraded to ALLOW with ``would_action=BLOCK`` in
+    ``observe`` / ``dry-run`` *mode*, as for any decision of the pipeline.
+    """
+    result = GovernanceResult(checks={"pipeline": check}, mode=mode, latency_ms=latency_ms)
+    if block:
+        if mode in ("observe", "dry-run"):
+            result.would_action = GovernanceAction.BLOCK
+        else:
+            result.action = GovernanceAction.BLOCK
+            result.risk_level = RiskLevel.HIGH
+    result.gov_response = GovResponse(
+        content="null",
+        action="BLOCK" if result.action == GovernanceAction.BLOCK else "ALLOW",
+        risk_level="HIGH" if result.risk_level == RiskLevel.HIGH else "LOW",
+        domain="pipeline",
+        latency_us=latency_ms * 1000,
+        request_id=request_id,
+    )
+    return result
+
+
 # --- helpers (moved from proxy/main.py) ---
 
 

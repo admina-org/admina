@@ -34,6 +34,7 @@ from admina.proxy.gateway_scan import GatewayScanConfig
 from admina.proxy.gateway_transport import DEFAULT_STREAM_MODE
 from admina.proxy.gateway_upstreams import GatewayUpstreams
 from admina.proxy.multi_upstream import MultiUpstreamRouter
+from admina.proxy.pipeline_executor import PipelineExecutor
 
 
 @dataclass
@@ -72,6 +73,8 @@ class ProxyState:
     gateway_stream_mode: str = DEFAULT_STREAM_MODE
     # Firewall ruleset and prescan settings of the gateway, resolved at startup.
     gateway_scan: GatewayScanConfig | None = None
+    # Worker threads of the gateway's governance pipeline, built at startup.
+    pipeline_executor: PipelineExecutor | None = None
     registry: PluginRegistry = field(default_factory=PluginRegistry)
 
     # Plugins
