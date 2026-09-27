@@ -215,7 +215,8 @@ class Settings(BaseSettings):
     #       (0 = the number of CPUs); further requests wait for a thread.
     #   TIMEOUT: seconds a request waits for its governance decision, the
     #       wait for a thread included (0 = no limit). Past it the request
-    #       is blocked, in every governance mode, and recorded.
+    #       is blocked, in every governance mode, and recorded; so is a
+    #       request whose pipeline raises.
     ADMINA_GATEWAY_PIPELINE_WORKERS: int = Field(default=0, ge=0)
     ADMINA_GATEWAY_PIPELINE_TIMEOUT: float = Field(default=0.0, ge=0)
     # Run the firewall on the completion text too (needs the firewall on).

@@ -473,9 +473,13 @@ A request whose decision takes longer than `ADMINA_GATEWAY_PIPELINE_TIMEOUT` is
 blocked, in every governance mode, and never forwarded; its forensic record has
 `checks.pipeline = {"action": "BLOCK", "reason": "time_budget_exceeded",
 "budget_ms": <budget>}`. The thread that was scanning it stays busy until the
-scan ends. An exception inside the pipeline follows `ADMINA_GUARD_FAIL_MODE`:
-`open` forwards the request, `closed` blocks it; the record has
-`checks.pipeline = {"action": "ERROR", "error": "<exception class>"}`.
+scan ends. A request whose pipeline raises (in the firewall, PII redaction,
+egress analysis or a guard) is blocked the same way, in every governance mode,
+since its checks may not have run; the record has `checks.pipeline =
+{"action": "ERROR", "error": "<exception class>"}`. A guard contract error
+(`ValueError`, `RuntimeError`, `OSError` or `TypeError` from a guard) is
+handled inside the pipeline and follows `ADMINA_GUARD_FAIL_MODE`, as on the
+other surfaces.
 Governance guards run in the worker threads too, each thread with an event loop
 of its own.
 

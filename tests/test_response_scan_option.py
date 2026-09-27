@@ -215,6 +215,29 @@ def test_response_scan_over_the_budget_blocks():
     assert scan["checks"]["pipeline"]["reason"] == "time_budget_exceeded"
 
 
+class _RaisingOnAnswer(FakeFirewall):
+    def check(self, text: str) -> dict:
+        if "growth" in text:
+            raise RuntimeError("firewall failure")
+        return super().check(text)
+
+
+@pytest.mark.parametrize("fail_mode", ["open", "closed"])
+def test_response_scan_error_blocks(fail_mode):
+    upstream = _json_upstream(CLEAN)
+    resp, _, others = _send(
+        upstream,
+        stream=False,
+        firewall=_RaisingOnAnswer(),
+        ADMINA_GATEWAY_SCAN_RESPONSE=True,
+        ADMINA_GUARD_FAIL_MODE=fail_mode,
+    )
+    assert _blocked(resp)
+    (scan,) = others
+    assert scan["action"] == "BLOCK"
+    assert scan["checks"]["pipeline"] == {"action": "ERROR", "error": "RuntimeError"}
+
+
 # ── Streaming: observe only ───────────────────────────────────
 
 

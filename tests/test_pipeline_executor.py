@@ -21,7 +21,9 @@ threads, with a per-request time budget.
 - A request whose governance decision takes longer than
   ``ADMINA_GATEWAY_PIPELINE_TIMEOUT`` is blocked and recorded; the upstream
   is never called.
-- An error inside the pipeline follows ``ADMINA_GUARD_FAIL_MODE``.
+- A request whose pipeline raises is blocked and recorded, in every
+  governance mode. ``ADMINA_GUARD_FAIL_MODE`` still decides what a guard
+  contract error does, which the pipeline handles itself.
 """
 
 from __future__ import annotations
@@ -36,7 +38,7 @@ import pytest
 
 pytest.importorskip("fastapi")
 
-from _gateway_stream import FakeFirewall, MockUpstream, settings, through
+from _gateway_stream import FakeFirewall, FakePII, MockUpstream, settings, through
 
 SLOW = "slow marker"
 _COMPLETION = {
@@ -255,54 +257,116 @@ def test_no_budget_by_default():
     assert Settings().ADMINA_GATEWAY_PIPELINE_WORKERS == 0
 
 
-# ── Errors follow ADMINA_GUARD_FAIL_MODE ──────────────────────
+# ── A pipeline that raises blocks the request ────────────────
 
 
-def test_pipeline_error_open_mode_forwards_and_records():
+class RaisingPII(FakePII):
+    def redact(self, text: str) -> dict:
+        raise KeyError("redaction failure")
+
+
+class _Guard:
+    def __init__(self, name: str, exc: Exception) -> None:
+        self.name = name
+        self._exc = exc
+
+    async def inspect_request(self, payload: dict) -> dict:
+        raise self._exc
+
+    async def inspect_response(self, payload: dict) -> dict:
+        return {"action": "ALLOW", "risk_level": "LOW"}
+
+
+def _assert_blocked(resp: httpx.Response, stream: bool) -> None:
+    assert resp.status_code == 200
+    if stream:
+        assert '"finish_reason":"content_filter"' in resp.text
+        assert resp.text.endswith("data: [DONE]\n\n")
+    else:
+        assert _blocked(resp)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("fail_mode", ["open", "closed"])
+@pytest.mark.parametrize("mode", ["enforce", "observe", "dry-run"])
+def test_pipeline_error_blocks_and_is_recorded(stream, fail_mode, mode):
     upstream = _upstream()
     recorder = _Recorder()
     resp = through(
         upstream,
-        _body("hello"),
-        settings(ADMINA_GUARD_FAIL_MODE="open"),
+        _body("hello", stream=stream),
+        settings(ADMINA_GUARD_FAIL_MODE=fail_mode, ADMINA_GOVERNANCE_MODE=mode),
         state={"firewall": RaisingFirewall(), "forensic_box": recorder},
     )
-    assert not _blocked(resp)
-    assert len(upstream.requests) == 1
+    _assert_blocked(resp, stream)
+    assert upstream.requests == []
     (event,) = recorder.events
-    assert event["action"] == "ALLOW"
+    assert event["action"] == "BLOCK"
+    assert event["risk_level"] == "HIGH"
     assert event["checks"]["pipeline"] == {"action": "ERROR", "error": "RuntimeError"}
 
 
-def test_pipeline_error_closed_mode_blocks_and_records():
+def test_redaction_error_blocks_the_request():
     upstream = _upstream()
     recorder = _Recorder()
     resp = through(
         upstream,
         _body("hello"),
-        settings(ADMINA_GUARD_FAIL_MODE="closed"),
-        state={"firewall": RaisingFirewall(), "forensic_box": recorder},
+        settings(PII_REDACTION_ENABLED=True, ADMINA_GUARD_FAIL_MODE="open"),
+        state={"pii_redactor": RaisingPII(), "forensic_box": recorder},
     )
     assert _blocked(resp)
     assert upstream.requests == []
     (event,) = recorder.events
-    assert event["action"] == "BLOCK"
-    assert event["checks"]["pipeline"] == {"action": "ERROR", "error": "RuntimeError"}
+    assert event["checks"]["pipeline"] == {"action": "ERROR", "error": "KeyError"}
 
 
-def test_pipeline_error_closed_mode_in_observe_is_recorded_only():
+def test_guard_error_outside_the_contract_blocks_the_request():
     upstream = _upstream()
-    recorder = _Recorder()
+    guard = _Guard("lookup", LookupError("guard failure"))
     resp = through(
         upstream,
         _body("hello"),
-        settings(ADMINA_GUARD_FAIL_MODE="closed", ADMINA_GOVERNANCE_MODE="observe"),
-        state={"firewall": RaisingFirewall(), "forensic_box": recorder},
+        settings(ADMINA_GUARD_FAIL_MODE="open"),
+        state={"governance_guards": [guard]},
+    )
+    assert _blocked(resp)
+    assert upstream.requests == []
+
+
+def test_guard_contract_error_follows_the_guard_fail_mode():
+    upstream = _upstream()
+    recorder = _Recorder()
+    guard = _Guard("contract", RuntimeError("guard failure"))
+    resp = through(
+        upstream,
+        _body("hello"),
+        settings(ADMINA_GUARD_FAIL_MODE="open"),
+        state={"governance_guards": [guard], "forensic_box": recorder},
     )
     assert not _blocked(resp)
     assert len(upstream.requests) == 1
     (event,) = recorder.events
     assert event["action"] == "ALLOW"
+    assert "pipeline" not in event["checks"]
+    assert event["checks"]["guard_contract"]["action"] == "ERROR"
+
+
+def test_a_stopped_executor_blocks_the_request():
+    from admina.proxy.pipeline_executor import PipelineExecutor
+
+    executor = PipelineExecutor(workers=1)
+    executor.shutdown()
+    upstream = _upstream()
+    recorder = _Recorder()
+    resp = through(
+        upstream,
+        _body("hello"),
+        state={"pipeline_executor": executor, "forensic_box": recorder},
+    )
+    assert _blocked(resp)
+    assert upstream.requests == []
+    (event,) = recorder.events
     assert event["checks"]["pipeline"] == {"action": "ERROR", "error": "RuntimeError"}
 
 

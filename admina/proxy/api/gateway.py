@@ -34,10 +34,10 @@ by an accepted ``X-Admina-Scan-Policy`` (see
 
 The governance pipeline runs in the worker threads of
 :mod:`admina.proxy.pipeline_executor`, within the time budget
-``ADMINA_GATEWAY_PIPELINE_TIMEOUT``: a request whose decision takes longer
-is blocked, in every governance mode. An exception inside the pipeline
-follows ``ADMINA_GUARD_FAIL_MODE``: ``open`` lets the request through,
-``closed`` blocks it. Both outcomes are recorded as ``checks["pipeline"]``.
+``ADMINA_GATEWAY_PIPELINE_TIMEOUT``: a request whose decision takes longer,
+or whose pipeline raises, is blocked in every governance mode and recorded
+with ``checks["pipeline"]``. A guard contract error is handled inside the
+pipeline, as ``ADMINA_GUARD_FAIL_MODE`` says.
 
 With ``ADMINA_GATEWAY_SCAN_RESPONSE`` the firewall also checks the completion
 text (see :mod:`admina.proxy.gateway_response_scan`): a non-streaming
@@ -170,7 +170,14 @@ async def _govern(
     request_id: str,
 ) -> GovernanceResult:
     """The result of *pipeline*, run in the worker threads (those built at
-    startup, or a default pool) within the time budget."""
+    startup, or a default pool) within the time budget.
+
+    A pipeline that does not return a result, because it ran over the budget
+    or raised, blocks the request in every governance mode: its checks, PII
+    redaction included, may not have run. (Guard contract errors do not get
+    here: the pipeline handles them itself, as ``ADMINA_GUARD_FAIL_MODE``
+    says.)
+    """
     executor = getattr(state, "pipeline_executor", None) or _default_executor()
     budget = cfg.ADMINA_GATEWAY_PIPELINE_TIMEOUT
     started = time.perf_counter()
@@ -183,16 +190,14 @@ async def _govern(
             "reason": "time_budget_exceeded",
             "budget_ms": round(budget * 1000),
         }
-        block, mode = True, "enforce"  # the budget blocks in every governance mode
     except Exception as exc:  # noqa: BLE001 — any failure is a governance decision
-        logger.error("Gateway governance pipeline failed: %s", type(exc).__name__)
+        logger.error("Gateway governance pipeline failed: %s: blocked", type(exc).__name__)
         logger.debug("Gateway governance pipeline failure", exc_info=True)
         check = {"action": "ERROR", "error": type(exc).__name__}
-        block, mode = cfg.GUARD_FAIL_MODE == "closed", cfg.GOVERNANCE_MODE
     return unfinished_pipeline_result(
         check,
-        block=block,
-        mode=mode,
+        block=True,
+        mode="enforce",
         request_id=request_id,
         latency_ms=(time.perf_counter() - started) * 1000,
     )
