@@ -90,21 +90,25 @@ def _select_upstream(request: Request, state: Any, cfg: Any) -> GatewayUpstream 
     return upstreams.select(_requested_route(request.headers.get(UPSTREAM_HEADER, "")))
 
 
-def _openai_error(status: int, message: str, error_type: str, code: str) -> JSONResponse:
+def _error(message: str, error_type: str, code: str) -> dict:
+    """The ``error`` object of an error body in the OpenAI format."""
+    return {"message": message, "type": error_type, "param": None, "code": code}
+
+
+def _error_response(status: int, error: dict) -> JSONResponse:
     """An error response in the OpenAI format: ``{"error": {...}}``."""
-    return JSONResponse(
-        status_code=status,
-        content={"error": {"message": message, "type": error_type, "param": None, "code": code}},
-    )
+    return JSONResponse(status_code=status, content={"error": error})
 
 
 def _unknown_upstream() -> JSONResponse:
     """400 in the OpenAI error format for an unknown route name."""
-    return _openai_error(
+    return _error_response(
         400,
-        f"Unknown upstream route in the {UPSTREAM_HEADER} header.",
-        "invalid_request_error",
-        "unknown_upstream",
+        _error(
+            f"Unknown upstream route in the {UPSTREAM_HEADER} header.",
+            "invalid_request_error",
+            "unknown_upstream",
+        ),
     )
 
 
@@ -461,31 +465,16 @@ async def _record_forensic(
 
 # Error bodies (OpenAI format) for failures the gateway answers itself. They
 # never carry the exception text, which can name hosts and ports.
-_UPSTREAM_TIMEOUT = {
-    "message": "The upstream did not respond in time.",
-    "type": "upstream_error",
-    "param": None,
-    "code": "upstream_timeout",
-}
-_UPSTREAM_FAILED = {
-    "message": "The upstream connection failed.",
-    "type": "upstream_error",
-    "param": None,
-    "code": "upstream_error",
-}
-_UPSTREAM_INVALID = {
-    "message": "The upstream response could not be read.",
-    "type": "upstream_error",
-    "param": None,
-    "code": "upstream_invalid_response",
-}
+_UPSTREAM_TIMEOUT = _error(
+    "The upstream did not respond in time.", "upstream_error", "upstream_timeout"
+)
+_UPSTREAM_FAILED = _error("The upstream connection failed.", "upstream_error", "upstream_error")
+_UPSTREAM_INVALID = _error(
+    "The upstream response could not be read.", "upstream_error", "upstream_invalid_response"
+)
 
 # End of an SSE event: a blank line, with any of the three line endings.
 _EVENT_ENDS = (b"\n\n", b"\r\r", b"\r\n\r\n")
-
-
-def _error_response(status: int, error: dict) -> JSONResponse:
-    return JSONResponse(status_code=status, content={"error": error})
 
 
 def _failure(route: GatewayUpstream, exc: Exception) -> tuple[int, dict]:
@@ -653,11 +642,13 @@ def create_gateway_endpoints(
         prompt_text = _extract_prompt_text(messages)
         # Same estimate as /mcp: the length of the scanned text.
         if 0 < cfg.MAX_REQUEST_TOKENS < len(prompt_text):
-            return _openai_error(
+            return _error_response(
                 413,
-                "Request content exceeds the token limit.",
-                "invalid_request_error",
-                "request_tokens_exceeded",
+                _error(
+                    "Request content exceeds the token limit.",
+                    "invalid_request_error",
+                    "request_tokens_exceeded",
+                ),
             )
         event_id = uuid.uuid4().hex
 
