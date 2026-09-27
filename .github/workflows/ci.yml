@@ -19,6 +19,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # The release workflows call this workflow as their test gate: nothing is
+  # published unless every job below passes on the tagged commit.
+  workflow_call:
 
 # Least-privilege default for all jobs: they only check out code and run
 # read-only checks (version guard, ruff, bandit, pytest, cargo/maturin).

@@ -71,7 +71,14 @@ jobs:
             exit 1
           fi
 
-  # ── 2. Build admina-core wheels (Rust extension) ────────────────────────
+  # ── 2. Test gate: the CI workflow (Rust tests included) on the tag ──────
+  tests:
+    name: Test gate
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  # ── 3. Build admina-core wheels (Rust extension) ────────────────────────
   build-core-wheels:
     name: admina-core wheel (${{ matrix.target }})
     needs: check-version
@@ -113,7 +120,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # ── 3. Build admina-core sdist (for platforms without pre-built wheels) ─
+  # ── 4. Build admina-core sdist (for platforms without pre-built wheels) ─
   build-core-sdist:
     name: admina-core sdist
     needs: check-version
@@ -136,10 +143,10 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # ── 4. Publish admina-core to PyPI ──────────────────────────────────────
+  # ── 5. Publish admina-core to PyPI ──────────────────────────────────────
   publish-core:
     name: Publish admina-core to PyPI
-    needs: [build-core-wheels, build-core-sdist]
+    needs: [build-core-wheels, build-core-sdist, tests]
     runs-on: ubuntu-latest
     environment:
       name: pypi-core
