@@ -134,6 +134,75 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 - `scripts/bench_gateway.py`: time to the first chunk added by the gateway
   and event loop lag on a retrieval-augmented trace, per firewall engine.
 
+- `ADMINA_CONFIG`: the `admina.yaml` to load, for example
+  `/etc/admina/admina.yaml`. When it is set, `load_config()` reads exactly
+  that file, and so do the proxy, the firewall overrides, the egress policy
+  and the PII engine selection; a missing, unreadable or invalid file raises
+  `admina.core.config.ConfigFileError` and the proxy does not start. Unset
+  or empty, the search in the current directory and in the package
+  directory is unchanged. Explicit `yaml_path` and `search_paths` arguments
+  still take precedence.
+- `ADMINA_API_KEY_FILE` and `ADMINA_FORENSIC_STATE_KEY_FILE`: files holding
+  the API key and the forensic chain-state key, read once at startup with
+  one trailing newline removed. A missing, unreadable or empty file, or a
+  key set both directly and as a file, stops the proxy; the error names the
+  setting and the path, not the key. The built-in filesystem forensic store
+  plugin reads `ADMINA_FORENSIC_STATE_KEY_FILE` too.
+  `admina.core.secretfile.secret_from_env()` resolves such a pair of
+  environment variables.
+- `ADMINA_ENABLED_SURFACES`: the surfaces the proxy serves, comma-separated
+  (empty = all): `gateway` (`/v1/*`), `mcp` (`/mcp`, `/mcp/*`),
+  `integration` (`/api/v1/*`), `compliance` (`/api/compliance/*`) and
+  `dashboard` (`/api/dashboard/*` with the live feed and the browser
+  sign-in, `/api/stats`, `/api/events`, the dashboard shell). The routes of
+  a disabled surface are not mounted and answer 404 before authentication;
+  `/health` and `/metrics` are always served. An unknown surface name stops
+  the proxy. The startup banner lists the enabled surfaces.
+- `GET /health` reports `mode` (governance mode), `surfaces` (enabled
+  surfaces), `ruleset_sha256` (the active firewall ruleset, as in
+  `X-Admina-Ruleset`) and `forensic_writable` (filesystem backend: a probe
+  file created, written, fsynced and removed in `FORENSIC_BASE_DIR` on each
+  call; `s3`: the result of the last record write, `null` before the first;
+  `memory`: `null`). The other fields, `engine` included, are unchanged.
+  Example (`ADMINA_ENABLED_SURFACES=gateway`, filesystem backend, Rust
+  engine):
+
+  ```json
+  {
+    "status": "healthy",
+    "service": "admina-proxy",
+    "version": "0.12.1",
+    "mode": "enforce",
+    "surfaces": ["gateway"],
+    "ruleset_sha256": "f10630f3bbdd03394a09e65739af1c6a9f77d9fe9de7b348f12566d56070d284",
+    "forensic_writable": true,
+    "engine": {
+      "engine": "rust",
+      "rust_available": true,
+      "rust_version": "0.12.1",
+      "selection": "auto",
+      "active": "rust",
+      "pii_active": "python"
+    },
+    "timestamp": "2026-09-27T18:35:14.481520+00:00"
+  }
+  ```
+
+- `ForensicBlackBox.writable()`: the write check behind `forensic_writable`.
+- `proxy-minimal` extra: the proxy without Redis, ClickHouse, boto3, typer
+  and the numpy/scikit-learn stack of the Python loop breaker. It serves
+  the gateway surface (`ADMINA_ENABLED_SURFACES=gateway`, with `REDIS_URL`
+  and `CLICKHOUSE_HOST` empty); with the `mcp` or `integration` surface
+  enabled and neither `proxy` nor `rust` installed, the proxy does not
+  start and says which extra to install.
+- `ADMINA_LOG_FORMAT=json`: one JSON object per log line (`timestamp`,
+  `level`, `logger`, `message`, and `exception` when there is one),
+  uvicorn's own lines included. Other record attributes are not written.
+  `text` (default) keeps the current format.
+- `ADMINA_METRICS_REQUIRE_AUTH` and `ADMINA_API_DOCS_REQUIRE_AUTH` (default
+  `false`): put `/metrics`, and `/docs`, `/redoc`, `/openapi.json`, behind
+  the API key.
+
 ### Changed
 
 - The gateway runs the governance pipeline (firewall, PII redaction, egress
@@ -186,6 +255,22 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   (structural values and identity kept, `logprobs` and `token_ids` of each
   choice `null`). `GET /v1/models` forwards the upstream body unchanged
   when no allow-list is set.
+
+- `redis` is imported only for a `REDIS_URL` with a Redis scheme and
+  `clickhouse_connect` only for a non-empty `CLICKHOUSE_HOST`; `boto3`
+  stays limited to `FORENSIC_BACKEND=s3`. With `REDIS_URL` and
+  `CLICKHOUSE_HOST` empty there is no connection attempt. A backend that is
+  configured while its package is missing is logged as a warning and left
+  off.
+- The loop breaker is built only when the `mcp` or `integration` surface is
+  enabled, the coordination detector with its quarantine refresh loop only
+  with `mcp`, and the gateway's pipeline threads only with `gateway`.
+  Without the loop breaker `/api/stats` reports `"loop_breaker": {}` and the
+  startup banner `Loop Breaker: OFF`.
+- The container entrypoint accepts `ADMINA_API_KEY` or `ADMINA_API_KEY_FILE`
+  and prints only whether the key is set, not any of its characters.
+- Validation errors of the proxy settings name the setting without echoing
+  the configured values.
 
 ### Fixed
 

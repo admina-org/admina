@@ -146,6 +146,10 @@ python -m spacy download en_core_web_sm   # for [all] only
 # Opt-in extra — pulls in the admina-core wheel from PyPI.
 pip install "admina-framework[rust]"
 
+# The proxy for the OpenAI-compatible gateway only: without Redis,
+# ClickHouse, boto3 and the scientific stack (see "Embedded deployment").
+pip install "admina-framework[proxy-minimal]"
+
 # Advanced: SDK only (no proxy, no dashboard, no `admina dev`).
 # Use this when embedding the SDK into another service and you don't
 # need the local dev server.
@@ -366,6 +370,108 @@ scanned text. `ADMINA_GATEWAY_MAX_PROMPT_CHARS` (default `0`, no limit) caps
 the message text of `POST /v1/chat/completions`, in characters (the text of
 every message, as scanned); longer requests get 413 (`invalid_request_error`,
 code `prompt_too_long`) before any governance check.
+
+### Embedded deployment
+
+Settings for running the proxy as one component of a larger system (a
+container, a service unit). Each one defaults to the behaviour described in
+the rest of this README.
+
+**Configuration file.** `ADMINA_CONFIG` names the `admina.yaml` to load, for
+example `/etc/admina/admina.yaml`. When it is set, exactly that file is read
+by the proxy, the engines and the SDK's `load_config()`; a missing,
+unreadable or invalid file stops the proxy at startup instead of falling
+back to the defaults. Unset (or empty), Admina looks for `admina.yaml` in the
+current directory, then in the directory of the `admina` package.
+
+**Secrets from files.** `ADMINA_API_KEY_FILE` and
+`ADMINA_FORENSIC_STATE_KEY_FILE` name files holding the API key and the
+forensic chain-state key (for example `/run/secrets/admina_api_key`), as the
+upstream key files of the gateway do. Each file is read once at startup, with
+one trailing newline removed. A missing, unreadable or empty file, or a key
+set both directly and as a file, stops the proxy; the error names the
+setting and the path, never the key.
+
+**Surfaces.** `ADMINA_ENABLED_SURFACES` lists the surfaces the proxy serves,
+comma-separated (empty = all of them):
+
+| Surface | Routes |
+|---------|--------|
+| `gateway` | `/v1/*` (OpenAI-compatible gateway) |
+| `mcp` | `/mcp`, `/mcp/*` |
+| `integration` | `/api/v1/*` (validate, audit, forensic verify) |
+| `compliance` | `/api/compliance/*` |
+| `dashboard` | `/api/dashboard/*` (live feed and browser sign-in included), `/api/stats`, `/api/events`, the dashboard shell (`/`, `/heimdall.png`, `/vendor/*`) |
+
+The routes of a disabled surface are not mounted and answer 404, with or
+without the API key. `/health` and `/metrics` are always served. The loop
+breaker is built only when `mcp` or `integration` is enabled, the
+coordination detector and its quarantine refresh loop only with `mcp`, and
+the gateway's pipeline threads only with `gateway`.
+
+**Optional dependencies.** `redis` is imported only when `REDIS_URL` has a
+Redis scheme, `clickhouse_connect` only when `CLICKHOUSE_HOST` is not empty
+and `boto3` only when `FORENSIC_BACKEND=s3`. `REDIS_URL=` and
+`CLICKHOUSE_HOST=` (empty) turn Redis and ClickHouse off with no connection
+attempt. The `proxy-minimal` extra installs the proxy without Redis,
+ClickHouse, boto3, typer and the scientific stack of the Python loop breaker:
+
+```bash
+pip install "admina-framework[proxy-minimal]"
+ADMINA_ENABLED_SURFACES=gateway REDIS_URL= CLICKHOUSE_HOST= \
+  ADMINA_API_KEY_FILE=/run/secrets/admina_api_key \
+  uvicorn admina.proxy.main:app --host 0.0.0.0 --port 8080
+```
+
+With `proxy-minimal`, the `mcp` and `integration` surfaces need the `proxy`
+extra (or `rust`, whose loop breaker needs no scientific stack); the proxy
+does not start when they are enabled without it.
+
+**Health.** `GET /health` (public) reports:
+
+```json
+{
+  "status": "healthy",
+  "service": "admina-proxy",
+  "version": "0.12.1",
+  "mode": "enforce",
+  "surfaces": ["gateway"],
+  "ruleset_sha256": "f10630f3bbdd03394a09e65739af1c6a9f77d9fe9de7b348f12566d56070d284",
+  "forensic_writable": true,
+  "engine": {
+    "engine": "rust",
+    "rust_available": true,
+    "rust_version": "0.12.1",
+    "selection": "auto",
+    "active": "rust",
+    "pii_active": "python"
+  },
+  "timestamp": "2026-09-27T18:35:14.481520+00:00"
+}
+```
+
+- `mode`: the governance mode (`enforce`, `observe` or `dry-run`);
+- `surfaces`: the enabled surfaces;
+- `ruleset_sha256`: the active firewall ruleset, the value of
+  `X-Admina-Ruleset` (see [Firewall ruleset](#firewall-ruleset));
+- `forensic_writable`: whether the forensic store accepts writes. With the
+  `filesystem` backend each call creates, writes, fsyncs and removes a probe
+  file in `FORENSIC_BASE_DIR`; with `s3` it is the result of the last record
+  write (`null` before the first); with `memory` it is `null`.
+
+**Logs.** `ADMINA_LOG_FORMAT=json` writes one JSON object per line
+(`timestamp`, `level`, `logger`, `message` and `exception` when there is
+one), uvicorn's own lines included; `text` is the default.
+
+**`/metrics` and the API docs.** Both are public by default.
+`ADMINA_METRICS_REQUIRE_AUTH=true` and `ADMINA_API_DOCS_REQUIRE_AUTH=true`
+put `/metrics` and `/docs`, `/redoc`, `/openapi.json` behind the API key
+(`X-API-Key` or `Authorization: Bearer`); a browser opening `/docs` then
+cannot load the schema. `ADMINA_API_DOCS_ENABLED=false` removes the docs.
+
+**Container entrypoint.** `admina/proxy/docker-entrypoint.sh` accepts
+`ADMINA_API_KEY` or `ADMINA_API_KEY_FILE` and prints only whether the key
+is set, never any part of it.
 
 ### OpenAI-compatible gateway
 
@@ -873,10 +979,15 @@ production.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ADMINA_API_KEY` | *(empty)* | API key for all endpoints |
+| `ADMINA_API_KEY_FILE` | *(empty)* | File holding the API key, instead of `ADMINA_API_KEY` |
+| `ADMINA_CONFIG` | *(empty)* | `admina.yaml` to load (empty: current directory, then package directory) |
+| `ADMINA_ENABLED_SURFACES` | *(empty = all)* | Surfaces served: `gateway`, `mcp`, `integration`, `compliance`, `dashboard` |
 | `UPSTREAM_MCP_URL` | `http://localhost:9000` | Default upstream MCP server |
-| `REDIS_URL` | `redis://localhost:6379/0` | Session state + rate limiting |
+| `REDIS_URL` | `redis://localhost:6379/0` | Session state + rate limiting (empty = no Redis) |
+| `CLICKHOUSE_HOST` | `localhost` | Event analytics (empty = no ClickHouse) |
 | `FORENSIC_BACKEND` | `memory` | Forensic store: `memory` \| `filesystem` \| `s3` |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
+| `ADMINA_LOG_FORMAT` | `text` | Log output: `text` \| `json` |
 
 </details>
 
