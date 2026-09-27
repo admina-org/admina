@@ -114,10 +114,18 @@ jobs:
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
+      - name: Set up Rust toolchain
+        # uv.lock resolves admina-core from ./core-rust, so the [rust] extra
+        # is built from this commit and the engine tests run against it.
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772  # stable
+        with:
+          toolchain: stable
+
       - name: Install dependencies
         # --all-extras pulls in [proxy] (fastapi/uvicorn/redis/clickhouse/
         # boto3), [nlp] (spacy/sklearn/numpy) and [telemetry] (otel)
-        # so the dashboard / integration tests can import them.
+        # so the dashboard / integration tests can import them, and [rust]
+        # (admina-core built from ./core-rust).
         run: uv sync --group dev --all-extras --python ${{ matrix.python-version }}
 
       - name: Download spaCy model

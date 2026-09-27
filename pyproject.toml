@@ -124,11 +124,11 @@ rust = [
     # extra evasion-normalisation patterns.
     #
     # admina-core and admina-framework are released in lockstep from the same
-    # tag (scripts/check-versions.py enforces manifest alignment), but the pin
-    # is a compatible range rather than `==`: a strict pin would create a
-    # release chicken-and-egg (a bumped framework would require an
-    # admina-core of the new version that is not on PyPI until the tag is
-    # pushed, breaking local `uv sync`). The engine-bridge ABI is stable
+    # tag (scripts/check-versions.py enforces manifest alignment). The
+    # published metadata carries the version range below; uv.lock resolves
+    # admina-core from ./core-rust instead ([tool.uv.sources]), so
+    # `uv sync --extra rust` (or --all-extras) builds the engine of the same
+    # checkout, which needs a Rust toolchain. The engine-bridge ABI is stable
     # across the 0.9.x–0.12.x line, so any 0.9.x through 0.12.x core works
     # with this framework.
     "admina-core>=0.9.3,<0.13",
@@ -183,6 +183,12 @@ dev = [
 # matches what CI resolves and prevents the proxy/nlp/integration suites from
 # silently skipping when those deps are absent.
 default-extras = ["proxy", "nlp", "telemetry"]
+
+[tool.uv.sources]
+# uv.lock and `uv sync` take admina-core from this checkout (a maturin build)
+# rather than from PyPI, so the tests run against the engine that the same
+# commit ships. Package builds ignore this table.
+admina-core = { path = "core-rust" }
 
 [tool.setuptools.packages.find]
 include = ["admina*"]

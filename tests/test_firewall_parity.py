@@ -56,10 +56,10 @@ def _rust_has_per_pattern_risk() -> bool:
     The per-pattern risk model (a single `instruction_override` match →
     "critical") ships from 0.9.4 onward. Older published wheels (e.g.
     admina-core 0.9.3 on PyPI) derive risk from the match count, so a single
-    match reports "medium". `uv sync --all-extras` in CI pulls the published
-    wheel, which may lag the in-repo Rust source — probe the actual behaviour
-    rather than the version string so parity assertions only run against an
-    engine that has the fix.
+    match reports "medium". An environment may carry such a published wheel
+    (`uv sync --all-extras` builds ./core-rust instead) — probe the actual
+    behaviour rather than the version string so parity assertions only run
+    against an engine that has the fix.
     """
     if not _has_rust_engine():
         return False

@@ -10,14 +10,8 @@ resolution-markers = [
 
 [[package]]
 name = "admina-core"
-version = "0.9.3"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/34/f2/1fe972ae5c5370500c44f0fbc131789c6dbbeeedf5ad0d47351b0657d9c8/admina_core-0.9.3.tar.gz", hash = "sha256:172b34da21a74257b80989fa7a98e04ef926a54b3c5660b662ad7286f8e1c3ad", size = 15886, upload-time = "2026-05-23T16:02:38.639Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/16/7d/77a2edfaf853b4e72783aa62bc72a243d8882a8460c3bd5c5b1437bb1eac/admina_core-0.9.3-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:e8005ad3d1c5c00b3a8079e2eb14e4cdc76258c7670d02481cc98d1275e8d6a8", size = 923522, upload-time = "2026-05-23T16:02:33.881Z" },
-    { url = "https://files.pythonhosted.org/packages/d2/af/e5e8c384c96212c6455301086cbb319725226a72fbce5b7eda1cbe591acc/admina_core-0.9.3-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:a5d1726a5da8e15c89196969735f9fecd5db3dbc0784a141a18418b245fd4d76", size = 1053698, upload-time = "2026-05-23T16:02:35.44Z" },
-    { url = "https://files.pythonhosted.org/packages/8f/22/1faa8e6ee537c90a1b2fef913ca1bebce1703c92806dbb3bb29a998bff82/admina_core-0.9.3-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:576f9b25b26b10c748d8b558fbdfd5bdf72325a6baf931f3050cad25108e54ca", size = 1065724, upload-time = "2026-05-23T16:02:37.048Z" },
-]
+version = "0.12.1"
+source = { directory = "core-rust" }
 
 [[package]]
 name = "admina-framework"
@@ -154,7 +148,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "admina-core", marker = "extra == 'rust'", specifier = ">=0.9.3,<0.13" },
+    { name = "admina-core", marker = "extra == 'rust'", directory = "core-rust" },
     { name = "admina-framework", extras = ["openai", "ollama", "anthropic", "mistral", "gemini", "bedrock"], marker = "extra == 'adapters'" },
     { name = "admina-framework", extras = ["proxy", "nlp", "telemetry"], marker = "extra == 'full'" },
     { name = "admina-framework", extras = ["proxy", "nlp", "telemetry", "adapters", "presidio"], marker = "extra == 'all'" },

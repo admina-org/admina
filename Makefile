@@ -80,9 +80,10 @@ status:
 # Runs the jobs of .github/workflows/ci.yml on this machine. Python 3.11
 # uses .venv; the other versions use .venv-<version>. A missing environment
 # is created with `uv sync --frozen --group dev --all-extras`; since a sync
-# drops the spaCy models and installs admina-core from PyPI, both are then
-# reinstalled (the models as wheels, admina-core from ./core-rust). Tools
-# run from the environment directly: `uv run` would re-sync it.
+# drops the spaCy models, they are then reinstalled as wheels. Before each
+# test run admina-core is rebuilt from ./core-rust, so the tests use the
+# engine of the working tree. Tools run from the environment directly:
+# `uv run` would re-sync it.
 
 .PHONY: ci-local ci-versions ci-lint ci-security ci-python ci-rust ci-wheel ci-linux ci-audit
 
@@ -114,9 +115,10 @@ ci-python:
 			echo "Creating $$env (Python $$v)"; \
 			UV_PROJECT_ENVIRONMENT=$$env uv sync --frozen --group dev --all-extras --python $$v \
 				&& uv pip install --python $$env/bin/python "$(CI_SPACY_EN)" "$(CI_SPACY_IT)" \
-				&& uv pip install --python $$env/bin/python ./core-rust \
 				|| exit 1; \
 		fi; \
+		uv pip install --quiet --python $$env/bin/python --reinstall-package admina-core ./core-rust \
+			|| exit 1; \
 		echo "── pytest on Python $$v ($$env)"; \
 		log=$$(mktemp); \
 		{ $$env/bin/python -m pytest tests/ -m "not benchmark" --tb=short; echo $$? > "$$log.rc"; } 2>&1 | tee "$$log"; \
@@ -159,9 +161,10 @@ ci-wheel:
 
 # Runs the Python test suite on Linux in a single throw-away container. The
 # checkout is mounted read-only and copied without local environments, build
-# output or bytecode caches; dependencies come from uv.lock, as in CI. The
-# container runs on the CPUs in CI_LINUX_CPUS (default 0-3: four, like a
-# hosted CI runner; empty = every CPU of the Docker host).
+# output or bytecode caches; dependencies come from uv.lock, as in CI, and
+# admina-core is built from ./core-rust with the distribution's Rust
+# toolchain. The container runs on the CPUs in CI_LINUX_CPUS (default 0-3:
+# four, like a hosted CI runner; empty = every CPU of the Docker host).
 ci-linux:
 	docker run --rm --name $(CI_LINUX_CONTAINER) $(if $(CI_LINUX_CPUS),--cpuset-cpus $(CI_LINUX_CPUS)) \
 		-v "$(CURDIR)":/src:ro $(CI_LINUX_IMAGE) sh -c '\
@@ -171,6 +174,8 @@ ci-linux:
 			--exclude=./core-rust/target --exclude=__pycache__ --exclude=.pytest_cache \
 			. | tar -C /work -xf -; \
 		cd /work; \
+		apt-get update -qq; \
+		apt-get install -y -qq --no-install-recommends build-essential cargo rustc >/dev/null; \
 		pip install --quiet --disable-pip-version-check --root-user-action=ignore uv; \
 		uv sync --frozen --group dev --all-extras; \
 		uv pip install --python .venv/bin/python "$(CI_SPACY_EN)"; \
