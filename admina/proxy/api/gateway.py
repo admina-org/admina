@@ -113,7 +113,7 @@ from admina.proxy.gateway_response_scan import (
 from admina.proxy.gateway_scan import (
     RULESET_HEADER,
     GatewayScanConfig,
-    default_gateway_scan_config,
+    scan_config_of,
 )
 from admina.proxy.gateway_transport import DEFAULT_STREAM_MODE, total_deadline
 from admina.proxy.gateway_upstreams import UPSTREAM_HEADER, GatewayUpstream, GatewayUpstreams
@@ -147,7 +147,7 @@ def _select_upstream(request: Request, state: Any, cfg: Any) -> GatewayUpstream 
 def _scan_config(state: Any) -> GatewayScanConfig:
     """The scan settings resolved at startup, or the defaults for a router
     used without them."""
-    return getattr(state, "gateway_scan", None) or default_gateway_scan_config()
+    return scan_config_of(state)
 
 
 def _scan_scope(request: Request, state: Any, cfg: Any, scan: GatewayScanConfig) -> ScanScope:

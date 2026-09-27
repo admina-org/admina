@@ -533,9 +533,11 @@ ruleset_sha256(load_config("admina.yaml"), engine="rust")  # Rust engine
 ```
 
 The proxy computes it at startup for the engine its firewall runs on. Every
-`POST /v1/chat/completions` response carries it in `X-Admina-Ruleset` (allowed,
-blocked and error responses), and `GET /v1/admina/ruleset` (API key required)
-returns:
+`POST /v1/chat/completions` response carries it in `X-Admina-Ruleset`: allowed,
+blocked and error responses, the 401 of authentication and the 413 of the
+request size limit included. An unexpected failure before the response starts
+gets a 500 with the header and an OpenAI-style body (`type: "server_error"`,
+code `internal_error`). `GET /v1/admina/ruleset` (API key required) returns:
 
 ```json
 {

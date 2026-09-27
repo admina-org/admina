@@ -17,6 +17,8 @@
 ``GET /v1/admina/ruleset`` (API key required) and the ``X-Admina-Ruleset``
 header on every ``POST /v1/chat/completions`` response carry
 ``ruleset_sha256()`` of the configuration and engine the proxy started with.
+The header is also on the responses the route does not produce itself: 401
+from authentication, 413 from the body size limit and 500.
 """
 
 from __future__ import annotations
@@ -194,6 +196,74 @@ def _get(app, headers: dict[str, str] | None = None) -> httpx.Response:
             return await c.get("/v1/admina/ruleset", headers=headers or {})
 
     return asyncio.run(go())
+
+
+_KEY = {"Authorization": "Bearer canary-key-0123456789"}
+
+
+def _post(app, *, headers=None, **kw) -> httpx.Response:
+    async def go() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            return await c.post("/v1/chat/completions", headers=headers or {}, **kw)
+
+    return asyncio.run(go())
+
+
+def test_ruleset_header_on_401(monkeypatch):
+    resp = _post(_proxy_app(monkeypatch), json=chat_body(stream=False))
+    assert resp.status_code == 401
+    assert resp.headers["X-Admina-Ruleset"] == _ACTIVE
+
+
+@pytest.mark.parametrize("declared", [True, False], ids=["content-length", "chunked"])
+def test_ruleset_header_on_413(monkeypatch, declared):
+    from admina.proxy import main as proxy_main
+
+    app = _proxy_app(monkeypatch)
+    monkeypatch.setattr(proxy_main.settings, "ADMINA_MAX_REQUEST_BYTES", 64)
+    raw = json.dumps(chat_body(stream=False, content="x" * 200)).encode()
+
+    async def chunks():
+        yield raw[:32]
+        yield raw[32:]
+
+    resp = _post(app, headers=_KEY, content=raw if declared else chunks())
+    assert resp.status_code == 413
+    assert resp.json()["error"]["code"] == "request_too_large"
+    assert resp.headers["X-Admina-Ruleset"] == _ACTIVE
+
+
+class _BrokenClient:
+    async def post(self, url, **kw):
+        raise RuntimeError("client failure")
+
+
+def test_ruleset_header_on_500(monkeypatch):
+    from _gateway_stream import FakeFirewall
+
+    from admina.proxy import main as proxy_main
+    from admina.proxy.pipeline_executor import PipelineExecutor
+
+    app = _proxy_app(monkeypatch)
+    monkeypatch.setattr(proxy_main.settings, "PII_REDACTION_ENABLED", False)
+    state = proxy_main.app.state.proxy
+    state.firewall = FakeFirewall()
+    state.gateway_http_client = _BrokenClient()
+    state.pipeline_executor = PipelineExecutor(workers=1)
+    try:
+        resp = _post(app, headers=_KEY, json=chat_body(stream=False))
+    finally:
+        state.pipeline_executor.shutdown()
+    assert resp.status_code == 500
+    assert resp.json()["error"]["code"] == "internal_error"
+    assert "client failure" not in resp.text
+    assert resp.headers["X-Admina-Ruleset"] == _ACTIVE
+
+
+def test_no_ruleset_header_on_other_routes(monkeypatch):
+    app = _proxy_app(monkeypatch)
+    assert "X-Admina-Ruleset" not in _get(app).headers  # 401 of GET /v1/admina/ruleset
 
 
 def test_endpoint_requires_the_api_key(monkeypatch):

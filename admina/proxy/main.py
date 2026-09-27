@@ -67,7 +67,11 @@ from admina.proxy.api.gateway import create_gateway_endpoints
 from admina.proxy.api.integration import create_integration_endpoints
 from admina.proxy.body_limit import BodyLimitMiddleware
 from admina.proxy.config import GovernanceEvent, settings
-from admina.proxy.gateway_scan import build_gateway_scan_config
+from admina.proxy.gateway_scan import (
+    RulesetHeaderMiddleware,
+    build_gateway_scan_config,
+    scan_config_of,
+)
 from admina.proxy.gateway_transport import build_gateway_http_client, resolve_stream_mode
 from admina.proxy.gateway_upstreams import build_gateway_upstreams
 from admina.proxy.multi_upstream import MultiUpstreamRouter
@@ -940,10 +944,19 @@ async def auth_middleware(request: Request, call_next) -> JSONResponse:
 
 
 # ── Request body limit ────────────────────────────────────────
-# Added last, so it is the outermost middleware: a body over
+# Added after the other middleware, so it runs before them: a body over
 # ADMINA_MAX_REQUEST_BYTES gets 413 before authentication and before any
 # parsing (see admina.proxy.body_limit).
 app.add_middleware(BodyLimitMiddleware, get_limit=lambda: settings.ADMINA_MAX_REQUEST_BYTES)
+
+# ── Ruleset header ────────────────────────────────────────────
+# Added last, so it is the outermost middleware: every response of
+# /v1/chat/completions carries X-Admina-Ruleset, the 413 of the body limit
+# and the 401 of authentication included (see admina.proxy.gateway_scan).
+app.add_middleware(
+    RulesetHeaderMiddleware,
+    get_ruleset=lambda: scan_config_of(getattr(app.state, "proxy", None)).ruleset_sha256,
+)
 
 
 # ── Admin API ─────────────────────────────────────────────────
