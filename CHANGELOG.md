@@ -23,6 +23,32 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   tabs, commas or newlines, and repeated triggers); `measure_pattern()` also
   names the slowest input. Use it to check
   `agent_security.firewall.custom_patterns` before deploying them.
+- Named upstream routes for the OpenAI-compatible gateway.
+  `ADMINA_GATEWAY_UPSTREAMS` (`name=url[,name=url…]`) or `gateway.upstreams`
+  in `admina.yaml` (`<name>: {url, api_key_file}`) define the routes; the
+  environment variable, when set, replaces the YAML routes.
+  `gateway.default_upstream` names the route used when a request names none
+  (default: the first route). A request selects a route with the
+  `X-Admina-Upstream` header on `POST /v1/chat/completions` and
+  `GET /v1/models`; an unknown route name gets a 400 response in the OpenAI
+  error format (`invalid_request_error`, code `unknown_upstream`) before
+  any governance check or forensic record. Without named routes the gateway
+  has one route, `default`, to `ADMINA_GATEWAY_UPSTREAM`. The
+  `gateway_request` forensic record carries the route name (`upstream`).
+- Upstream API keys for the OpenAI-compatible gateway, sent as
+  `Authorization: Bearer <key>`: `ADMINA_GATEWAY_UPSTREAM_API_KEY` or
+  `ADMINA_GATEWAY_UPSTREAM_API_KEY_FILE` for every route, overridden per
+  route by `ADMINA_GATEWAY_UPSTREAM_<NAME>_API_KEY[_FILE]` (`<NAME>`: route
+  name in upper case) or by the route's `api_key_file`. Key files are read
+  once at startup, with one trailing newline removed. The proxy does not
+  start when a key file is missing, unreadable or empty, when a key is set
+  both directly and as a file, when a route is malformed or when
+  `default_upstream` names no route. Keys are masked in the settings
+  representation and are not logged. Without a key no `Authorization`
+  header is sent. The caller's `Authorization`, `X-API-Key`, `Cookie` and
+  `X-Admina-Upstream` headers are not forwarded upstream.
+- `admina.core.secretfile`: `read_secret_file()` and `resolve_secret()`
+  resolve a secret setting given directly or as `<SETTING>_FILE`.
 
 ### Changed
 
