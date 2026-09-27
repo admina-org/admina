@@ -17,6 +17,17 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 - Local make targets that mirror the CI jobs: `make ci-local`, `make ci-linux`
   and `make ci-audit` (see `make help`).
+- Pattern timing probe, `admina.domains.agent_security.pattern_timing`:
+  `probe_pattern()` returns the worst search time of a regular expression on
+  generated 64k-character inputs (trigger words followed by runs of spaces,
+  tabs, commas or newlines, and repeated triggers); `measure_pattern()` also
+  names the slowest input. Use it to check
+  `agent_security.firewall.custom_patterns` before deploying them.
+
+### Changed
+
+- Firewall patterns match in linear time on long inputs. Categories, risk
+  levels and matching results are unchanged.
 
 ## [0.12.1] — 2026-MM-DD
 
