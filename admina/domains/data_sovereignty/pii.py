@@ -21,6 +21,8 @@ import logging
 import os
 import re
 
+from admina.domains.data_sovereignty.email_matching import EMAIL_RX, iter_email_matches
+
 # spaCy is part of the [nlp] extra. When absent, PIIRedactor falls back
 # to regex-only mode (still covers EMAIL/PHONE/SSN/IBAN/IP/credit-card/EU IDs).
 try:
@@ -76,7 +78,7 @@ PII_CATEGORIES = {
 
 # Regex patterns for PII not covered by spaCy NER
 REGEX_PII_PATTERNS = {
-    "EMAIL": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"),
+    "EMAIL": EMAIL_RX,  # matched with iter_email_matches (see email_matching)
     "PHONE": re.compile(r"(?<!\d)(\+\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?!\d)"),
     "CREDIT_CARD": re.compile(r"\b(?:\d{4}[-\s]?){3}\d{4}\b"),
     "SSN": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
@@ -226,7 +228,10 @@ class PIIRedactor:
 
             # Find all matches; for IP_ADDRESS, drop version-string matches
             # (e.g. "version 1.2.3.4 released") to reduce false positives.
-            matches = list(pattern.finditer(redacted))
+            if pattern is EMAIL_RX:
+                matches = list(iter_email_matches(redacted))
+            else:
+                matches = list(pattern.finditer(redacted))
             if cat_name == "IP_ADDRESS":
                 matches = [m for m in matches if _is_real_ipv4(redacted, m.start(), m.end())]
             elif cat_name == "CREDIT_CARD":

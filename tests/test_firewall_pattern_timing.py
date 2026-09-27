@@ -18,12 +18,15 @@ Every builtin firewall pattern, the text normalisation, the deep path, and
 the PII and egress regexes finish within the time budget
 (``pattern_timing.DEFAULT_BUDGET_MS``) on the long inputs of
 ``pattern_timing.timing_inputs``: 64k characters of spaces, tabs, commas,
-newlines or a mix after each trigger word, and each trigger repeated. Each
-time is the best of up to three runs.
+newlines or a mix after each trigger word, and each trigger repeated. The
+PII and egress matching, and the e-mail category of the PII redactor and of
+the spaCy + regex PII engine, also finish within it on 64k-character runs
+of e-mail local-part characters. Each time is the best of up to three runs.
 """
 
 from __future__ import annotations
 
+import asyncio
 import functools
 from types import SimpleNamespace
 
@@ -32,6 +35,8 @@ import pytest
 from admina.domains.agent_security import egress, firewall
 from admina.domains.agent_security import pattern_timing as pt
 from admina.domains.data_sovereignty import pii
+from admina.domains.data_sovereignty.email_matching import iter_email_matches
+from admina.plugins.builtin.pii import spacy_regex
 
 BUDGET_MS = pt.DEFAULT_BUDGET_MS
 SIZE = pt.DEFAULT_SIZE
@@ -213,3 +218,111 @@ _OTHER_REGEXES = {
 def test_request_text_regex_on_long_inputs(name):
     timing = pt.measure_pattern(_OTHER_REGEXES[name])
     assert timing.worst_ms <= BUDGET_MS, _describe(timing)
+
+
+# ── PII matching on long local-part runs ─────────────────────
+#
+# Long runs of e-mail local-part characters with a word boundary at every
+# other position ("a.a.a…"), alone, before an "@", or after one: a search
+# may start a match attempt at each of those boundaries.
+
+
+def _fill(unit: str, size: int) -> str:
+    return (unit * (size // len(unit) + 1))[:size]
+
+
+_RUN_UNITS = ("a.", ".a", "a-", "a%", "a+", "a_.", "1.")
+
+
+@functools.cache
+def _run_inputs(size: int) -> dict[str, str]:
+    inputs = {}
+    for unit in _RUN_UNITS:
+        inputs[f"{unit!r} repeated"] = _fill(unit, size)
+        inputs[f"{unit!r} repeated + '@x'"] = _fill(unit, size - 2) + "@x"
+    half = size // 2
+    inputs["'a.' repeated + '@' + 'b.' repeated"] = (
+        _fill("a.", half) + "@" + _fill("b.", size - half - 1)
+    )
+    inputs["'x@' + 'a.' repeated"] = "x@" + _fill("a.", size - 2)
+    inputs["'a.@' repeated"] = _fill("a.@", size)
+    inputs["'a@' repeated"] = _fill("a@", size)
+    inputs["'a@b.' + '|' run"] = "a@b." + "|" * (size - 4)
+    return inputs
+
+
+_RUN_LABELS = list(_run_inputs(SIZE))
+
+# What runs on request text: finditer of each regex, except for e-mail
+# addresses, which the PII redactor and the spaCy + regex PII engine match
+# with iter_email_matches (the matches of EMAIL_RX.finditer).
+_RUN_MATCHERS = {
+    **{name: regex.finditer for name, regex in _OTHER_REGEXES.items()},
+    "pii-email": iter_email_matches,
+}
+
+
+def _match_all(name: str) -> SimpleNamespace:
+    """``search(text)`` runs every match of the ``name`` matcher, for timing."""
+    find = _RUN_MATCHERS[name]
+    return SimpleNamespace(search=lambda text: list(find(text)))
+
+
+@pytest.mark.parametrize("name", list(_RUN_MATCHERS))
+def test_request_text_matching_on_long_runs(name):
+    matcher = _match_all(name)
+    timings = {
+        label: pt.search_ms(matcher, text, budget_ms=BUDGET_MS)
+        for label, text in _run_inputs(SIZE).items()
+    }
+    worst = max(timings, key=timings.__getitem__)
+    assert timings[worst] <= BUDGET_MS, f"{timings[worst]:.1f} ms on {worst}"
+
+
+@pytest.mark.parametrize("name", list(_RUN_MATCHERS))
+def test_request_text_matching_time_grows_linearly_on_long_runs(name):
+    """time(64k) / time(16k) stays at most 8 on every long-run input."""
+    matcher = _match_all(name)
+    small_inputs, large_inputs = _run_inputs(SIZE // 4), _run_inputs(SIZE)
+    for label in _RUN_LABELS:
+        small = pt.search_ms(matcher, small_inputs[label])
+        large = pt.search_ms(matcher, large_inputs[label])
+        # Below 0.05 ms the timer and cache noise dominate the ratio.
+        ratio = large / max(small, 0.05)
+        assert ratio <= 8.0, f"{label}: {small:.3f} ms at 16k, {large:.3f} ms at 64k"
+
+
+_EMAIL_ONLY = {
+    name: {**config, "enabled": name == "EMAIL"} for name, config in pii.PII_CATEGORIES.items()
+}
+
+
+@functools.cache
+def _regex_only_redactor() -> pii.PIIRedactor:
+    redactor = pii.PIIRedactor()
+    redactor.nlp = None  # regex categories only
+    return redactor
+
+
+@functools.cache
+def _regex_only_engine() -> spacy_regex.SpaCyRegexPIIEngine:
+    engine = spacy_regex.SpaCyRegexPIIEngine()
+    engine._nlp_loaded = True  # regex pass only
+    return engine
+
+
+@pytest.mark.parametrize("label", _RUN_LABELS)
+def test_pii_redact_email_on_long_runs(label):
+    redactor = _regex_only_redactor()
+    ms = _best_ms(lambda text: redactor.redact(text, _EMAIL_ONLY), _run_inputs(SIZE)[label])
+    assert ms <= BUDGET_MS, f"{ms:.1f} ms"
+
+
+@pytest.mark.parametrize("label", _RUN_LABELS)
+def test_pii_engine_detect_email_on_long_runs(label):
+    engine = _regex_only_engine()
+    ms = _best_ms(
+        lambda text: asyncio.run(engine.detect(text, categories=["EMAIL"])),
+        _run_inputs(SIZE)[label],
+    )
+    assert ms <= BUDGET_MS, f"{ms:.1f} ms"

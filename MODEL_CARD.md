@@ -215,10 +215,10 @@ Detects and redacts PII in text. Three modes:
   too ambiguous to regex safely). Python engine default; Rust path
   opt-in via `ADMINA_ENGINE=rust`. Categories are individually
   toggleable from `admina.yaml`
-  (`admina/domains/data_sovereignty/pii.py:39-106`).
+  (`admina/domains/data_sovereignty/pii.py:41-108`).
 - **Regex + spaCy NER** (`pip install admina-framework[nlp]`): adds named-entity
   detection for `PERSON`, `ORG`, `GPE`, `LOC`. Python only
-  (`admina/domains/data_sovereignty/pii.py:58-75`).
+  (`admina/domains/data_sovereignty/pii.py:60-77`).
 - **Microsoft Presidio** (`pip install admina-framework[presidio]`,
   selected with `ADMINA_PII_ENGINE=presidio` or `pii_engine: presidio`
   in `admina.yaml`): a third, opt-in detection engine. Presidio does
