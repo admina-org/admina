@@ -225,7 +225,8 @@ gateway:
   # stream_mode: passthrough
   # Tags whose blocks (<tag ...>...</tag> in message text) a request may
   # declare as already scanned in X-Admina-Scan-Policy; the firewall then
-  # skips them. Tag names are case-sensitive. None by default.
+  # skips them. Tag names are case-sensitive. None by default. The header is
+  # honoured only with ADMINA_GATEWAY_SCAN_POLICY_ENABLED=true.
   # prescan_tags: [source, document]
   # Rulesets (SHA-256, 64 hex characters) a request may declare in
   # X-Admina-Scan-Policy besides the proxy's own, e.g. the ruleset of an SDK

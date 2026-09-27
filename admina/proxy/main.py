@@ -1033,6 +1033,12 @@ async def prometheus_metrics(request: Request) -> Response:
         m.get("prescan_malformed", 0),
         "Gateway requests with a malformed X-Admina-Scan-Policy (scanned in full)",
     )
+    _metric(
+        "prescan_ignored_total",
+        m.get("prescan_ignored", 0),
+        "Gateway requests whose X-Admina-Scan-Policy was ignored because scan "
+        "policies are off (scanned in full)",
+    )
     for _status, _counter in COORDINATION_COUNTERS.items():
         _metric(
             "coordination_verdicts_total",

@@ -29,7 +29,8 @@ Every chat completion response carries ``X-Admina-Ruleset``, the
 :func:`~admina.domains.agent_security.ruleset.ruleset_sha256` of the rules
 the gateway scans with (see :mod:`admina.proxy.gateway_scan`). The firewall
 scans the messages of the roles in ``ADMINA_GATEWAY_SCAN_ROLES``, narrowed
-by an accepted ``X-Admina-Scan-Policy`` (see
+by an accepted ``X-Admina-Scan-Policy`` while
+``ADMINA_GATEWAY_SCAN_POLICY_ENABLED`` is on (see
 :mod:`admina.domains.agent_security.scan_policy`).
 
 The governance pipeline runs in the worker threads of
@@ -151,6 +152,7 @@ def _scan_scope(request: Request, state: Any, cfg: Any, scan: GatewayScanConfig)
         scan_roles=parse_scan_roles(cfg.ADMINA_GATEWAY_SCAN_ROLES),
         prescan_tags=scan.prescan_tags,
         accepted_rulesets=scan.accepted_rulesets,
+        policy_enabled=cfg.ADMINA_GATEWAY_SCAN_POLICY_ENABLED,
     )
     inc_metric = getattr(state, "inc_metric", None)
     if scope.status != "none" and inc_metric is not None:
@@ -1017,7 +1019,8 @@ def create_gateway_endpoints(
     @router.get("/admina/ruleset", summary="Active firewall ruleset")
     async def active_ruleset() -> dict[str, Any]:
         scan = _scan_config(get_state())
-        roles = parse_scan_roles(get_settings().ADMINA_GATEWAY_SCAN_ROLES)
+        cfg = get_settings()
+        roles = parse_scan_roles(cfg.ADMINA_GATEWAY_SCAN_ROLES)
         return {
             "ruleset_sha256": scan.ruleset_sha256,
             "engine": scan.engine,
@@ -1026,6 +1029,7 @@ def create_gateway_endpoints(
             "accepted_prescan_rulesets": list(scan.accepted_rulesets),
             "prescan_tags": sorted(scan.prescan_tags),
             "scan_roles": [role for role in SCAN_ROLES if role in roles],
+            "scan_policy_enabled": cfg.ADMINA_GATEWAY_SCAN_POLICY_ENABLED,
         }
 
     return router

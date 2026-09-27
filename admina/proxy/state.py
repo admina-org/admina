@@ -106,6 +106,7 @@ class ProxyState:
             "prescan_accepted": 0,
             "prescan_ruleset_mismatch": 0,
             "prescan_malformed": 0,
+            "prescan_ignored": 0,
             "avg_latency_ms": 0.0,
             "started_at": datetime.now(UTC).isoformat(),
         }

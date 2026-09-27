@@ -16,8 +16,10 @@
 and gateway.prescan_tags.
 
 A request narrows the firewall scan only with a well-formed
-``X-Admina-Scan-Policy`` whose ruleset the proxy accepts; otherwise every
-message of a configured role is scanned in full.
+``X-Admina-Scan-Policy`` whose ruleset the proxy accepts, and only while the
+operator has enabled scan policies (``ADMINA_GATEWAY_SCAN_POLICY_ENABLED``,
+off by default); otherwise every message of a configured role is scanned in
+full.
 """
 
 from __future__ import annotations
@@ -146,12 +148,13 @@ def test_malformed_header(value):
 # ── Scope resolution ──────────────────────────────────────────
 
 
-def _resolve(*values: str, roles=ALL_ROLES, tags=frozenset({"source", "document"})):
+def _resolve(*values: str, roles=ALL_ROLES, tags=frozenset({"source", "document"}), enabled=True):
     return resolve_scan_scope(
         list(values),
         scan_roles=roles,
         prescan_tags=tags,
         accepted_rulesets=(ACTIVE, EXTRA),
+        policy_enabled=enabled,
     )
 
 
@@ -160,6 +163,18 @@ def test_no_header_scans_the_configured_roles():
     assert scope == ScanScope(roles=ALL_ROLES, tags=frozenset(), status="none", ruleset=None)
     assert not scope.accepted
     assert not scope.narrowed
+
+
+@pytest.mark.parametrize(
+    "value",
+    [f"v1; roles=system; ruleset={ACTIVE}", "v1; roles=user", "not a policy"],
+)
+def test_policy_is_ignored_unless_enabled(value):
+    scope = _resolve(value, enabled=False)
+    assert scope == ScanScope(roles=ALL_ROLES, tags=frozenset(), status="ignored", ruleset=None)
+    assert not scope.accepted
+    assert not scope.narrowed
+    assert _resolve(enabled=False).status == "none"
 
 
 def test_header_with_the_active_ruleset_narrows_the_scan():
@@ -380,14 +395,19 @@ class _Metrics:
         self.counts[key] = self.counts.get(key, 0) + value
 
 
-def _send(messages, header=None, *, roles="system,user,assistant,tool"):
+def _send(messages, header=None, *, roles="system,user,assistant,tool", enabled=True):
+    """Send *messages* with the policy *header*; *enabled* sets
+    ADMINA_GATEWAY_SCAN_POLICY_ENABLED (None = its default)."""
     upstream = MockUpstream([json.dumps(_COMPLETION).encode()], content_type="application/json")
     recorder = _Recorder()
     metrics = _Metrics()
+    over = {"ADMINA_GATEWAY_SCAN_ROLES": roles}
+    if enabled is not None:
+        over["ADMINA_GATEWAY_SCAN_POLICY_ENABLED"] = enabled
     resp = through(
         upstream,
         {"model": "example-model", "messages": messages},
-        settings(ADMINA_GATEWAY_SCAN_ROLES=roles),
+        settings(**over),
         state={
             "firewall": InjectionFirewall(),
             "forensic_box": recorder,
@@ -422,6 +442,32 @@ def test_system_is_scanned_by_default():
         "ruleset": None,
     }
     assert counts == {}
+
+
+def test_scan_policies_are_off_by_default():
+    from admina.proxy.config import Settings
+
+    assert Settings().ADMINA_GATEWAY_SCAN_POLICY_ENABLED is False
+
+
+@pytest.mark.parametrize("enabled", [None, False])
+def test_policy_is_ignored_while_scan_policies_are_off(enabled):
+    blocked, event, counts = _send([_SYSTEM, _USER], _policy(roles="user"), enabled=enabled)
+    assert blocked
+    assert event["prescan"] == {
+        "accepted": False,
+        "status": "ignored",
+        "roles": ["system", "user", "assistant", "tool"],
+        "tags": [],
+        "ruleset": None,
+    }
+    assert counts == {"prescan_ignored": 1}
+
+
+def test_prescanned_block_is_scanned_while_scan_policies_are_off():
+    content = f"Answer from the sources.\n<source id=1>{INJECTION}</source>\nWhat is new?"
+    blocked, _, _ = _send([{"role": "user", "content": content}], _policy(), enabled=False)
+    assert blocked
 
 
 def test_accepted_policy_skips_the_system_message():
@@ -501,6 +547,7 @@ def test_policy_without_prescan_setting_still_scans_the_tags():
     resp = through(
         upstream,
         {"model": "m", "messages": [{"role": "user", "content": f"<source>{INJECTION}</source>"}]},
+        settings(ADMINA_GATEWAY_SCAN_POLICY_ENABLED=True),
         state={"firewall": InjectionFirewall(), "gateway_scan": default_scan},
         headers={"X-Admina-Scan-Policy": _policy()},
     )
@@ -519,6 +566,7 @@ def test_prescan_counters_on_metrics(monkeypatch):
     state.inc_metric("prescan_accepted", 3)
     state.inc_metric("prescan_ruleset_mismatch", 2)
     state.inc_metric("prescan_malformed")
+    state.inc_metric("prescan_ignored", 4)
     monkeypatch.setattr(proxy_main.app.state, "proxy", state, raising=False)
 
     async def go() -> httpx.Response:
@@ -530,6 +578,7 @@ def test_prescan_counters_on_metrics(monkeypatch):
     assert "admina_prescan_accepted_total 3" in lines
     assert "admina_prescan_ruleset_mismatch_total 2" in lines
     assert "admina_prescan_malformed_total 1" in lines
+    assert "admina_prescan_ignored_total 4" in lines
     assert "# TYPE admina_prescan_ruleset_mismatch_total counter" in lines
 
 
@@ -544,3 +593,17 @@ def test_endpoint_reports_the_scan_roles():
         state={"gateway_scan": _SCAN},
     )
     assert resp.json()["scan_roles"] == ["user", "tool"]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_endpoint_reports_whether_scan_policies_apply(enabled):
+    upstream = MockUpstream([b"{}"], content_type="application/json")
+    resp = through(
+        upstream,
+        {},
+        settings(ADMINA_GATEWAY_SCAN_POLICY_ENABLED=enabled),
+        method="GET",
+        path="/v1/admina/ruleset",
+        state={"gateway_scan": _SCAN},
+    )
+    assert resp.json()["scan_policy_enabled"] is enabled

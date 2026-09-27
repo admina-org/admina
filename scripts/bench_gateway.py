@@ -53,6 +53,7 @@ import random
 import statistics
 import sys
 import time
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -197,6 +198,13 @@ class Gateway:
     app: Any
     scan_policy: str
     executor: Any
+    #: Scan policy outcomes counted by the gateway ("prescan_<status>").
+    prescan: Counter = field(default_factory=Counter)
+
+    def check_scan_policy(self) -> None:
+        """Raise unless every scan policy sent so far was applied."""
+        if not self.prescan["prescan_accepted"] or len(self.prescan) != 1:
+            raise RuntimeError(f"the scan policy was not applied: {dict(self.prescan)}")
 
     def close(self) -> None:
         self.executor.shutdown()
@@ -229,6 +237,7 @@ def build_gateway(engine: str, client: httpx.AsyncClient) -> Gateway:
     config = AdminaConfig(gateway=GatewayConfig(prescan_tags=[PRESCAN_TAG]))
     scan = build_gateway_scan_config(firewall, config)
     executor = PipelineExecutor()
+    prescan: Counter = Counter()
     state = SimpleNamespace(
         firewall=firewall,
         pii_redactor=None,
@@ -240,14 +249,19 @@ def build_gateway(engine: str, client: httpx.AsyncClient) -> Gateway:
         gateway_stream_mode="passthrough",
         gateway_scan=scan,
         pipeline_executor=executor,
+        inc_metric=lambda key, value=1: prescan.update({key: value}),
     )
-    settings = Settings(ADMINA_GATEWAY_UPSTREAM=UPSTREAM, PII_REDACTION_ENABLED=False)
+    settings = Settings(
+        ADMINA_GATEWAY_UPSTREAM=UPSTREAM,
+        PII_REDACTION_ENABLED=False,
+        ADMINA_GATEWAY_SCAN_POLICY_ENABLED=True,
+    )
     app = FastAPI()
     app.include_router(
         create_gateway_endpoints(get_state=lambda: state, get_settings=lambda: settings)
     )
     policy = f"v1; roles=user,tool; prescanned={PRESCAN_TAG}; ruleset={scan.ruleset_sha256}"
-    return Gateway(app=app, scan_policy=policy, executor=executor)
+    return Gateway(app=app, scan_policy=policy, executor=executor, prescan=prescan)
 
 
 async def asgi_stream(
@@ -372,8 +386,11 @@ async def measure_first_chunk(
             result.samples["full_scan"] = []
             paths["full_scan"] = lambda: asgi_stream(gateway.app, body, {}, first_only=True)
         try:
-            for measure in paths.values():  # warm-up
-                await measure()
+            await paths["prescan"]()  # warm-up
+            gateway.check_scan_policy()
+            for path, measure in paths.items():
+                if path != "prescan":
+                    await measure()
             for _ in range(rounds):
                 for path, measure in paths.items():
                     result.samples[path] += await asyncio.gather(
@@ -442,6 +459,8 @@ async def measure_loop_lag(
         finally:
             await monitor.stop()
             gateway.close()
+    if prescan:
+        gateway.check_scan_policy()
     return LoopLag(samples=samples, requests=completed)
 
 

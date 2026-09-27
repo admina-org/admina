@@ -209,6 +209,12 @@ class Settings(BaseSettings):
     # other role are always scanned. A request can narrow the scan further
     # with X-Admina-Scan-Policy, never widen it.
     ADMINA_GATEWAY_SCAN_ROLES: str = ",".join(SCAN_ROLES)
+    # Honour X-Admina-Scan-Policy. Off: the header is ignored and every
+    # request is scanned in full. On: any caller that holds the API key can
+    # narrow the scan of its own requests, down to leaving out every user
+    # message (the active ruleset is public), so turn it on only when every
+    # such caller is trusted to scan what it declares as scanned.
+    ADMINA_GATEWAY_SCAN_POLICY_ENABLED: bool = False
     # The gateway runs the governance pipeline (firewall, PII redaction,
     # guards) in a pool of worker threads, off the event loop.
     #   WORKERS: threads in the pool, the most requests governed at once

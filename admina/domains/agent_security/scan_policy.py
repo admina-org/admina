@@ -20,8 +20,9 @@ Which parts of a chat request the firewall scans:
   or ``tool`` are scanned when the role is in scope; messages with any
   other role, or none, are always scanned. The operator sets the roles in
   scope (``ADMINA_GATEWAY_SCAN_ROLES``, default all four).
-- **Scan policy.** A request may narrow the scope with the
-  ``X-Admina-Scan-Policy`` header::
+- **Scan policy.** When the operator enables scan policies
+  (``ADMINA_GATEWAY_SCAN_POLICY_ENABLED``, off by default), a request may
+  narrow the scope with the ``X-Admina-Scan-Policy`` header::
 
       v1; roles=user,tool; prescanned=source,document; ruleset=<sha256>
 
@@ -35,6 +36,11 @@ Which parts of a chat request the firewall scans:
   accepts; otherwise (``ruleset_mismatch``) or when the header is malformed
   (unknown version or key, duplicate key, unknown role, invalid tag or
   ruleset, several headers) the request is scanned in full, never refused.
+  While scan policies are off the header is ignored (``ignored``) and the
+  request is scanned in full. Any caller that can reach the gateway can
+  send the header, and the active ruleset is public (``X-Admina-Ruleset``),
+  so scan policies are for deployments where every such caller is trusted
+  to scan what it declares.
 - **Blocks.** A block is skipped only when every tag of the allowed names in
   the text pairs up, one opening tag followed by its closing tag. An
   unclosed, nested or stray tag leaves the whole text to the scan. Tag names
@@ -104,7 +110,8 @@ class ScanScope:
     roles: frozenset[str]
     #: Tags whose blocks are skipped.
     tags: frozenset[str]
-    #: "none" (no header), "accepted", "ruleset_mismatch" or "malformed".
+    #: "none" (no header), "accepted", "ruleset_mismatch", "malformed" or
+    #: "ignored" (scan policies off).
     status: str
     #: Ruleset the header declared, when it could be read.
     ruleset: str | None
@@ -198,6 +205,7 @@ def resolve_scan_scope(
     scan_roles: frozenset[str],
     prescan_tags: Iterable[str],
     accepted_rulesets: Iterable[str],
+    policy_enabled: bool,
 ) -> ScanScope:
     """The scope of a request.
 
@@ -206,10 +214,15 @@ def resolve_scan_scope(
         scan_roles: Roles the operator scans (``ADMINA_GATEWAY_SCAN_ROLES``).
         prescan_tags: Tags the operator allows (``gateway.prescan_tags``).
         accepted_rulesets: Rulesets a policy may declare.
+        policy_enabled: Whether a policy may narrow the scope at all
+            (``ADMINA_GATEWAY_SCAN_POLICY_ENABLED``); when false, *values*
+            are ignored.
     """
     full = ScanScope(roles=frozenset(scan_roles), tags=frozenset(), status="none", ruleset=None)
     if not values:
         return full
+    if not policy_enabled:
+        return replace(full, status="ignored")
     if len(values) != 1:
         return replace(full, status="malformed")
     try:

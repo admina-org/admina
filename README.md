@@ -537,7 +537,8 @@ returns:
   "admina_version": "<version>",
   "accepted_prescan_rulesets": ["<64 hex>"],
   "prescan_tags": [],
-  "scan_roles": ["system", "user", "assistant", "tool"]
+  "scan_roles": ["system", "user", "assistant", "tool"],
+  "scan_policy_enabled": false
 }
 ```
 
@@ -551,7 +552,9 @@ redaction and governance guards still see every message.
 
 A caller that has already scanned part of a prompt, for example retrieved
 documents scanned with the SDK, can narrow the scan of one request with the
-`X-Admina-Scan-Policy` header:
+`X-Admina-Scan-Policy` header, once the operator has turned scan policies on
+with `ADMINA_GATEWAY_SCAN_POLICY_ENABLED=true` (default `false`: the header is
+ignored and every request is scanned in full):
 
 ```
 X-Admina-Scan-Policy: v1; roles=user,tool; prescanned=source,document; ruleset=<sha256>
@@ -582,6 +585,16 @@ case-sensitive. The caller must keep these tags out of text written by
 untrusted parties, because the gateway cannot tell such text from its own
 blocks.
 
+Trust model: with scan policies on, the gateway takes the caller's word for
+what it has scanned. Any caller that holds the API key can send the header,
+and the ruleset it must declare is not a secret (it is on every response and
+on `GET /v1/admina/ruleset`), so such a caller can narrow the scan of its own
+requests down to leaving out every user message. Turn scan policies on only
+when every caller that can reach the gateway is a trusted component that
+scans the text it declares, for example a service in front of the gateway
+that scans retrieved documents with the SDK and passes on its users' text as
+`user` messages.
+
 The `gateway_request` forensic record carries the outcome:
 
 ```json
@@ -589,10 +602,12 @@ The `gateway_request` forensic record carries the outcome:
             "tags": ["document", "source"], "ruleset": "<sha256>"}
 ```
 
-`status` is `none` (no header), `accepted`, `ruleset_mismatch` or `malformed`;
-`roles` and `tags` are what was applied, `ruleset` what the header declared.
-`/metrics` counts the policies: `admina_prescan_accepted_total`,
-`admina_prescan_ruleset_mismatch_total` and `admina_prescan_malformed_total`.
+`status` is `none` (no header), `accepted`, `ruleset_mismatch`, `malformed` or
+`ignored` (scan policies off); `roles` and `tags` are what was applied,
+`ruleset` what the header declared (`null` when it was ignored). `/metrics`
+counts the policies: `admina_prescan_accepted_total`,
+`admina_prescan_ruleset_mismatch_total`, `admina_prescan_malformed_total` and
+`admina_prescan_ignored_total`.
 
 <a id="compliance-scope"></a>
 
