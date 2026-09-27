@@ -1093,8 +1093,10 @@ async def health(request: Request) -> dict[str, Any]:
     ``mode``: the governance mode; ``surfaces``: the enabled surfaces;
     ``ruleset_sha256``: the active firewall ruleset (the value of
     ``X-Admina-Ruleset``); ``forensic_writable``: whether the forensic store
-    accepts writes (filesystem: a probe file is written, fsynced and removed
-    on each call; S3: the last record write; in-memory: ``null``).
+    accepts writes (filesystem: a probe file is written, fsynced and removed;
+    S3: the last record write; in-memory: ``null``). The check runs at most
+    once every 10 s on a thread of its own and reports ``false`` when it
+    takes longer than 1 s (see admina.proxy.forensic_probe).
     """
     state = getattr(request.app.state, "proxy", None)
     return {
@@ -1111,11 +1113,11 @@ async def health(request: Request) -> dict[str, Any]:
 
 
 async def _forensic_writable(state: Any) -> bool | None:
-    """The forensic store's own write check, run off the event loop."""
-    probe = getattr(getattr(state, "forensic_box", None), "writable", None)
+    """The forensic store's write check, through the state's probe."""
+    probe = getattr(state, "forensic_probe", None)
     if probe is None:
         return None
-    return await asyncio.get_running_loop().run_in_executor(None, probe)
+    return await probe.check(getattr(state, "forensic_box", None))
 
 
 @app.get(

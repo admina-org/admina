@@ -455,9 +455,12 @@ does not start when they are enabled without it.
 - `ruleset_sha256`: the active firewall ruleset, the value of
   `X-Admina-Ruleset` (see [Firewall ruleset](#firewall-ruleset));
 - `forensic_writable`: whether the forensic store accepts writes. With the
-  `filesystem` backend each call creates, writes, fsyncs and removes a probe
-  file in `FORENSIC_BASE_DIR`; with `s3` it is the result of the last record
-  write (`null` before the first); with `memory` it is `null`.
+  `filesystem` backend a probe file is created, written, fsynced and removed
+  in `FORENSIC_BASE_DIR`; with `s3` it is the result of the last record
+  write (`null` before the first); with `memory` it is `null`. The check
+  runs at most once every 10 s, on a thread of its own, and its result is
+  reused until then; a check that takes longer than 1 s reports `false`, so
+  `/health` answers within about a second even when the store stalls.
 
 **Logs.** `ADMINA_LOG_FORMAT=json` writes one JSON object per line
 (`timestamp`, `level`, `logger`, `message` and `exception` when there is

@@ -29,6 +29,7 @@ from admina.domains.compliance.gdpr import ProcessingActivitiesRegistry
 from admina.domains.compliance.nis2 import NIS2Compliance
 from admina.domains.compliance.otel import OTELGovernanceExporter
 from admina.plugins.registry import PluginRegistry
+from admina.proxy.forensic_probe import ForensicWriteProbe
 from admina.proxy.gateway_scan import GatewayScanConfig
 from admina.proxy.gateway_transport import DEFAULT_STREAM_MODE
 from admina.proxy.gateway_upstreams import GatewayUpstreams
@@ -67,6 +68,9 @@ class ProxyState:
 
     # Subsystems
     forensic_box: ForensicBlackBox | None = None
+    # forensic_writable of /health: the store's write check, at most once
+    # per interval, off the event loop (admina.proxy.forensic_probe).
+    forensic_probe: ForensicWriteProbe = field(default_factory=ForensicWriteProbe)
     compliance: EUAIActCompliance = field(default_factory=EUAIActCompliance)
     nis2: NIS2Compliance = field(default_factory=NIS2Compliance)
     gdpr: ProcessingActivitiesRegistry = field(default_factory=ProcessingActivitiesRegistry)

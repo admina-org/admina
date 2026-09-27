@@ -161,9 +161,11 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 - `GET /health` reports `mode` (governance mode), `surfaces` (enabled
   surfaces), `ruleset_sha256` (the active firewall ruleset, as in
   `X-Admina-Ruleset`) and `forensic_writable` (filesystem backend: a probe
-  file created, written, fsynced and removed in `FORENSIC_BASE_DIR` on each
-  call; `s3`: the result of the last record write, `null` before the first;
-  `memory`: `null`). The other fields, `engine` included, are unchanged.
+  file created, written, fsynced and removed in `FORENSIC_BASE_DIR`; `s3`:
+  the result of the last record write, `null` before the first; `memory`:
+  `null`). The write check runs at most once every 10 s, on a thread of its
+  own; concurrent calls share it, and a check that takes longer than 1 s
+  reports `false`. The other fields, `engine` included, are unchanged.
   Example (`ADMINA_ENABLED_SURFACES=gateway`, filesystem backend, Rust
   engine):
 
