@@ -489,7 +489,11 @@ whose redaction runs over the budget or raises ends with one
 `data: {"error": {...}}` event (code `response_redaction_failed`) and no
 `data: [DONE]`. The text of that completion or line is not sent.
 Governance guards run in the worker threads too, each thread with an event loop
-of its own.
+of its own, so one guard instance can be called by several threads at once,
+each call on a different event loop. A guard must be thread-safe and must not
+keep objects bound to one event loop (an `asyncio.Lock`, an `httpx.AsyncClient`
+with pooled connections) across calls; see `BaseGovernanceGuard`. The built-in
+GuardrailsAI guard runs one validation at a time.
 
 With `ADMINA_GATEWAY_SCAN_RESPONSE=true` (default `false`) the firewall also
 checks the completion text, the `content` of each choice, in the same worker

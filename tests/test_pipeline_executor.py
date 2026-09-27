@@ -406,6 +406,66 @@ def test_guards_run_off_the_event_loop_thread():
     assert guard.on_main_thread is False
 
 
+class _ConcurrencyGuard:
+    """Records the thread and event loop of each call, and how many calls
+    overlap."""
+
+    name = "concurrency-probe"
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, int]] = []
+        self.active = 0
+        self.peak = 0
+        self._lock = threading.Lock()
+
+    async def inspect_request(self, payload: dict) -> dict:
+        with self._lock:
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            self.calls.append((threading.current_thread().name, id(asyncio.get_running_loop())))
+        try:
+            await asyncio.sleep(0.1)
+        finally:
+            with self._lock:
+                self.active -= 1
+        return {"action": "ALLOW", "risk_level": "LOW"}
+
+    async def inspect_response(self, payload: dict) -> dict:
+        return {"action": "ALLOW", "risk_level": "LOW"}
+
+
+def test_one_guard_is_called_from_several_threads_each_on_its_own_loop():
+    from _gateway_stream import gateway_app
+
+    from admina.proxy.pipeline_executor import PipelineExecutor
+
+    guard = _ConcurrencyGuard()
+    executor = PipelineExecutor(workers=4)
+
+    async def scenario() -> tuple[int, list[httpx.Response]]:
+        async with _upstream().client() as client:
+            app = gateway_app(
+                client, state={"governance_guards": [guard], "pipeline_executor": executor}
+            )
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+                responses = await asyncio.gather(
+                    *(c.post("/v1/chat/completions", json=_body("hello")) for _ in range(4))
+                )
+                return id(asyncio.get_running_loop()), responses
+
+    try:
+        main_loop, responses = asyncio.run(scenario())
+    finally:
+        executor.shutdown()
+    assert not any(_blocked(r) for r in responses)
+    assert guard.peak == 4  # the same guard, four calls at once
+    assert len({thread for thread, _ in guard.calls}) == 4
+    loops = {loop for _, loop in guard.calls}
+    assert len(loops) == 4
+    assert main_loop not in loops
+
+
 # ── Completion redaction runs in the worker threads ──────────
 
 ANSWER = "answer marker"

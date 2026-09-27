@@ -160,6 +160,12 @@ class TestBaseGovernanceGuard:
         with pytest.raises(TypeError):
             BaseGovernanceGuard()
 
+    def test_contract_states_the_concurrency_rules(self):
+        doc = BaseGovernanceGuard.__doc__
+        assert "ADMINA_GATEWAY_PIPELINE_WORKERS" in doc
+        assert "thread-safe" in doc
+        assert "event loop" in doc
+
 
 # ---------------------------------------------------------------------------
 # 4. BaseComplianceTemplate

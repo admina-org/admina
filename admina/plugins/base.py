@@ -214,6 +214,23 @@ class BaseGovernanceGuard(ABC):
     accepts a ``config`` parameter, it receives the plugin's
     ``plugin_config:`` block from ``admina.yaml`` at instantiation.
 
+    Concurrency: one instance serves every request. The OpenAI-compatible
+    gateway calls :meth:`inspect_request` from the worker threads of its
+    pipeline (up to ``ADMINA_GATEWAY_PIPELINE_WORKERS`` at once), each call
+    on the event loop of its own thread; ``/mcp`` and the SDK call the
+    methods on their own event loop. A guard must therefore:
+
+    * be thread-safe: guard shared mutable state with a
+      :class:`threading.Lock`, or keep it per thread;
+    * not keep objects bound to one event loop across calls, such as an
+      :class:`asyncio.Lock`, an :class:`asyncio.Queue` or an
+      ``httpx.AsyncClient`` with pooled connections: create them per call,
+      or per thread and event loop.
+
+    A guard that raises ``ValueError``, ``RuntimeError``, ``OSError`` or
+    ``TypeError`` is handled as ``ADMINA_GUARD_FAIL_MODE`` says; on the
+    gateway, any other exception blocks the request.
+
     Community plugin examples:
         * ``admina-guard-toxicity`` — ML-based toxic language detection.
         * ``admina-guard-guardrailsai`` — wraps GuardrailsAI validators.
@@ -223,6 +240,7 @@ class BaseGovernanceGuard(ABC):
 
         class ToxicityGuard(BaseGovernanceGuard):
             name = "toxicity"
+            # Called from several threads at once: no loop-bound state.
 
             async def inspect_request(self, request):
                 # analyse request content ...
