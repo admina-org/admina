@@ -123,12 +123,15 @@ async def _largest_gap(stop: asyncio.Event) -> float:
 def test_slow_firewall_does_not_block_the_event_loop(monkeypatch):
     from admina.proxy import main as proxy_main
     from admina.proxy.multi_upstream import MultiUpstreamRouter
+    from admina.proxy.pipeline_executor import PipelineExecutor
     from admina.proxy.state import ProxyState
 
     monkeypatch.setattr(proxy_main.settings, "ADMINA_API_KEY", "")
     monkeypatch.setattr(proxy_main.settings, "ALLOW_UNAUTHENTICATED", True)
     monkeypatch.setattr(proxy_main.settings, "PII_REDACTION_ENABLED", False)
     firewall = SlowFirewall(delay=0.3)
+    # One thread per request, whatever the number of CPUs of the host.
+    executor = PipelineExecutor(workers=8)
 
     async def scenario() -> tuple[float, list[float], list[httpx.Response]]:
         async with _upstream().client() as client:
@@ -137,6 +140,7 @@ def test_slow_firewall_does_not_block_the_event_loop(monkeypatch):
                 router=MultiUpstreamRouter(default_upstream="http://upstream"),
                 gateway_http_client=client,
                 auth_providers=[],
+                pipeline_executor=executor,
             )
             monkeypatch.setattr(proxy_main.app.state, "proxy", state, raising=False)
             transport = httpx.ASGITransport(app=proxy_main.app)
@@ -158,7 +162,10 @@ def test_slow_firewall_does_not_block_the_event_loop(monkeypatch):
                 stop.set()
                 return await gap, latencies, responses
 
-    largest_gap, latencies, responses = asyncio.run(scenario())
+    try:
+        largest_gap, latencies, responses = asyncio.run(scenario())
+    finally:
+        executor.shutdown()
     assert [r.status_code for r in responses] == [200] * 8
     assert largest_gap < 0.1, largest_gap
     assert max(latencies) < 0.1, latencies
