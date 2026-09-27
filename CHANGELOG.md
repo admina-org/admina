@@ -28,6 +28,8 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 - Firewall patterns match in linear time on long inputs. Categories, risk
   levels and matching results are unchanged.
+- PII redaction and the spaCy + regex PII engine match e-mail addresses in
+  linear time on long inputs. Detected spans are unchanged.
 
 ## [0.12.1] — 2026-MM-DD
 
