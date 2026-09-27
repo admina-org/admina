@@ -211,6 +211,28 @@ class DashboardConfig:
 
 
 @dataclass
+class GatewayUpstreamConfig:
+    """One named upstream route of the OpenAI-compatible gateway."""
+
+    url: str = ""
+    # File holding the API key sent to this route as a Bearer token.
+    api_key_file: str = ""
+
+
+@dataclass
+class GatewayConfig:
+    """OpenAI-compatible gateway (``gateway`` section of ``admina.yaml``)."""
+
+    upstreams: dict[str, GatewayUpstreamConfig] = field(default_factory=dict)
+    # Route used when a request names none; empty = the first route.
+    default_upstream: str = ""
+    # Shape errors found while parsing the section. Parsing never raises, so
+    # the other readers of admina.yaml are unaffected; the proxy reports
+    # these at startup and does not start.
+    errors: list[str] = field(default_factory=list)
+
+
+@dataclass
 class AlertChannelConfig:
     """A single alert channel."""
 
@@ -233,6 +255,7 @@ class AdminaConfig:
     agent_security: AgentSecurityConfig = field(default_factory=AgentSecurityConfig)
     compliance: ComplianceConfig = field(default_factory=ComplianceConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
+    gateway: GatewayConfig = field(default_factory=GatewayConfig)
     forensic_store: str = "filesystem"
     auth_provider: str = "apikey"
     pii_engine: str = "spacy-regex"
@@ -265,6 +288,42 @@ def _parse_schema_version(data: dict) -> int:
         return int(raw)
     except (TypeError, ValueError):
         return 1
+
+
+def _parse_gateway(raw: Any) -> GatewayConfig:
+    """Parse the ``gateway`` section; shape errors go to ``errors``."""
+    if raw is None:
+        return GatewayConfig()
+    if not isinstance(raw, dict):
+        return GatewayConfig(errors=["gateway must be a mapping"])
+
+    errors: list[str] = []
+    upstreams: dict[str, GatewayUpstreamConfig] = {}
+    ups_raw = raw.get("upstreams")
+    if ups_raw is None:
+        ups_raw = {}
+    elif not isinstance(ups_raw, dict):
+        errors.append("gateway.upstreams must be a mapping of route names to {url, api_key_file}")
+        ups_raw = {}
+    for name, entry in ups_raw.items():
+        where = f"gateway.upstreams.{name}"
+        if not isinstance(entry, dict):
+            errors.append(f"{where} must be a mapping with a url")
+            continue
+        url = entry.get("url")
+        key_file = entry.get("api_key_file")
+        if not isinstance(url, str) or not url:
+            errors.append(f"{where}.url must be a non-empty string")
+        elif key_file is not None and not isinstance(key_file, str):
+            errors.append(f"{where}.api_key_file must be a file path")
+        else:
+            upstreams[str(name)] = GatewayUpstreamConfig(url=url, api_key_file=key_file or "")
+
+    default = raw.get("default_upstream")
+    if default is not None and not isinstance(default, str):
+        errors.append("gateway.default_upstream must be a route name")
+        default = None
+    return GatewayConfig(upstreams=upstreams, default_upstream=default or "", errors=errors)
 
 
 def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
@@ -410,6 +469,7 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
         agent_security=agent_sec,
         compliance=comp,
         dashboard=dash,
+        gateway=_parse_gateway(data.get("gateway")),
         forensic_store=data.get("forensic_store", "filesystem"),
         auth_provider=data.get("auth_provider", "apikey"),
         pii_engine=data.get("pii_engine", "spacy-regex"),

@@ -353,6 +353,53 @@ search_ms(re.compile(r"\b[\w.]+=\d"), "a." * 32768)   # ms on a 64k-character ru
 Anchoring the start of the run, `(?<![\w.])[\w.]++=\d`, gives one attempt per
 run (a match then starts where the run starts).
 
+### OpenAI-compatible gateway
+
+The proxy serves an OpenAI-compatible API at `/v1` (`POST /v1/chat/completions`,
+streaming and non-streaming, and `GET /v1/models`). It runs the governance
+pipeline on each chat completion and forwards requests to an upstream route.
+By default there is one route, `default`, to `ADMINA_GATEWAY_UPSTREAM`
+(`http://localhost:11434/v1`), and no credentials are sent upstream.
+
+Named routes come from `ADMINA_GATEWAY_UPSTREAMS` or from `gateway.upstreams`
+in `admina.yaml`; the environment variable, when set, replaces the YAML routes
+(URLs and key files):
+
+```bash
+ADMINA_GATEWAY_UPSTREAMS=main=http://main.upstream.test/v1,util=http://util.upstream.test/v1
+ADMINA_GATEWAY_UPSTREAM_API_KEY_FILE=/run/secrets/upstream_api_key
+```
+
+```yaml
+gateway:
+  upstreams:
+    main: { url: "http://main.upstream.test/v1", api_key_file: /run/secrets/upstream_api_key }
+    util: { url: "http://util.upstream.test/v1", api_key_file: /run/secrets/upstream_api_key }
+  default_upstream: main
+```
+
+A request picks a route with the `X-Admina-Upstream` header. Without it the
+gateway uses `default_upstream`, or else the first route; an unknown route name
+gets a 400 response in the OpenAI error format (`invalid_request_error`, code
+`unknown_upstream`) and is neither scanned nor recorded. The route name is
+stored in the forensic record (`upstream`).
+
+The upstream receives `Authorization: Bearer <key>` when the route has a key.
+The key of a route is the first one set, in this order:
+
+| Source | Scope |
+|---|---|
+| `ADMINA_GATEWAY_UPSTREAM_<NAME>_API_KEY` or `…_API_KEY_FILE` (`<NAME>`: route name in upper case) | one route |
+| `api_key_file` of the route in `admina.yaml` | one route |
+| `ADMINA_GATEWAY_UPSTREAM_API_KEY` or `ADMINA_GATEWAY_UPSTREAM_API_KEY_FILE` | every route |
+
+Key files are read once at startup and one trailing newline is removed. The
+proxy does not start when a key file is missing, unreadable or empty, when a
+key is set both directly and as a file, when a route is malformed or when
+`default_upstream` names no route. Keys are masked in the settings
+representation and are not logged. The caller's `Authorization`, `X-API-Key`,
+`Cookie` and `X-Admina-Upstream` headers are not forwarded upstream.
+
 <a id="compliance-scope"></a>
 
 <details open>

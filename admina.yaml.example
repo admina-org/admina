@@ -200,6 +200,25 @@ domains:
     otel:
       endpoint: "http://localhost:4317"
 
+# ── OpenAI-compatible gateway (/v1) ─────────────────────────
+# Named upstream routes. A request picks one with the X-Admina-Upstream
+# header (an unknown name is answered with 400); without the header the
+# gateway uses default_upstream, or else the first route. Route names:
+# lowercase letters, digits and "_". api_key_file names a file holding the
+# key sent to that route as "Authorization: Bearer <key>" (read once at
+# startup, one trailing newline removed).
+# No routes here and no ADMINA_GATEWAY_UPSTREAMS: one route, "default", to
+# ADMINA_GATEWAY_UPSTREAM. ADMINA_GATEWAY_UPSTREAMS, when set, replaces
+# `upstreams` (URLs and key files). Key of a route, first match wins:
+# ADMINA_GATEWAY_UPSTREAM_<NAME>_API_KEY[_FILE], api_key_file below,
+# ADMINA_GATEWAY_UPSTREAM_API_KEY[_FILE].
+gateway:
+  upstreams: {}
+  # upstreams:
+  #   main: { url: "http://main.upstream.test/v1", api_key_file: /run/secrets/upstream_api_key }
+  #   util: { url: "http://util.upstream.test/v1", api_key_file: /run/secrets/upstream_api_key }
+  # default_upstream: main
+
 dashboard:
   # false: the proxy stops serving the bundled dashboard and its browser
   # sign-in (same as ADMINA_DASHBOARD_ENABLED=false).

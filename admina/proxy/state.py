@@ -30,6 +30,7 @@ from admina.domains.compliance.gdpr import ProcessingActivitiesRegistry
 from admina.domains.compliance.nis2 import NIS2Compliance
 from admina.domains.compliance.otel import OTELGovernanceExporter
 from admina.plugins.registry import PluginRegistry
+from admina.proxy.gateway_upstreams import GatewayUpstreams
 from admina.proxy.multi_upstream import MultiUpstreamRouter
 
 
@@ -59,6 +60,8 @@ class ProxyState:
     nis2: NIS2Compliance = field(default_factory=NIS2Compliance)
     gdpr: ProcessingActivitiesRegistry = field(default_factory=ProcessingActivitiesRegistry)
     router: MultiUpstreamRouter | None = None
+    # Upstream routes of the OpenAI-compatible gateway, resolved at startup.
+    gateway_upstreams: GatewayUpstreams | None = None
     registry: PluginRegistry = field(default_factory=PluginRegistry)
 
     # Plugins

@@ -66,6 +66,7 @@ from admina.proxy.api.dashboard import create_dashboard_endpoints
 from admina.proxy.api.gateway import create_gateway_endpoints
 from admina.proxy.api.integration import create_integration_endpoints
 from admina.proxy.config import GovernanceEvent, settings
+from admina.proxy.gateway_upstreams import build_gateway_upstreams
 from admina.proxy.multi_upstream import MultiUpstreamRouter
 from admina.proxy.state import ProxyState
 
@@ -200,8 +201,15 @@ def build_coordination_detector(redis: Any, egress_cfg: Any, quarantine: Any) ->
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     logger.info("Admina Proxy starting...")
 
+    # Gateway upstream routes and keys: resolved (key files read) once, here.
+    # A misconfiguration raises and the proxy does not start.
+    gateway_upstreams = build_gateway_upstreams(
+        settings, _admina_config.gateway if _admina_config else None
+    )
+
     # Build ProxyState
     state = ProxyState(
+        gateway_upstreams=gateway_upstreams,
         firewall=get_firewall(),
         pii_redactor=get_pii_engine(),
         loop_breaker=get_loop_breaker(
@@ -432,6 +440,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     )
     logger.info("  Engine: %s", _eng_label)
     logger.info("  Upstream MCP: %s", settings.UPSTREAM_MCP_URL)
+    logger.info(
+        "  Gateway upstream routes: %s (default: %s)",
+        ", ".join(gateway_upstreams.names()),
+        gateway_upstreams.default,
+    )
     logger.info(
         "  Auth: %s",
         "ON" if settings.ADMINA_API_KEY else "OFF (set ADMINA_API_KEY for production)",

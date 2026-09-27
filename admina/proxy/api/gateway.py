@@ -23,6 +23,12 @@ the upstream and get governance with no further configuration.
 Routes (prefix /v1):
   POST /v1/chat/completions   — streaming (SSE) and non-streaming
   GET  /v1/models             — passthrough with optional allow-list
+
+Both forward to the upstream route named by the ``X-Admina-Upstream``
+request header, or to the default route without it (see
+:mod:`admina.proxy.gateway_upstreams`). An unknown route name is answered
+with 400 before anything else happens. The upstream receives the route's
+own API key, if any, never the caller's credentials or headers.
 """
 
 from __future__ import annotations
@@ -42,6 +48,44 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from admina.core.types import EventType
 from admina.domains.agent_security.egress import resolve_egress_mode
 from admina.domains.governance import redact_response_result, run_pipeline, safe_serialize
+from admina.proxy.gateway_upstreams import UPSTREAM_HEADER, GatewayUpstream, GatewayUpstreams
+
+# Longest X-Admina-Upstream value considered, as for X-Session-Id.
+_ROUTE_HEADER_MAX = 128
+
+
+def _requested_route(value: str) -> str:
+    """Route name from an ``X-Admina-Upstream`` value: CR/LF removed,
+    surrounding whitespace trimmed, at most 128 characters kept."""
+    return re.sub(r"[\r\n]", "", value).strip()[:_ROUTE_HEADER_MAX]
+
+
+def _select_upstream(request: Request, state: Any, cfg: Any) -> GatewayUpstream | None:
+    """The route the request asks for, or None when no route has that name.
+
+    Routes are resolved at startup into ``state.gateway_upstreams``; a
+    router used without them has one route to ``ADMINA_GATEWAY_UPSTREAM``,
+    without a key.
+    """
+    upstreams = getattr(state, "gateway_upstreams", None) or GatewayUpstreams.single(
+        cfg.ADMINA_GATEWAY_UPSTREAM
+    )
+    return upstreams.select(_requested_route(request.headers.get(UPSTREAM_HEADER, "")))
+
+
+def _unknown_upstream() -> JSONResponse:
+    """400 in the OpenAI error format for an unknown route name."""
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": {
+                "message": f"Unknown upstream route in the {UPSTREAM_HEADER} header.",
+                "type": "invalid_request_error",
+                "param": None,
+                "code": "unknown_upstream",
+            }
+        },
+    )
 
 
 def _extract_prompt_text(messages: list) -> str:
@@ -231,6 +275,7 @@ async def _record_forensic(
     event_id: str,
     agent_id: str,
     session_id: str,
+    upstream: str,
     action: str,
     risk_level: str,
     pre: Any,
@@ -249,6 +294,7 @@ async def _record_forensic(
                 "agent_id": agent_id,
                 "session_id": session_id,
                 "method": "chat.completions",
+                "upstream": upstream,
                 "action": action,
                 "risk_level": risk_level,
                 "governance_latency_ms": round(pre.latency_ms, 2),
@@ -271,18 +317,21 @@ def create_gateway_endpoints(
     Args:
         get_state: Callable returning the ProxyState (firewall, pii_redactor,
             loop_breaker, egress_policy, governance_guards, forensic_box,
-            http_client).
+            http_client, gateway_upstreams).
         get_settings: Callable returning the settings object.
     """
     router = APIRouter(prefix="/v1", tags=["gateway"])
 
     @router.get("/models", summary="List models (passthrough with optional allow-list)")
-    async def list_models() -> JSONResponse:
+    async def list_models(request: Request) -> JSONResponse:
         state = get_state()
         cfg = get_settings()
-        url = f"{cfg.ADMINA_GATEWAY_UPSTREAM.rstrip('/')}/models"
+        route = _select_upstream(request, state, cfg)
+        if route is None:
+            return _unknown_upstream()
+        url = f"{route.url}/models"
         try:
-            resp = await state.http_client.get(url)
+            resp = await state.http_client.get(url, headers=route.auth_headers())
         except httpx.ConnectError:
             raise HTTPException(status_code=502, detail="Gateway upstream unreachable")
         data = resp.json()
@@ -295,6 +344,9 @@ def create_gateway_endpoints(
     async def chat_completions(request: Request):
         state = get_state()
         cfg = get_settings()
+        route = _select_upstream(request, state, cfg)
+        if route is None:
+            return _unknown_upstream()
         try:
             body = await request.json()
         except (ValueError, UnicodeDecodeError):
@@ -334,6 +386,7 @@ def create_gateway_endpoints(
             event_id=event_id,
             agent_id=agent_id,
             session_id=session_id,
+            upstream=route.name,
             action=action,
             risk_level=pre.gov_response.risk_level,
             pre=pre,
@@ -348,9 +401,8 @@ def create_gateway_endpoints(
                 )
             return JSONResponse(content=_synthetic_completion(model, block_message))
 
-        upstream = cfg.ADMINA_GATEWAY_UPSTREAM.rstrip("/")
-        url = f"{upstream}/chat/completions"
-        headers = {"X-Admina-Event-Id": event_id}
+        url = f"{route.url}/chat/completions"
+        headers = {"X-Admina-Event-Id": event_id, **route.auth_headers()}
 
         pii_count = pre.checks.get("pii_redaction", {}).get("count", 0)
         fwd_messages = pre.redacted_body["params"]["messages"] if pii_count > 0 else messages

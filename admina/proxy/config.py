@@ -19,7 +19,7 @@ Admina — Configuration & Data Models
 import warnings
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from admina.core.types import EventType, GovernanceAction, RiskLevel
@@ -149,6 +149,21 @@ class Settings(BaseSettings):
     # Upstream OpenAI-compatible API the gateway forwards to (Ollama,
     # vLLM, OpenAI, …). Must include the API base path (typically /v1).
     ADMINA_GATEWAY_UPSTREAM: str = "http://localhost:11434/v1"
+    # Named upstream routes, "name=url[,name=url…]" (route names: lowercase
+    # letters, digits and "_"). When set, it replaces gateway.upstreams of
+    # admina.yaml. With neither, the gateway has one route, "default", to
+    # ADMINA_GATEWAY_UPSTREAM. A request picks a route with the
+    # X-Admina-Upstream header (unknown name → 400); without the header the
+    # gateway uses gateway.default_upstream, or else the first route.
+    ADMINA_GATEWAY_UPSTREAMS: str = ""
+    # API key sent upstream as "Authorization: Bearer <key>" on every route
+    # without a key of its own; empty = no Authorization header. Or set
+    # ADMINA_GATEWAY_UPSTREAM_API_KEY_FILE to a file holding the key (read
+    # once at startup, one trailing newline removed), not both. A route's own
+    # key: ADMINA_GATEWAY_UPSTREAM_<NAME>_API_KEY[_FILE] (NAME = route name in
+    # upper case), else api_key_file of the route in admina.yaml.
+    ADMINA_GATEWAY_UPSTREAM_API_KEY: SecretStr = SecretStr("")
+    ADMINA_GATEWAY_UPSTREAM_API_KEY_FILE: str = ""
     # Content returned to the caller when governance blocks a request,
     # shaped as an OpenAI completion with finish_reason="content_filter".
     ADMINA_GATEWAY_BLOCK_MESSAGE: str = "This request was blocked by the Admina governance policy."
