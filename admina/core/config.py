@@ -332,8 +332,8 @@ def _parse_gateway(raw: Any) -> GatewayConfig:
 
     stream_mode = raw.get("stream_mode")
     if stream_mode is not None:
-        stream_mode = stream_mode.strip().lower() if isinstance(stream_mode, str) else ""
-        if stream_mode not in GATEWAY_STREAM_MODES:
+        stream_mode = stream_mode.strip().lower() if isinstance(stream_mode, str) else None
+        if stream_mode not in ("", *GATEWAY_STREAM_MODES):
             errors.append("gateway.stream_mode must be one of: " + " | ".join(GATEWAY_STREAM_MODES))
             stream_mode = None
     return GatewayConfig(

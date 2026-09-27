@@ -312,6 +312,7 @@ def test_stream_mode_setting_rejects_unknown_values():
     [
         ("passthrough", "passthrough", []),
         ("Governed", "governed", []),
+        ("", "", []),
         ("raw", "", ["gateway.stream_mode must be one of: passthrough | governed"]),
         (3, "", ["gateway.stream_mode must be one of: passthrough | governed"]),
     ],
@@ -328,6 +329,17 @@ def test_yaml_stream_mode_is_parsed(tmp_path, value, stream_mode, errors):
 
     assert gateway.stream_mode == stream_mode
     assert gateway.errors == errors
+
+
+def test_proxy_does_not_start_with_an_unknown_yaml_stream_mode(monkeypatch, tmp_path):
+    from admina.core.config import load_config
+    from admina.proxy.gateway_upstreams import GatewayUpstreamError
+
+    path = tmp_path / "admina.yaml"
+    path.write_text("gateway:\n  stream_mode: raw\n")
+
+    with pytest.raises(GatewayUpstreamError, match="gateway.stream_mode"):
+        run_lifespan(monkeypatch, load_config(path))
 
 
 def test_lifespan_resolves_the_stream_mode(monkeypatch, tmp_path):
