@@ -180,6 +180,19 @@ def test_root_serves_dashboard_without_setting_a_cookie(proxy_app):
     assert "set-cookie" not in resp.headers
 
 
+def test_root_sets_no_cookie_when_the_dashboard_is_disabled(proxy_app, monkeypatch):
+    from admina.proxy import main as proxy_main
+
+    monkeypatch.setattr(proxy_main.settings, "ADMINA_DASHBOARD_ENABLED", False)
+
+    async def steps(c):
+        return await c.get("/")
+
+    resp = _run(proxy_app, steps)
+    assert resp.status_code == 404
+    assert "set-cookie" not in resp.headers
+
+
 def test_root_refuses_framing_and_caching(proxy_app):
     async def steps(c):
         return await c.get("/")
@@ -439,6 +452,38 @@ def test_api_key_header_still_reaches_every_surface(proxy_app):
     assert _run(proxy_app, steps) == {"gateway": 200, "stats": 200, "score": 200}
 
 
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("POST", "/v1/chat/completions", _CHAT),
+        ("POST", "/mcp", {"jsonrpc": "2.0", "id": 1, "method": "ping"}),
+        ("POST", "/api/v1/audit", {"event": {"action": "example"}}),
+        ("GET", "/api/compliance/gdpr/records", None),
+    ],
+    ids=["gateway", "mcp", "audit", "gdpr-records"],
+)
+def test_protected_api_requires_the_key(proxy_app, method, path, body):
+    """Neither a client that loaded the dashboard page nor a signed-in
+    dashboard session reaches the API; the API key does.
+
+    The session cookie is sent explicitly: a browser keeps it to ``/api/``,
+    but the proxy must refuse it on any path it is presented to.
+    """
+
+    async def steps(c):
+        async def call(headers=None):
+            return (await c.request(method, path, json=body, headers=headers)).status_code
+
+        await c.get("/")
+        without_key = await call()
+        session = (await _login(c)).cookies[_COOKIE]
+        with_session = await call({"Cookie": f"{_COOKIE}={session}"})
+        with_key = await call({"X-API-Key": _KEY})
+        return without_key, with_session, with_key
+
+    assert _run(proxy_app, steps) == (401, 401, 200)
+
+
 def _legacy_token(key: str, exp: int) -> str:
     payload = str(exp)
     sig = hmac.new(key.encode(), payload.encode(), hashlib.sha256).hexdigest()
@@ -508,22 +553,29 @@ def test_dashboard_disabled_removes_shell_and_sign_in(proxy_app, monkeypatch):
     token = ds.issue_token(_KEY, ttl=3600)
 
     async def steps(c):
+        key = {"X-API-Key": _KEY}
         return {
             "root": (await c.get("/")).status_code,
+            "vendor_dir": (await c.get("/vendor")).status_code,
             "vendor": (await c.get("/vendor/alpinejs.min.js")).status_code,
             "logo": (await c.get("/heimdall.png")).status_code,
             "login": (await _login(c)).status_code,
+            "session_status": (await c.get("/api/dashboard/session", headers=key)).status_code,
+            "sign_out": (await c.delete("/api/dashboard/session", headers=key)).status_code,
             "cookie": (
                 await c.get("/api/dashboard/score", headers={"Cookie": f"{_COOKIE}={token}"})
             ).status_code,
-            "key": (await c.get("/api/dashboard/score", headers={"X-API-Key": _KEY})).status_code,
+            "key": (await c.get("/api/dashboard/score", headers=key)).status_code,
         }
 
     assert _run(proxy_app, steps) == {
         "root": 404,
+        "vendor_dir": 404,
         "vendor": 404,
         "logo": 404,
         "login": 404,
+        "session_status": 404,
+        "sign_out": 404,
         "cookie": 401,
         "key": 200,
     }
@@ -554,11 +606,12 @@ def test_api_docs_can_be_disabled(proxy_app, monkeypatch):
     from admina.proxy import main as proxy_main
 
     monkeypatch.setattr(proxy_main.settings, "ADMINA_API_DOCS_ENABLED", False)
+    paths = ("/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json")
 
     async def steps(c):
-        return [(await c.get(p)).status_code for p in ("/docs", "/redoc", "/openapi.json")]
+        return {p: (await c.get(p)).status_code for p in paths}
 
-    assert _run(proxy_app, steps) == [404, 404, 404]
+    assert _run(proxy_app, steps) == dict.fromkeys(paths, 404)
 
 
 # ── Live feed (WebSocket) ────────────────────────────────────
