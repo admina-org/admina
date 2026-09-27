@@ -21,6 +21,7 @@ way GitHub Actions runs them (``bash -e``, outputs in ``$GITHUB_OUTPUT``).
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -193,3 +194,51 @@ def test_github_release_reads_the_prerelease_flag():
     release = next(s for s in steps if s.get("uses", "").startswith("softprops/"))
 
     assert release["with"]["prerelease"] == "${{ steps.kind.outputs.prerelease == 'true' }}"
+
+
+# ── Published images: Dockerfiles ─────────────────────────────────────────
+
+PUBLISHED_DOCKERFILES = ("admina/proxy/Dockerfile", "dashboard/Dockerfile")
+
+
+def _instructions(path: str) -> list[str]:
+    """The Dockerfile's instructions, continuation lines joined."""
+    text = (REPO / path).read_text(encoding="utf-8").replace("\\\n", " ")
+    return [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+
+@pytest.mark.parametrize("path", PUBLISHED_DOCKERFILES)
+def test_published_images_pin_base_images_by_digest(path):
+    instructions = _instructions(path)
+    stages = {
+        line.split()[-1].lower()
+        for line in instructions
+        if line.upper().startswith("FROM ") and " AS " in line.upper()
+    }
+    images = [line.split()[1] for line in instructions if line.upper().startswith("FROM ")]
+    images += [
+        word.split("=", 1)[1]
+        for line in instructions
+        if line.upper().startswith("COPY ")
+        for word in line.split()
+        if word.startswith("--from=")
+    ]
+    external = [image for image in images if image.lower() not in stages]
+
+    assert external
+    for image in external:
+        assert re.search(r"@sha256:[0-9a-f]{64}$", image), f"{path}: {image} is not pinned"
+
+
+def test_proxy_image_build_stops_when_the_rust_engine_does_not_build():
+    instructions = _instructions("admina/proxy/Dockerfile")
+    build = [line for line in instructions if "maturin build" in line]
+    install = [line for line in instructions if "/tmp/wheels/*.whl" in line and "RUN" in line]
+
+    assert build and install
+    for line in build + install:
+        assert "||" not in line and "exit 0" not in line and "if " not in line, line

@@ -1,5 +1,13 @@
-FROM nginx:alpine
+# Base image pinned by digest; update the tag and the digest together.
+FROM nginx:alpine@sha256:df221db836e1754089190208cee7eeda94f233197056426eda74a43ab1abeac2
+LABEL org.opencontainers.image.title="admina-dashboard" \
+      org.opencontainers.image.description="Admina dashboard served by nginx" \
+      org.opencontainers.image.url="https://admina.org" \
+      org.opencontainers.image.source="https://github.com/admina-org/admina" \
+      org.opencontainers.image.documentation="https://github.com/admina-org/admina#readme" \
+      org.opencontainers.image.licenses="Apache-2.0"
 RUN apk add --no-cache openssl
+COPY LICENSE NOTICE /usr/share/licenses/admina/
 # Dashboard static files
 # Single source: the SPA ships inside the package (admina/dashboard/static)
 COPY admina/dashboard/static/index.html /usr/share/nginx/html/index.html
