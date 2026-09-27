@@ -16,7 +16,8 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 ### Added
 
 - Local make targets that mirror the CI jobs: `make ci-local`, `make ci-linux`
-  and `make ci-audit` (see `make help`).
+  and `make ci-audit` (see `make help`). `make ci-linux` runs its container on
+  the CPUs in `CI_LINUX_CPUS` (default `0-3`, the size of a hosted runner).
 - Pattern timing probe, `admina.domains.agent_security.pattern_timing`:
   `probe_pattern()` returns the worst search time of a regular expression on
   generated 64k-character inputs (trigger words followed by runs of spaces,
@@ -90,29 +91,37 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `admina.yaml` and is part of the hash.
 - The proxy computes `ruleset_sha256()` at startup for the engine its
   firewall runs on. Every `POST /v1/chat/completions` response carries it in
-  `X-Admina-Ruleset`; `GET /v1/admina/ruleset` (API key required) returns it
-  with `engine`, `admina_core_version`, `admina_version`,
-  `accepted_prescan_rulesets`, `prescan_tags` and `scan_roles`.
+  `X-Admina-Ruleset`, the 401 of authentication and the 413 of the request
+  size limit included; an unexpected failure before the response starts gets
+  a 500 in the OpenAI error format (code `internal_error`) with the header.
+  `GET /v1/admina/ruleset` (API key required) returns it with `engine`,
+  `admina_core_version`, `admina_version`, `accepted_prescan_rulesets`,
+  `prescan_tags`, `scan_roles` and `scan_policy_enabled`.
 - Scan scope of the gateway. `ADMINA_GATEWAY_SCAN_ROLES` (default
   `system,user,assistant,tool`) sets the message roles the firewall scans;
-  messages with any other role are always scanned. A request can narrow the
-  scan with `X-Admina-Scan-Policy: v1; roles=user,tool;
+  messages with any other role are always scanned. With
+  `ADMINA_GATEWAY_SCAN_POLICY_ENABLED=true` (default `false`) a request can
+  narrow the scan with `X-Admina-Scan-Policy: v1; roles=user,tool;
   prescanned=source,document; ruleset=<sha256>`: only the listed roles, and
   without the text of `<tag …>…</tag>` blocks of the listed tags that are
   also in `gateway.prescan_tags` of `admina.yaml`. The policy applies only
   when `ruleset` is the proxy's own or one in `gateway.prescan_rulesets`;
-  otherwise, or when the header is malformed, the request is scanned in
-  full. Unclosed, nested or stray tags leave the whole text to the scan.
-  The `gateway_request` forensic record carries the outcome as `prescan`
-  (`accepted`, `status`, `roles`, `tags`, `ruleset`), and `/metrics` counts
-  `admina_prescan_accepted_total`, `admina_prescan_ruleset_mismatch_total`
-  and `admina_prescan_malformed_total`.
+  otherwise, when the header is malformed, or while scan policies are off,
+  the request is scanned in full. Unclosed, nested or stray tags leave the
+  whole text to the scan. Any caller that holds the API key can send the
+  header, so scan policies are for deployments where every such caller is
+  trusted to scan what it declares (see the README). The `gateway_request`
+  forensic record carries the outcome as `prescan` (`accepted`, `status`,
+  `roles`, `tags`, `ruleset`), and `/metrics` counts
+  `admina_prescan_accepted_total`, `admina_prescan_ruleset_mismatch_total`,
+  `admina_prescan_malformed_total` and `admina_prescan_ignored_total`.
 - `ADMINA_GATEWAY_PIPELINE_WORKERS` (default `0`, the number of CPUs): the
   worker threads that run the gateway's governance pipeline, the most
   requests governed at once. `ADMINA_GATEWAY_PIPELINE_TIMEOUT` (default `0`,
   no limit): seconds a request waits for its governance decision, the wait
   for a thread included; past it the request is blocked in every governance
-  mode and recorded with `checks.pipeline` (`time_budget_exceeded`).
+  mode and recorded with `checks.pipeline` (`time_budget_exceeded`). The
+  same budget bounds the PII redaction of each completion and stream line.
 - `admina_event_loop_lag_seconds` on `/metrics`: a histogram of how late the
   event loop wakes up a task that sleeps 0.1 s at a time.
 - `ADMINA_GATEWAY_SCAN_RESPONSE` (default `false`): the firewall also checks
@@ -128,11 +137,20 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 ### Changed
 
 - The gateway runs the governance pipeline (firewall, PII redaction, egress
-  analysis, governance guards) in worker threads instead of the event loop;
-  governance guards run there too, each thread with an event loop of its
-  own. An exception inside the gateway's pipeline follows
-  `ADMINA_GUARD_FAIL_MODE` (`open` forwards the request, `closed` blocks it)
-  and is recorded as `checks.pipeline` (0.12 answered 500).
+  analysis, governance guards) and the PII redaction of completions in
+  worker threads instead of the event loop. Governance guards run there
+  too: one guard instance can be called by several threads at once, each
+  call on the event loop of its thread, so a guard must be thread-safe and
+  must not keep loop-bound objects across calls (see `BaseGovernanceGuard`).
+- A gateway request whose governance pipeline raises is blocked in every
+  governance mode and recorded as `checks.pipeline` (`{"action": "ERROR",
+  "error": "<exception class>"}`; 0.12 answered 500). Guard contract errors
+  still follow `ADMINA_GUARD_FAIL_MODE`.
+- A completion whose PII redaction runs over the time budget or raises is
+  not sent: a non-streaming completion is replaced by the block message, and
+  a stream ends with one `data: {"error": ...}` event (code
+  `response_redaction_failed`) without `data: [DONE]`.
+- `GuardrailsAIGuard` runs one validation at a time.
 - `run_pipeline()` takes the texts the firewall scans (`scan_texts`); by
   default it scans every string of the body, as before.
 - A malformed entry of `agent_security.firewall.custom_patterns` skips only
