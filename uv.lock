@@ -121,6 +121,14 @@ proxy = [
     { name = "typer" },
     { name = "uvicorn", extra = ["standard"] },
 ]
+proxy-minimal = [
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "python-dotenv" },
+    { name = "uvicorn", extra = ["standard"] },
+]
 rust = [
     { name = "admina-core" },
 ]
@@ -157,8 +165,10 @@ requires-dist = [
     { name = "clickhouse-connect", marker = "extra == 'proxy'", specifier = ">=0.7,<2" },
     { name = "cryptography", specifier = ">=41.0,<51" },
     { name = "fastapi", marker = "extra == 'proxy'", specifier = ">=0.104,<1" },
+    { name = "fastapi", marker = "extra == 'proxy-minimal'", specifier = ">=0.104,<1" },
     { name = "google-genai", marker = "extra == 'gemini'", specifier = ">=1.0,<3" },
     { name = "httpx", marker = "extra == 'proxy'", specifier = ">=0.25,<1" },
+    { name = "httpx", marker = "extra == 'proxy-minimal'", specifier = ">=0.25,<1" },
     { name = "jinja2", specifier = ">=3.1,<4" },
     { name = "mistralai", marker = "extra == 'mistral'", specifier = ">=1.0,<3" },
     { name = "numpy", marker = "extra == 'proxy'", specifier = ">=1.24,<2" },
@@ -170,16 +180,20 @@ requires-dist = [
     { name = "opentelemetry-sdk", marker = "extra == 'telemetry'", specifier = ">=1.20,<2" },
     { name = "presidio-analyzer", marker = "extra == 'presidio'", specifier = ">=2.2,<3" },
     { name = "pydantic", marker = "extra == 'proxy'", specifier = ">=2.5,<3" },
+    { name = "pydantic", marker = "extra == 'proxy-minimal'", specifier = ">=2.5,<3" },
     { name = "pydantic-settings", marker = "extra == 'proxy'", specifier = ">=2.3,<3" },
+    { name = "pydantic-settings", marker = "extra == 'proxy-minimal'", specifier = ">=2.3,<3" },
     { name = "python-dotenv", marker = "extra == 'proxy'", specifier = ">=1.0,<2" },
+    { name = "python-dotenv", marker = "extra == 'proxy-minimal'", specifier = ">=1.0,<2" },
     { name = "pyyaml", specifier = ">=6.0,<7" },
     { name = "redis", marker = "extra == 'proxy'", specifier = ">=5.0,<9" },
     { name = "scikit-learn", marker = "extra == 'proxy'", specifier = ">=1.3,<2" },
     { name = "spacy", marker = "extra == 'nlp'", specifier = ">=3.8,<4" },
     { name = "typer", marker = "extra == 'proxy'", specifier = ">=0.9,<1" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'proxy'", specifier = ">=0.24,<1" },
+    { name = "uvicorn", extras = ["standard"], marker = "extra == 'proxy-minimal'", specifier = ">=0.24,<1" },
 ]
-provides-extras = ["proxy", "nlp", "telemetry", "rust", "full", "openai", "ollama", "anthropic", "mistral", "gemini", "bedrock", "adapters", "presidio", "all"]
+provides-extras = ["proxy", "proxy-minimal", "nlp", "telemetry", "rust", "full", "openai", "ollama", "anthropic", "mistral", "gemini", "bedrock", "adapters", "presidio", "all"]
 
 [package.metadata.requires-dev]
 dev = [
