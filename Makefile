@@ -91,6 +91,7 @@ CI_SPACY_EN := en-core-web-sm @ https://github.com/explosion/spacy-models/releas
 CI_SPACY_IT := it-core-news-sm @ https://github.com/explosion/spacy-models/releases/download/it_core_news_sm-3.8.0/it_core_news_sm-3.8.0-py3-none-any.whl
 CI_LINUX_IMAGE ?= python:3.11-slim
 CI_LINUX_CONTAINER ?= admina-ci-linux
+CI_LINUX_CPUS ?= 0-3
 
 ci-local: ci-versions ci-lint ci-security ci-python ci-rust ci-wheel
 	@echo "Local CI checks passed."
@@ -158,9 +159,12 @@ ci-wheel:
 
 # Runs the Python test suite on Linux in a single throw-away container. The
 # checkout is mounted read-only and copied without local environments, build
-# output or bytecode caches; dependencies come from uv.lock, as in CI.
+# output or bytecode caches; dependencies come from uv.lock, as in CI. The
+# container runs on the CPUs in CI_LINUX_CPUS (default 0-3: four, like a
+# hosted CI runner; empty = every CPU of the Docker host).
 ci-linux:
-	docker run --rm --name $(CI_LINUX_CONTAINER) -v "$(CURDIR)":/src:ro $(CI_LINUX_IMAGE) sh -c '\
+	docker run --rm --name $(CI_LINUX_CONTAINER) $(if $(CI_LINUX_CPUS),--cpuset-cpus $(CI_LINUX_CPUS)) \
+		-v "$(CURDIR)":/src:ro $(CI_LINUX_IMAGE) sh -c '\
 		set -e; \
 		mkdir /work; \
 		tar -C /src -cf - --exclude=./.git --exclude=./.venv --exclude="./.venv-*" \
