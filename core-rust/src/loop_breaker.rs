@@ -108,7 +108,8 @@ impl RustLoopBreaker {
         self.total_checks += 1;
         let tf = term_frequencies(content);
 
-        let session = self.sessions
+        let session = self
+            .sessions
             .entry(session_id.to_string())
             .or_insert_with(|| SessionWindow {
                 vectors: Vec::new(),

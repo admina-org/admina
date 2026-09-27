@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use pyo3::prelude::*;
-use sha2::{Sha256, Digest};
 use chrono::Utc;
+use pyo3::prelude::*;
+use sha2::{Digest, Sha256};
 
 /// SHA-256 hash chain for forensic black box integrity.
 #[pyclass]
@@ -124,13 +124,19 @@ mod tests {
     #[test]
     fn test_sha256_known_value() {
         let h = RustHashChain::sha256("hello world");
-        assert_eq!(h, "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9");
+        assert_eq!(
+            h,
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
     }
 
     #[test]
     fn test_sha256_empty() {
         let h = RustHashChain::sha256("");
-        assert_eq!(h, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert_eq!(
+            h,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 
     #[test]
