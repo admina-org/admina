@@ -101,7 +101,7 @@ never a category.
 The Python engine — the default, higher-recall engine — emits exactly
 **9** distinct category labels. This is the authoritative set: it is
 what appears in `detections_by_type`
-(`admina/domains/agent_security/firewall.py:593-595`), what becomes the
+(`admina/domains/agent_security/firewall.py:602-604`), what becomes the
 `category` label of the Prometheus series
 `admina_firewall_detections_total`
 (`admina/proxy/main.py:777-785`), and the set of values valid in
@@ -114,15 +114,15 @@ of its group.
 
 | Category | Risk | Pattern families grouped under it | Source |
 |----------|------|-----------------------------------|--------|
-| `instruction_override` | critical / high | verb + qualifier + target override phrasing (`ignore` / `disregard` / `forget` / `override` / `bypass` / `circumvent` / `skip` / `sidestep` / `nullify` / `cancel` / `suspend` / `drop` / `remove` / `undo` × `instructions` / `prompts` / `rules` / `directions` / `directives` / `guidelines` / `guardrails` / `restrictions` / `policies` / `filters` / `safeguards` / `the above` / `everything`); imperative verb chains ("Ignore. Forget. Override.") | `firewall.py:196-210` |
-| `role_hijack` | high | "you are now a…"; "act as a / DAN / AIM / STAN / DUDE"; "pretend to be"; "let's roleplay / imagine"; "from now on you will" | `firewall.py:211-224` |
-| `prompt_extraction` | high / medium | reveal / show / print / repeat the system prompt or configuration (high); "what are your instructions / rules" (medium) | `firewall.py:225-241` |
-| `jailbreak` | critical | mode toggles (`DAN` / `developer` / `admin` / `debug` / `maintenance` / `god` / `sudo` / `root` / `jailbreak` / `uncensored` / `unrestricted` **mode enabled / activated / on**); "DAN mode / DAN prompt"; "do anything now"; AIM | `firewall.py:242-256` |
-| `delimiter_injection` | critical / high | ChatML / Llama / FIM control tokens (`<\|im_start\|>`, `<\|endoftext\|>`, `[INST]`, `<<SYS>>`); `<system>` / `<user>` / `<assistant>` tags; `### system:` headers | `firewall.py:257-266` |
-| `data_exfiltration` | high | `curl` / `wget` / `nc` to a URL; send / post / upload / forward / leak … to an external URL or a known burner domain (webhook.site, requestbin, ngrok.io, pastebin, gist) | `firewall.py:267-285` |
-| `tool_abuse` | critical / high | shell execution (`exec`, `subprocess`, `os.system`, `sh -c`); sensitive filesystem paths (`/etc/passwd`, `~/.ssh/`, `~/.aws/credentials`, `/proc/self/environ`); internal / admin / private API calls; destructive commands (`rm -rf`, `DROP TABLE`, `mkfs.`, `dd if=`) | `firewall.py:286-322` |
-| `obfuscation` | high / medium | base64 encode/decode markers; hex-escape runs (`\xNN\xNN\xNN`); ROT13 / Caesar-cipher markers; hex-escape-as-instruction | `firewall.py:323-333` |
-| `multilang_evasion` | critical | override phrasing in Italian, French, Spanish and German (verb-then-target and target-then-adjective word orders) | `firewall.py:334-397` |
+| `instruction_override` | critical / high | verb + qualifier + target override phrasing (`ignore` / `disregard` / `forget` / `override` / `bypass` / `circumvent` / `skip` / `sidestep` / `nullify` / `cancel` / `suspend` / `drop` / `remove` / `undo` × `instructions` / `prompts` / `rules` / `directions` / `directives` / `guidelines` / `guardrails` / `restrictions` / `policies` / `filters` / `safeguards` / `the above` / `everything`); imperative verb chains ("Ignore. Forget. Override.") | `firewall.py:202-216` |
+| `role_hijack` | high | "you are now a…"; "act as a / DAN / AIM / STAN / DUDE"; "pretend to be"; "let's roleplay / imagine"; "from now on you will" | `firewall.py:217-230` |
+| `prompt_extraction` | high / medium | reveal / show / print / repeat the system prompt or configuration (high); "what are your instructions / rules" (medium) | `firewall.py:231-247` |
+| `jailbreak` | critical | mode toggles (`DAN` / `developer` / `admin` / `debug` / `maintenance` / `god` / `sudo` / `root` / `jailbreak` / `uncensored` / `unrestricted` **mode enabled / activated / on**); "DAN mode / DAN prompt"; "do anything now"; AIM | `firewall.py:248-262` |
+| `delimiter_injection` | critical / high | ChatML / Llama / FIM control tokens (`<\|im_start\|>`, `<\|endoftext\|>`, `[INST]`, `<<SYS>>`); `<system>` / `<user>` / `<assistant>` tags; `### system:` headers | `firewall.py:263-272` |
+| `data_exfiltration` | high | `curl` / `wget` / `nc` to a URL; send / post / upload / forward / leak … to an external URL or a known burner domain (webhook.site, requestbin, ngrok.io, pastebin, gist) | `firewall.py:273-294` |
+| `tool_abuse` | critical / high | shell execution (`exec`, `subprocess`, `os.system`, `sh -c`); sensitive filesystem paths (`/etc/passwd`, `~/.ssh/`, `~/.aws/credentials`, `/proc/self/environ`); internal / admin / private API calls; destructive commands (`rm -rf`, `DROP TABLE`, `mkfs.`, `dd if=`) | `firewall.py:295-331` |
+| `obfuscation` | high / medium | base64 encode/decode markers; hex-escape runs (`\xNN\xNN\xNN`); ROT13 / Caesar-cipher markers; hex-escape-as-instruction | `firewall.py:332-342` |
+| `multilang_evasion` | critical | override phrasing in Italian, French, Spanish and German (verb-then-target and target-then-adjective word orders) | `firewall.py:343-406` |
 
 Operators can add further categories without forking: every entry in
 `agent_security.firewall.custom_patterns` carries its own `category`

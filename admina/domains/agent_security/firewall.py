@@ -176,6 +176,12 @@ def normalize_text(text: str) -> str:
 # When adding a new variant: add a positive test in
 # tests/test_proxy_security.py and a negative test (benign string that
 # must NOT match) in the same file.
+#
+# Matching time must stay linear in the input length: one whitespace
+# quantifier between two literals, the whitespace inside each optional
+# group, and possessive quantifiers (\s++, \s*+) for a whitespace run
+# followed by a literal. tests/test_firewall_pattern_timing.py times every
+# pattern on 64k-character inputs (see pattern_timing.py).
 
 # A shared verb list for instruction-override variants. Kept here so it
 # can be shared across the four English regexes (ignore/disregard/forget/
@@ -185,8 +191,8 @@ _OVERRIDE_VERBS = (
     r"nullify|cancel|suspend|drop|remove|undo)"
 )
 _OVERRIDE_QUAL = (
-    r"(?:(?:all|the|any|every|your|those)\s+(?:of\s+)?(?:your\s+|the\s+)?)?"
-    r"(?:previous|prior|above|earlier|safety|security|content)?\s*"
+    r"(?:(?:all|the|any|every|your|those)\s++(?:of\s++)?(?:your\s++|the\s++)?)?"
+    r"(?:(?:previous|prior|above|earlier|safety|security|content)\s*+)?"
 )
 _OVERRIDE_TARGETS = (
     r"(?:instructions?|prompts?|rules?|directions?|directives?|guidelines?|"
@@ -196,7 +202,7 @@ _OVERRIDE_TARGETS = (
 INJECTION_PATTERNS = [
     # ─── 1. Direct instruction override (English) ───────────────
     (
-        rf"{_OVERRIDE_VERBS}\s+{_OVERRIDE_QUAL}{_OVERRIDE_TARGETS}",
+        rf"{_OVERRIDE_VERBS}\s++{_OVERRIDE_QUAL}{_OVERRIDE_TARGETS}",
         "instruction_override",
         RiskLevel.CRITICAL,
     ),
@@ -225,7 +231,7 @@ INJECTION_PATTERNS = [
     # ─── 3. System prompt extraction ───────────────────────────
     (
         r"(?:show|reveal|display|print|output|repeat|echo|tell|give|share|expose)"
-        r"\s+(?:me\s+)?(?:your|the)?\s*"
+        r"\s++(?:me\s++)?(?:(?:your|the)\s*+)?"
         r"(?:full\s+|complete\s+|original\s+|initial\s+|verbatim\s+)?"
         r"(?:system\s+|hidden\s+|internal\s+|secret\s+)?"
         r"(?:prompt|instructions?|rules?|configuration|config|policy|policies)",
@@ -273,9 +279,12 @@ INJECTION_PATTERNS = [
     # Verb "email" intentionally excluded — too many benign sentences
     # ("send report to alice@corp.com") would match. Bare email addresses
     # are not exfil targets; URLs and known burner domains are.
+    # Between verb and preposition: whitespace, up to 80 characters of any
+    # text, whitespace. The text part starts and ends with a non-space
+    # character, so each whitespace run is matched by one quantifier.
     (
-        r"(?:send|post|upload|exfiltrate|forward|transmit|leak)\s+"
-        r"(?:.{0,80}?)\s+(?:to|via|towards|through)\s+"
+        r"(?:send|post|upload|exfiltrate|forward|transmit|leak)"
+        r"(?:\s{2,}+|\s++\S(?:.{0,78}\S)?\s++)(?:to|via|towards|through)\s++"
         r"(?:https?://|ftp://|file://|external\s+(?:endpoint|server|url)|"
         r"attacker(?:\.com|-controlled)|evil\.com|webhook\.site|requestbin|"
         r"burpcollaborator|ngrok\.io|localtunnel|serveo|"
@@ -287,7 +296,7 @@ INJECTION_PATTERNS = [
     # System-shell execution
     (
         r"\b(?:exec|spawn|system|popen|subprocess|os\.system|shell_exec|run_command|"
-        r"shell\s+(?:command|tool))\b\s*[:(]?\s*[\"'`]?(?:rm\s+-rf|wget\s|curl\s|"
+        r"shell\s+(?:command|tool))\b\s*+(?:[:(]\s*+)?[\"'`]?(?:rm\s+-rf|wget\s|curl\s|"
         r"bash\s|sh\s+-c|/bin/|cmd\.exe|powershell)",
         "tool_abuse",
         RiskLevel.CRITICAL,
