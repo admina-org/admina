@@ -853,24 +853,28 @@ async def auth_middleware(request: Request, call_next) -> JSONResponse:
 
     state = _get_state(request)
 
-    # 1. Try plugin auth providers first (if any are loaded)
+    # 1. Try plugin auth providers first (if any are loaded). The first
+    # provider that returns a user wins; the handler then runs once, outside
+    # the loop, so its exceptions reach the normal 500 handler.
     if state.auth_providers:
+        user = None
         for provider in state.auth_providers:
             try:
                 user = await provider.authenticate(request)
-                if user:
-                    request.state.user = user
-                    return await call_next(request)
             except (ValueError, RuntimeError, OSError):
                 continue  # try next provider
-        # All providers failed — reject
-        return JSONResponse(
-            status_code=401,
-            content={
-                "error": "Unauthorized",
-                "detail": "Authentication failed across all providers",
-            },
-        )
+            if user:
+                break
+        if not user:
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "error": "Unauthorized",
+                    "detail": "Authentication failed across all providers",
+                },
+            )
+        request.state.user = user
+        return await call_next(request)
 
     # 2. Fallback: static ADMINA_API_KEY check.
     # API clients present the raw key via X-API-Key / Authorization: Bearer.
