@@ -73,18 +73,21 @@ def _select_upstream(request: Request, state: Any, cfg: Any) -> GatewayUpstream 
     return upstreams.select(_requested_route(request.headers.get(UPSTREAM_HEADER, "")))
 
 
+def _openai_error(status: int, message: str, error_type: str, code: str) -> JSONResponse:
+    """An error response in the OpenAI format: ``{"error": {...}}``."""
+    return JSONResponse(
+        status_code=status,
+        content={"error": {"message": message, "type": error_type, "param": None, "code": code}},
+    )
+
+
 def _unknown_upstream() -> JSONResponse:
     """400 in the OpenAI error format for an unknown route name."""
-    return JSONResponse(
-        status_code=400,
-        content={
-            "error": {
-                "message": f"Unknown upstream route in the {UPSTREAM_HEADER} header.",
-                "type": "invalid_request_error",
-                "param": None,
-                "code": "unknown_upstream",
-            }
-        },
+    return _openai_error(
+        400,
+        f"Unknown upstream route in the {UPSTREAM_HEADER} header.",
+        "invalid_request_error",
+        "unknown_upstream",
     )
 
 
@@ -358,6 +361,14 @@ def create_gateway_endpoints(
         session_id = re.sub(r"[\r\n]", "", request.headers.get("X-Session-Id", "default"))[:128]
         agent_id = re.sub(r"[\r\n]", "", request.headers.get("X-Agent-Id", "gateway"))[:128]
         prompt_text = _extract_prompt_text(messages)
+        # Same estimate as /mcp: the length of the scanned text.
+        if 0 < cfg.MAX_REQUEST_TOKENS < len(prompt_text):
+            return _openai_error(
+                413,
+                "Request content exceeds the token limit.",
+                "invalid_request_error",
+                "request_tokens_exceeded",
+            )
         event_id = uuid.uuid4().hex
 
         pre = await run_pipeline(

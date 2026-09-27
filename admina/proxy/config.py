@@ -135,7 +135,15 @@ class Settings(BaseSettings):
     INJECTION_FAST_PATH_ENABLED: bool = True
     INJECTION_DEEP_PATH_ENABLED: bool = True
     PII_REDACTION_ENABLED: bool = True
+    # Longest request content accepted on /mcp and on the gateway's chat
+    # completions, estimated as its length in characters (0 = no limit).
+    # Longer requests get 413.
     MAX_REQUEST_TOKENS: int = 100000
+    # Largest request body accepted on any route, in bytes (0 = no limit).
+    # A larger body gets 413 before it is parsed: at once when its
+    # Content-Length is over the limit, otherwise as soon as the bytes read
+    # go over it.
+    ADMINA_MAX_REQUEST_BYTES: int = Field(default=10 * 1024 * 1024, ge=0)
 
     # Guard fail mode (B3): what happens when a governance guard raises.
     #   "open" (default): the guard is skipped, recorded as an ERROR check,

@@ -65,6 +65,7 @@ from admina.proxy import dashboard_session
 from admina.proxy.api.dashboard import create_dashboard_endpoints
 from admina.proxy.api.gateway import create_gateway_endpoints
 from admina.proxy.api.integration import create_integration_endpoints
+from admina.proxy.body_limit import BodyLimitMiddleware
 from admina.proxy.config import GovernanceEvent, settings
 from admina.proxy.gateway_upstreams import build_gateway_upstreams
 from admina.proxy.multi_upstream import MultiUpstreamRouter
@@ -910,6 +911,13 @@ async def auth_middleware(request: Request, call_next) -> JSONResponse:
             ),
         },
     )
+
+
+# ── Request body limit ────────────────────────────────────────
+# Added last, so it is the outermost middleware: a body over
+# ADMINA_MAX_REQUEST_BYTES gets 413 before authentication and before any
+# parsing (see admina.proxy.body_limit).
+app.add_middleware(BodyLimitMiddleware, get_limit=lambda: settings.ADMINA_MAX_REQUEST_BYTES)
 
 
 # ── Admin API ─────────────────────────────────────────────────

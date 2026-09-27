@@ -91,6 +91,7 @@ def _settings(**over):
         PII_REDACTION_ENABLED=True,
         GOVERNANCE_MODE="enforce",
         GUARD_FAIL_MODE="open",
+        MAX_REQUEST_TOKENS=100000,
     )
     base.update(over)
     return SimpleNamespace(**base)

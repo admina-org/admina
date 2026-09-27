@@ -353,6 +353,19 @@ search_ms(re.compile(r"\b[\w.]+=\d"), "a." * 32768)   # ms on a 64k-character ru
 Anchoring the start of the run, `(?<![\w.])[\w.]++=\d`, gives one attempt per
 run (a match then starts where the run starts).
 
+### Request size limits
+
+`ADMINA_MAX_REQUEST_BYTES` (default 10 MiB, `0` = no limit) caps the request
+body on every route. A body over the cap gets 413 before it is parsed: at once
+when its `Content-Length` is over the cap, otherwise as soon as the bytes read
+go over it. The 413 body is in the OpenAI error format on `/v1`
+(`invalid_request_error`, code `request_too_large`) and `{"detail": ...}`
+elsewhere. `MAX_REQUEST_TOKENS` (default 100000, `0` = no limit) caps the
+request content on `/mcp` and on `POST /v1/chat/completions`, estimated as the
+length in characters of the scanned text (on the gateway, the text of every
+message); longer requests get 413 (code `request_tokens_exceeded` on the
+gateway) before any governance check.
+
 ### OpenAI-compatible gateway
 
 The proxy serves an OpenAI-compatible API at `/v1` (`POST /v1/chat/completions`,
