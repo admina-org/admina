@@ -148,6 +148,43 @@ def test_overrides_force_python_firewall(monkeypatch, tmp_path):
     fw = engines.get_firewall()
     # Must use Python bridge despite Rust being available, because overrides are present
     assert fw.get_stats()["engine"] == "python"
+    assert fw.engine == "python"
+
+
+def test_firewall_bridge_names_its_engine(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)  # no admina.yaml
+    monkeypatch.setenv("ADMINA_ENGINE", "python")
+    _reload_engines()
+    from admina import engines
+
+    assert engines.get_firewall().engine == "python"
+
+    pytest.importorskip("admina_core")
+    monkeypatch.setenv("ADMINA_ENGINE", "rust")
+    assert engines.get_firewall().engine == "rust"
+
+
+def test_malformed_custom_pattern_skips_only_that_entry(monkeypatch, tmp_path):
+    (tmp_path / "admina.yaml").write_text(
+        "schema_version: 1\n"
+        "domains:\n"
+        "  agent_security:\n"
+        "    firewall:\n"
+        "      custom_patterns:\n"
+        "        - regex: first-marker\n"
+        "          risk_level: 5\n"
+        "        - regex: second-marker\n"
+        "          category: internal\n"
+        "          risk_level: high\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ADMINA_ENGINE", "python")
+    _reload_engines()
+    from admina import engines
+
+    fw = engines.get_firewall()
+    assert fw.check("mentions second-marker here")["is_injection"] is True
+    assert fw.check("mentions first-marker here")["is_injection"] is False
 
 
 # ── Rust stats schema matches Python ─────────────────────────────────────────

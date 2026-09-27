@@ -22,6 +22,8 @@ import logging
 import re
 import time
 import unicodedata
+from collections.abc import Callable, Iterable
+from typing import Any
 
 from admina.core.types import RiskLevel
 
@@ -434,6 +436,34 @@ COMPILED_PATTERNS = [
     (re.compile(pattern, re.IGNORECASE | re.DOTALL), name, level)
     for pattern, name, level in INJECTION_PATTERNS
 ]
+
+
+def parse_custom_patterns(
+    entries: Iterable[Any],
+    on_error: Callable[[Any, Exception], None] | None = None,
+) -> list[tuple[str, str, RiskLevel]]:
+    """``(regex, category, risk_level)`` tuples from the ``custom_patterns``
+    entries of ``admina.yaml`` (``{regex, category, risk_level}``).
+
+    ``category`` defaults to ``"user_custom"`` and ``risk_level`` to
+    ``"medium"`` (case-insensitive). An entry without ``regex``, with an
+    unknown risk level or that is not a mapping is skipped; *on_error*, when
+    given, is called with the entry and the error.
+    """
+    patterns: list[tuple[str, str, RiskLevel]] = []
+    for entry in entries or ():
+        try:
+            patterns.append(
+                (
+                    entry["regex"],
+                    entry.get("category", "user_custom"),
+                    RiskLevel(entry.get("risk_level", "medium").lower()),
+                )
+            )
+        except (KeyError, ValueError, TypeError, AttributeError) as exc:
+            if on_error is not None:
+                on_error(entry, exc)
+    return patterns
 
 
 class InjectionFirewall:

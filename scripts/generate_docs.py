@@ -114,7 +114,7 @@ API_PAGES: list[tuple[str, str, list[tuple[str, str]]]] = [
     (
         "core-types.md",
         "Core Types & Enums",
-        [("core.types", "core.types")],
+        [("core.types", "core.types"), ("core.jcs", "Canonical JSON (RFC 8785)")],
     ),
     (
         "event-bus.md",
@@ -139,6 +139,7 @@ API_PAGES: list[tuple[str, str, list[tuple[str, str]]]] = [
         [
             ("domains.agent_security.firewall", "Injection Firewall"),
             ("domains.agent_security.pattern_timing", "Pattern Timing Probe"),
+            ("domains.agent_security.ruleset", "Ruleset Identity"),
             ("domains.agent_security.loop_breaker", "Loop Breaker"),
         ],
     ),

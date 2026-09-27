@@ -121,21 +121,16 @@ def _load_firewall_yaml_overrides() -> tuple[list, list]:
     disabled: list = []
     try:
         from admina.core.config import load_config
-        from admina.core.types import RiskLevel
+        from admina.domains.agent_security.firewall import parse_custom_patterns
 
         fw_cfg = load_config().agent_security.firewall
         disabled = list(fw_cfg.disabled_categories)
-        for entry in fw_cfg.custom_patterns:
-            try:
-                extras.append(
-                    (
-                        entry["regex"],
-                        entry.get("category", "user_custom"),
-                        RiskLevel(entry.get("risk_level", "medium").lower()),
-                    )
-                )
-            except (KeyError, ValueError, TypeError) as exc:
-                logger.warning("Skipping malformed custom_pattern %r: %s", entry, exc)
+        extras = parse_custom_patterns(
+            fw_cfg.custom_patterns,
+            on_error=lambda entry, exc: logger.warning(
+                "Skipping malformed custom_pattern %r: %s", entry, exc
+            ),
+        )
     except (ImportError, AttributeError, OSError) as exc:
         logger.debug("Firewall YAML overrides unavailable: %s", exc)
     return extras, disabled
@@ -171,6 +166,8 @@ class LoopBreakerBridge(Protocol):
 class _PythonFirewallBridge:
     """Wraps the existing Python InjectionFirewall with a compatible interface."""
 
+    engine = "python"
+
     def __init__(self, extras: list | None = None, disabled: list | None = None):
         from admina.domains.agent_security.firewall import InjectionFirewall
 
@@ -202,6 +199,8 @@ class _RustFirewallBridge:
     Stats normalization: Rust tracks ``checks_total``/``injections_detected``
     with no per-type breakdown; mapped to the Python key set.
     """
+
+    engine = "rust"
 
     def __init__(self):
         self._impl = admina_core.RustFirewall()
