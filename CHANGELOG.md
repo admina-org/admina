@@ -49,6 +49,25 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `X-Admina-Upstream` headers are not forwarded upstream.
 - `admina.core.secretfile`: `read_secret_file()` and `resolve_secret()`
   resolve a secret setting given directly or as `<SETTING>_FILE`.
+- Request body cap on every route: `ADMINA_MAX_REQUEST_BYTES` (default
+  10 MiB, `0` = no limit). A body over the cap gets 413 before it is
+  parsed: at once when its `Content-Length` is over the cap, otherwise as
+  soon as the bytes read go over it. The 413 body is in the OpenAI error
+  format on `/v1` (`invalid_request_error`, code `request_too_large`) and
+  `{"detail": ...}` elsewhere.
+- Upstream timeouts and connection pool of the OpenAI-compatible gateway,
+  which has an HTTP client of its own: `ADMINA_GATEWAY_TIMEOUT_CONNECT` and
+  `ADMINA_GATEWAY_TIMEOUT_READ` (default 30 seconds),
+  `ADMINA_GATEWAY_TIMEOUT_TOTAL` (the whole upstream exchange; default 0),
+  `ADMINA_GATEWAY_MAX_CONNECTIONS` (default 100) and
+  `ADMINA_GATEWAY_MAX_KEEPALIVE_CONNECTIONS` (default 20). A timeout of 0
+  means no limit. A timeout before the response starts gets 504 and any
+  other transport failure 502, with an OpenAI-style error body (type
+  `upstream_error`, code `upstream_timeout` or `upstream_error`) that
+  carries no exception text. A failure during a stream ends it with one
+  `data: {"error": ...}` event and no `data: [DONE]`.
+- `ADMINA_GATEWAY_STREAM_MODE`, or `gateway.stream_mode` in `admina.yaml`
+  (the environment variable wins): `passthrough` (default) or `governed`.
 
 ### Changed
 
@@ -56,6 +75,36 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   levels and matching results are unchanged.
 - PII redaction and the spaCy + regex PII engine match e-mail addresses in
   linear time on long inputs. Detected spans are unchanged.
+- **Streamed chat completions pass through unchanged.** With
+  `ADMINA_GATEWAY_STREAM_MODE=passthrough` (the default) and PII redaction
+  off, the gateway forwards the upstream SSE bytes as they are, every field
+  included, each event as soon as it is complete (0.12 re-emitted
+  `choices[0].delta.content` only). With PII redaction on, or in
+  `governed` mode, each chunk is parsed and re-serialised.
+- The governed stream path sends one chunk for each upstream chunk, with
+  all of its fields: ids, choice indexes, roles, tool calls, finish
+  reasons, `logprobs` and the final `usage` chunk. With PII redaction on,
+  the generated text is redacted in `content`, `reasoning_content`,
+  `reasoning`, `refusal` and tool and function call `arguments`, per
+  choice and per field across chunks; the token texts of `logprobs` and
+  SSE comment lines are redacted as well. `data: [DONE]` is sent when the
+  upstream sends it.
+- Upstream errors (4xx, 5xx) reach the client of the gateway with their
+  status, body and content type, streaming or not. A non-streaming body is
+  forwarded unchanged unless PII redaction is on; with redaction on, a
+  successful response that is not a JSON object gets 502 (code
+  `upstream_invalid_response`). `GET /v1/models` forwards the upstream
+  body unchanged when no allow-list is set.
+- `MAX_REQUEST_TOKENS` also applies to `POST /v1/chat/completions`,
+  estimated from the length of the message text as on `/mcp`: longer
+  requests get 413 (code `request_tokens_exceeded`) before any governance
+  check.
+
+### Fixed
+
+- The auth middleware runs the request handler once, after the first auth
+  provider that returns a user. An exception raised by the handler gets
+  the application's 500 response and is not retried with another provider.
 
 ## [0.12.1] — 2026-MM-DD
 
