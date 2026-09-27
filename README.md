@@ -479,6 +479,23 @@ scan ends. An exception inside the pipeline follows `ADMINA_GUARD_FAIL_MODE`:
 Governance guards run in the worker threads too, each thread with an event loop
 of its own.
 
+With `ADMINA_GATEWAY_SCAN_RESPONSE=true` (default `false`) the firewall also
+checks the completion text, the `content` of each choice, in the same worker
+threads and time budget (and only while `INJECTION_FAST_PATH_ENABLED` is on):
+
+- a non-streaming completion is checked before it is returned; when it is
+  flagged in `enforce` mode, or its check runs over the time budget, the client
+  receives the block message instead (`finish_reason: "content_filter"`);
+- a streamed completion is checked after the last event has been sent: the
+  text has already reached the client, so the outcome is only recorded.
+
+Each check writes a forensic record of its own, `event_type:
+"gateway_response_scan"`, with `request_event_id` (the `event_id` of the
+request record), `stream`, `action` (`BLOCK` or `ALLOW`), `risk_level`,
+`would_action: "BLOCK"` when flagged but not blocked (a stream, or `observe`
+mode) and `checks.response_firewall` (names and signals, no text). Upstream
+errors and responses that are not a JSON object are not checked.
+
 `/metrics` serves `admina_event_loop_lag_seconds`, a histogram of how late the
 proxy's event loop wakes up a task that sleeps 0.1 s at a time (buckets from
 1 ms to 5 s, with `_sum` and `_count`): the time the loop spent on other work

@@ -39,6 +39,11 @@ is blocked, in every governance mode. An exception inside the pipeline
 follows ``ADMINA_GUARD_FAIL_MODE``: ``open`` lets the request through,
 ``closed`` blocks it. Both outcomes are recorded as ``checks["pipeline"]``.
 
+With ``ADMINA_GATEWAY_SCAN_RESPONSE`` the firewall also checks the completion
+text (see :mod:`admina.proxy.gateway_response_scan`): a non-streaming
+completion before it is returned, blocked when flagged in enforce mode; a
+stream after it has ended, recorded only.
+
 Both forward to the upstream route named by the ``X-Admina-Upstream``
 request header, or to the default route without it (see
 :mod:`admina.proxy.gateway_upstreams`). An unknown route name is answered
@@ -74,9 +79,10 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.background import BackgroundTask
 
 from admina import __version__
-from admina.core.types import EventType
+from admina.core.types import EventType, GovernanceAction
 from admina.domains.agent_security.egress import resolve_egress_mode
 from admina.domains.agent_security.scan_policy import (
     SCAN_POLICY_HEADER,
@@ -91,6 +97,12 @@ from admina.domains.governance import (
     run_pipeline,
     safe_serialize,
     unfinished_pipeline_result,
+)
+from admina.proxy.gateway_response_scan import (
+    completion_texts,
+    firewall_decision,
+    response_scan_record,
+    stream_texts,
 )
 from admina.proxy.gateway_scan import (
     RULESET_HEADER,
@@ -582,27 +594,75 @@ async def _record_forensic(
     on the canonical pipeline. Runs off the event loop like /mcp does.
 
     *prescan* is the scan scope (:meth:`ScanScope.record`)."""
+    await _record(
+        forensic_box,
+        {
+            "event_id": event_id,
+            "event_type": EventType.GATEWAY_REQUEST,
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "method": "chat.completions",
+            "upstream": upstream,
+            "action": action,
+            "risk_level": risk_level,
+            "governance_latency_ms": round(pre.latency_ms, 2),
+            "checks": {k: safe_serialize(v) for k, v in pre.checks.items()},
+            "prescan": prescan,
+        },
+    )
+
+
+async def _record(forensic_box: Any, event: dict) -> None:
+    """Append *event* to the forensic log, off the event loop."""
     if forensic_box is None:
         return
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(
-        None,
-        lambda: forensic_box.record(
-            {
-                "event_id": event_id,
-                "event_type": EventType.GATEWAY_REQUEST,
-                "agent_id": agent_id,
-                "session_id": session_id,
-                "method": "chat.completions",
-                "upstream": upstream,
-                "action": action,
-                "risk_level": risk_level,
-                "governance_latency_ms": round(pre.latency_ms, 2),
-                "checks": {k: safe_serialize(v) for k, v in pre.checks.items()},
-                "prescan": prescan,
-            }
+    await asyncio.get_running_loop().run_in_executor(None, forensic_box.record, event)
+
+
+def _scans_response(cfg: Any) -> bool:
+    return bool(cfg.ADMINA_GATEWAY_SCAN_RESPONSE and cfg.INJECTION_FAST_PATH_ENABLED)
+
+
+async def _scan_response(
+    state: Any,
+    cfg: Any,
+    texts_of: Callable[[], list[str]],
+    *,
+    request_event_id: str,
+    agent_id: str,
+    session_id: str,
+    upstream: str,
+    stream: bool,
+) -> GovernanceResult:
+    """Scan the completion text given by ``texts_of()`` in the worker
+    threads, within the time budget, and record the outcome."""
+    event_id = uuid.uuid4().hex
+    mode = cfg.GOVERNANCE_MODE
+
+    async def check() -> GovernanceResult:
+        return firewall_decision(state.firewall, texts_of(), mode)
+
+    result = await _govern(state, cfg, check, event_id)
+    await _record(
+        state.forensic_box,
+        response_scan_record(
+            result,
+            event_id=event_id,
+            request_event_id=request_event_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            upstream=upstream,
+            stream=stream,
         ),
     )
+    return result
+
+
+async def _collected(chunks: AsyncIterator[Any], sent: list[Any]) -> AsyncIterator[Any]:
+    """*chunks*, each one also appended to *sent*."""
+    async for chunk in chunks:
+        sent.append(chunk)
+        yield chunk
 
 
 # ── Upstream exchange ────────────────────────────────────────
@@ -845,10 +905,27 @@ async def _chat_completion(
             pii = state.pii_redactor if cfg.PII_REDACTION_ENABLED else None
             chunks = _governed_sse_stream(upstream.aiter_lines(), pii)
             content_type = "text/event-stream"
+        scan = None
+        if _scans_response(cfg):
+            # The text sent is scanned once the response is complete.
+            sent: list[Any] = []
+            chunks = _collected(chunks, sent)
+            scan = BackgroundTask(
+                _scan_response,
+                state,
+                cfg,
+                lambda: stream_texts(sent),
+                request_event_id=event_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                upstream=route.name,
+                stream=True,
+            )
         return StreamingResponse(
             _relay(chunks, stream_cm, deadline, route),
             status_code=upstream.status_code,
             headers={"content-type": content_type},
+            background=scan,
         )
 
     try:
@@ -856,6 +933,21 @@ async def _chat_completion(
             resp = await client.post(url, json=forward_body, headers=headers)
     except (TimeoutError, httpx.RequestError) as exc:
         return _failure_response(route, exc)
+    if _scans_response(cfg) and _is_success(resp.status_code):
+        completion = _json_object(resp.content)
+        if completion is not None:
+            checked = await _scan_response(
+                state,
+                cfg,
+                lambda: completion_texts(completion),
+                request_event_id=event_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                upstream=route.name,
+                stream=False,
+            )
+            if checked.action == GovernanceAction.BLOCK:
+                return JSONResponse(content=_synthetic_completion(model, block_message))
     if not (_transforms_response(cfg) and _is_success(resp.status_code)):
         return _as_received(resp.status_code, resp.headers, resp.content)
     data = _json_object(resp.content)

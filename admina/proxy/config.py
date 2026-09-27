@@ -218,6 +218,11 @@ class Settings(BaseSettings):
     #       is blocked, in every governance mode, and recorded.
     ADMINA_GATEWAY_PIPELINE_WORKERS: int = Field(default=0, ge=0)
     ADMINA_GATEWAY_PIPELINE_TIMEOUT: float = Field(default=0.0, ge=0)
+    # Run the firewall on the completion text too (needs the firewall on).
+    # A non-streaming completion is scanned before it is returned and, when
+    # flagged in enforce mode, replaced by the block message; a streamed one
+    # is scanned when the stream ends and the result is only recorded.
+    ADMINA_GATEWAY_SCAN_RESPONSE: bool = False
 
     @field_validator("ADMINA_GATEWAY_SCAN_ROLES")
     @classmethod
