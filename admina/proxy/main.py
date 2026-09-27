@@ -227,6 +227,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # The ruleset of the firewall just built: its engine, admina.yaml rules.
     state.gateway_scan = build_gateway_scan_config(state.firewall, _admina_config)
     state.pipeline_executor = PipelineExecutor(settings.ADMINA_GATEWAY_PIPELINE_WORKERS)
+    state.loop_lag.start()
 
     # ── Plugin discovery ──────────────────────────────────────
     _plugin_modules = list(_admina_config.plugins) if _admina_config else []
@@ -483,6 +484,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     yield
 
     # Shutdown
+    await state.loop_lag.stop()
     if state.quarantine_refresh is not None:
         state.quarantine_refresh.cancel()
         with suppress(asyncio.CancelledError):
@@ -1074,6 +1076,8 @@ async def prometheus_metrics(request: Request) -> Response:
             "Forensic chain length (records appended)",
             "gauge",
         )
+
+    lines.extend(state.loop_lag.exposition())
 
     # Engine info as a labelled gauge with constant value 1
     engine_name = eng.get("engine", "unknown")

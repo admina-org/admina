@@ -479,6 +479,12 @@ scan ends. An exception inside the pipeline follows `ADMINA_GUARD_FAIL_MODE`:
 Governance guards run in the worker threads too, each thread with an event loop
 of its own.
 
+`/metrics` serves `admina_event_loop_lag_seconds`, a histogram of how late the
+proxy's event loop wakes up a task that sleeps 0.1 s at a time (buckets from
+1 ms to 5 s, with `_sum` and `_count`): the time the loop spent on other work
+before it could run it. It stays around a millisecond while nothing holds up
+the loop.
+
 #### Firewall ruleset
 
 `ruleset_sha256()` (`admina.domains.agent_security.ruleset`) names the firewall
