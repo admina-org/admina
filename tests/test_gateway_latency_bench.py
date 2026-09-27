@@ -16,18 +16,29 @@
 
 Local benchmark (``-m benchmark``; absolute thresholds, not for shared CI
 runners). A mock upstream waits 5 ms before each chunk. The gateway runs in
-passthrough mode with the installed firewall engine and an in-memory
-forensic log; PII redaction is off. For concurrency 1 and 8 the requests
-alternate between a direct call and a call through the gateway, and the
-p95 time to the first chunk through the gateway may exceed the direct p95
-by at most 5 ms.
+passthrough mode with an in-memory forensic log; PII redaction is off. For
+concurrency 1 and 8 the requests alternate between a direct call and a call
+through the gateway, and the p95 time to the first chunk through the
+gateway may exceed the direct p95 by at most 5 ms:
+
+- with a short prompt and the installed firewall engine;
+- on a RAG-shaped prompt (12 ``<source>`` blocks, about 44,000 characters,
+  1000 streamed tokens) with ``X-Admina-Scan-Policy`` declaring the blocks
+  and the system message already scanned, for the Python engine and, when
+  ``admina-core`` is installed, the Rust engine (``scripts/bench_gateway.py``).
+
+With 8 clients streaming RAG answers through the gateway, the event loop lag
+p95 stays within 5 ms as well.
 """
 
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import statistics
+import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -132,3 +143,45 @@ def test_first_chunk_added_by_the_gateway_p95_within_5ms(concurrency):
         f"{len(through)} requests each)"
     )
     assert added <= _ADDED_P95_MAX_MS
+
+
+# ── RAG-shaped trace with a scan policy ───────────────────────
+
+
+def _bench_module():
+    path = Path(__file__).resolve().parent.parent / "scripts" / "bench_gateway.py"
+    spec = importlib.util.spec_from_file_location("bench_gateway", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses look the module up there
+    spec.loader.exec_module(module)
+    return module
+
+
+bench = _bench_module()
+_ENGINES = ["python"] + (["rust"] if importlib.util.find_spec("admina_core") else [])
+_RAG_ROUNDS = 60
+_RAG_TOKENS = 1000
+_LAG_SECONDS = 6.0
+_LAG_P95_MAX_MS = 5.0
+
+
+@pytest.mark.parametrize("engine", _ENGINES)
+@pytest.mark.parametrize("concurrency", [1, 8])
+def test_rag_first_chunk_added_with_scan_policy_p95_within_5ms(engine, concurrency):
+    result = asyncio.run(
+        bench.measure_first_chunk(
+            engine, concurrency, _RAG_ROUNDS, _RAG_TOKENS, _CHUNK_DELAY_S, full_scan=False
+        )
+    )
+    stats = result.summary()
+    print(f"\nengine={engine} c={concurrency}: {stats}")
+    assert result.added_p95("prescan") <= _ADDED_P95_MAX_MS
+
+
+@pytest.mark.parametrize("engine", _ENGINES)
+def test_rag_event_loop_lag_p95_at_c8_within_5ms(engine):
+    lag = asyncio.run(bench.measure_loop_lag(engine, _LAG_SECONDS, _RAG_TOKENS, _CHUNK_DELAY_S))
+    stats = lag.summary()
+    print(f"\nengine={engine} event loop lag c=8: {stats}")
+    assert lag.requests >= bench.LAG_CONCURRENCY
+    assert bench.p95(lag.samples) <= _LAG_P95_MAX_MS

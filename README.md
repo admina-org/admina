@@ -767,6 +767,18 @@ Full pipeline      2 261us           5.21us          434x
 
 </details>
 
+`scripts/bench_gateway.py` measures the latency the OpenAI-compatible gateway
+adds on a retrieval-augmented trace, in one process: a mock upstream streaming
+1000 chunks 5 ms apart, and a prompt with 12 `<source>` blocks of generated
+prose (about 44,000 characters). It reports the time to the first chunk,
+direct and through the gateway with and without `X-Admina-Scan-Policy`, at 1
+and 8 concurrent requests, and the event loop lag with 8 clients streaming,
+for each firewall engine:
+
+```bash
+.venv/bin/python scripts/bench_gateway.py --engines python,rust --json bench.json
+```
+
 ## Traffic Simulator
 
 Generate realistic governance traffic to test and demo the platform:
