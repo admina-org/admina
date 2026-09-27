@@ -242,3 +242,129 @@ def test_proxy_image_build_stops_when_the_rust_engine_does_not_build():
     assert build and install
     for line in build + install:
         assert "||" not in line and "exit 0" not in line and "if " not in line, line
+
+
+# ── Published images: tags, attestations, signatures ──────────────────────
+
+OWNER = "admina-org"
+REGISTRY = f"ghcr.io/{OWNER}"
+
+
+def _image_outputs(tmp_path: Path, ref: str) -> dict[str, str]:
+    workflow = _load("release-docker.yml")
+    return _run_step(
+        _step(workflow, "meta", "tags"),
+        tmp_path,
+        GITHUB_REF=ref,
+        GITHUB_REF_NAME=ref.rsplit("/", 1)[-1],
+        OWNER=OWNER,
+    )
+
+
+def _build_steps(workflow: dict) -> list[tuple[dict, dict]]:
+    return [
+        (job, step)
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if step.get("uses", "").startswith("docker/build-push-action@")
+    ]
+
+
+@pytest.mark.parametrize(("tag", "prerelease"), VERSION_SAMPLES)
+def test_image_tags_move_latest_only_for_final_releases(tmp_path, tag, prerelease):
+    outputs = _image_outputs(tmp_path, f"refs/tags/{tag}")
+    version = tag.removeprefix("v")
+    latest = [] if prerelease else ["latest"]
+
+    assert outputs["version"] == version
+    assert outputs["proxy-tags"].splitlines() == [
+        f"{REGISTRY}/admina-proxy:{t}" for t in [version, *latest]
+    ]
+    assert outputs["proxy-slim-tags"].splitlines() == [f"{REGISTRY}/admina-proxy:{version}-slim"]
+    assert outputs["dashboard-tags"].splitlines() == [
+        f"{REGISTRY}/admina-dashboard:{t}" for t in [version, *latest]
+    ]
+
+
+def test_manual_run_on_a_branch_tags_a_development_build_without_latest(tmp_path):
+    outputs = _image_outputs(tmp_path, "refs/heads/main")
+
+    assert outputs["version"] == "dev-0123456"
+    assert outputs["proxy-tags"].splitlines() == [f"{REGISTRY}/admina-proxy:dev-0123456"]
+    assert outputs["dashboard-tags"].splitlines() == [f"{REGISTRY}/admina-dashboard:dev-0123456"]
+
+
+def test_images_are_pushed_with_sbom_and_max_provenance():
+    builds = _build_steps(_load("release-docker.yml"))
+
+    assert len(builds) == 3  # proxy, proxy slim, dashboard
+    for _, step in builds:
+        options = step["with"]
+        assert str(options["push"]).lower() == "true"
+        assert str(options["sbom"]).lower() == "true"
+        assert options["provenance"] == "mode=max"
+        assert "${{ needs.meta.outputs." in options["tags"]
+        assert (
+            "org.opencontainers.image.version=${{ needs.meta.outputs.version }}"
+            in (options["labels"])
+        )
+
+
+def test_slim_image_is_the_slim_target_with_the_slim_tags():
+    builds = _build_steps(_load("release-docker.yml"))
+    slim = [step for _, step in builds if step["with"].get("target") == "slim"]
+
+    assert len(slim) == 1
+    assert slim[0]["with"]["file"] == "admina/proxy/Dockerfile"
+    assert slim[0]["with"]["tags"] == "${{ needs.meta.outputs.proxy-slim-tags }}"
+
+
+def test_every_pushed_image_is_signed_keylessly_by_digest(tmp_path):
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is not available")
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    calls = tmp_path / "cosign-calls"
+    stub = stub_dir / "cosign"
+    stub.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{calls}"\n', encoding="utf-8")
+    stub.chmod(0o755)
+
+    builds = _build_steps(_load("release-docker.yml"))
+    for job, build in builds:
+        assert job["permissions"]["id-token"] == "write"
+        assert any(s.get("uses", "").startswith("sigstore/cosign-installer@") for s in job["steps"])
+        digest_ref = "${{ steps.%s.outputs.digest }}" % build["id"]
+        signs = [s for s in job["steps"] if s.get("env", {}).get("DIGEST") == digest_ref]
+        assert len(signs) == 1, f"no signing step for {build['id']}"
+        sign = signs[0]
+        assert "--key" not in sign["run"]
+
+        calls.write_text("", encoding="utf-8")
+        subprocess.run(
+            [bash, "-e", "-c", sign["run"]],
+            env={
+                "PATH": f"{stub_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+                "IMAGE": f"{REGISTRY}/example",
+                "DIGEST": "sha256:" + "ab" * 32,
+            },
+            check=True,
+        )
+        assert calls.read_text(encoding="utf-8").splitlines() == [
+            f"sign --yes {REGISTRY}/example@sha256:{'ab' * 32}"
+        ]
+        assert sign["env"]["IMAGE"].startswith("ghcr.io/${{ github.repository_owner }}/admina-")
+
+
+@pytest.mark.parametrize("path", sorted(WORKFLOWS.glob("*.yml")), ids=lambda p: p.name)
+def test_actions_are_pinned_by_commit_sha(path):
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    for job_id, job in workflow["jobs"].items():
+        uses = [job["uses"]] if "uses" in job else []
+        uses += [step["uses"] for step in job.get("steps", []) if "uses" in step]
+        for action in uses:
+            if action.startswith("./"):
+                continue
+            assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", action), (
+                f"{path.name}: job {job_id} uses {action}"
+            )
