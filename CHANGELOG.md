@@ -68,6 +68,11 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `data: {"error": ...}` event and no `data: [DONE]`.
 - `ADMINA_GATEWAY_STREAM_MODE`, or `gateway.stream_mode` in `admina.yaml`
   (the environment variable wins): `passthrough` (default) or `governed`.
+- `ADMINA_GATEWAY_MAX_PROMPT_CHARS` (default `0`, no limit): the longest
+  message text of `POST /v1/chat/completions`, in characters (the text of
+  every message). A longer request gets 413 (`invalid_request_error`, code
+  `prompt_too_long`) before any governance check. `MAX_REQUEST_TOKENS`
+  applies to `/mcp` only.
 
 ### Changed
 
@@ -83,22 +88,24 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `governed` mode, each chunk is parsed and re-serialised.
 - The governed stream path sends one chunk for each upstream chunk, with
   all of its fields: ids, choice indexes, roles, tool calls, finish
-  reasons, `logprobs` and the final `usage` chunk. With PII redaction on,
-  the generated text is redacted in `content`, `reasoning_content`,
-  `reasoning`, `refusal` and tool and function call `arguments`, per
-  choice and per field across chunks; the token texts of `logprobs` and
-  SSE comment lines are redacted as well. `data: [DONE]` is sent when the
-  upstream sends it.
+  reasons and the final `usage` chunk. With PII redaction on, every string
+  of a choice is redacted, per choice and per field across chunks:
+  `content` (a string or a list of parts), reasoning text, tool and
+  function call `arguments` and any other field. The values of `index`,
+  `id`, `type`, `role`, `name` and `finish_reason` and the chunk identity
+  are kept; `logprobs` and `token_ids` are sent as `null`; other strings
+  outside the choices and SSE comment lines are redacted as whole values;
+  values nested more than 16 levels deep are dropped. `data: [DONE]` is
+  sent when the upstream sends it.
 - Upstream errors (4xx, 5xx) reach the client of the gateway with their
   status, body and content type, streaming or not. A non-streaming body is
   forwarded unchanged unless PII redaction is on; with redaction on, a
   successful response that is not a JSON object gets 502 (code
-  `upstream_invalid_response`). `GET /v1/models` forwards the upstream
-  body unchanged when no allow-list is set.
-- `MAX_REQUEST_TOKENS` also applies to `POST /v1/chat/completions`,
-  estimated from the length of the message text as on `/mcp`: longer
-  requests get 413 (code `request_tokens_exceeded`) before any governance
-  check.
+  `upstream_invalid_response`), and in a JSON response every string is
+  redacted as a whole value under the same rules as the governed stream
+  (structural values and identity kept, `logprobs` and `token_ids` of each
+  choice `null`). `GET /v1/models` forwards the upstream body unchanged
+  when no allow-list is set.
 
 ### Fixed
 
