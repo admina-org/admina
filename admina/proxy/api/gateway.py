@@ -61,7 +61,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from admina.core.types import EventType
 from admina.domains.agent_security.egress import resolve_egress_mode
-from admina.domains.governance import redact_response_result, run_pipeline, safe_serialize
+from admina.domains.governance import run_pipeline, safe_serialize
 from admina.proxy.gateway_transport import DEFAULT_STREAM_MODE, total_deadline
 from admina.proxy.gateway_upstreams import UPSTREAM_HEADER, GatewayUpstream, GatewayUpstreams
 
@@ -200,29 +200,26 @@ def _synthetic_stream(model: str, message: str) -> list[str]:
     return [_sse_format(chunk), "data: [DONE]\n\n"]
 
 
-class _PassthroughRedactor:
-    """Drop-in for StreamRedactor used when PII redaction is disabled:
-    echoes each delta immediately, holds nothing, redacts nothing."""
-
-    def feed(self, delta: str) -> list[str]:
-        return [delta] if delta else []
-
-    def finish(self) -> tuple[str, dict]:
-        return "", {"pii_count": 0}
-
-
 async def _aiter_list(items) -> AsyncIterator[str]:
     """Adapt a synchronous list of SSE lines to an async iterator."""
     for item in items:
         yield item
 
 
-# Generated text in a streamed delta, besides tool and function call
-# arguments: what the governed path redacts.
-_DELTA_TEXT_FIELDS = ("content", "reasoning_content", "reasoning", "refusal")
+# Keys whose scalar values name or classify a part of a completion instead
+# of carrying generated text: kept as they are while redacting.
+_STRUCTURAL_KEYS = frozenset({"index", "id", "type", "role", "name", "finish_reason"})
+# Choice fields that carry generated text as tokens (token texts, bytes,
+# token ids), which cannot be redacted one token at a time: sent as null
+# while redacting.
+_TOKEN_FIELDS = ("logprobs", "token_ids")
 # Chunk identity, copied onto the chunk that carries text held back until
 # the end of the stream.
 _CHUNK_IDENTITY_FIELDS = ("id", "object", "created", "model", "system_fingerprint")
+# Fields outside the choices kept as they are while redacting (when scalar).
+_COMPLETION_KEPT_FIELDS = frozenset({*_CHUNK_IDENTITY_FIELDS, "service_tier"})
+# Deepest nesting followed while redacting; deeper values are dropped.
+_MAX_REDACT_DEPTH = 16
 
 
 def _as_index(value: Any, default: int) -> int:
@@ -234,58 +231,109 @@ def _text(value: Any) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _append_text(delta: dict, where: tuple, tail: str) -> None:
-    """Append *tail* to the text at *where* (a window key without the
-    choice index) in *delta*, a dict the caller owns."""
-    field = where[0]
-    if field == "tool_calls":
-        calls = list(delta["tool_calls"]) if isinstance(delta.get("tool_calls"), list) else []
-        for pos, call in enumerate(calls):
-            if isinstance(call, dict) and _as_index(call.get("index"), pos) == where[1]:
-                function = call["function"] if isinstance(call.get("function"), dict) else {}
-                arguments = _text(function.get("arguments")) + tail
-                calls[pos] = {**call, "function": {**function, "arguments": arguments}}
-                break
-        else:
-            calls.append({"index": where[1], "function": {"arguments": tail}})
-        delta["tool_calls"] = calls
-    elif field == "function_call":
-        function = delta["function_call"] if isinstance(delta.get("function_call"), dict) else {}
-        delta["function_call"] = {
-            **function,
-            "arguments": _text(function.get("arguments")) + tail,
+def _is_scalar(value: Any) -> bool:
+    return not isinstance(value, (dict, list))
+
+
+def _kept(key: Any, value: Any) -> bool:
+    """True for the scalar value of a structural key."""
+    return key in _STRUCTURAL_KEYS and _is_scalar(value)
+
+
+def _item_step(item: Any, pos: int) -> tuple[str, int]:
+    """Path step of a list item: its integer ``index`` when it has one (tool
+    calls, for instance), else its position in the list."""
+    index = item.get("index") if isinstance(item, dict) else None
+    if isinstance(index, int) and not isinstance(index, bool):
+        return ("index", index)
+    return ("position", pos)
+
+
+def _redact_values(value: Any, pii: Any, depth: int = 0) -> Any:
+    """*value* with every string redacted as a whole, at any depth.
+
+    Keys and the scalar values of structural keys are kept; values nested
+    deeper than the depth limit are dropped (None).
+    """
+    if depth > _MAX_REDACT_DEPTH:
+        return None
+    if isinstance(value, str):
+        return pii.redact(value)["redacted_text"]
+    if isinstance(value, dict):
+        return {
+            k: v if _kept(k, v) else _redact_values(v, pii, depth + 1) for k, v in value.items()
         }
-    else:
-        delta[field] = _text(delta.get(field)) + tail
+    if isinstance(value, list):
+        return [_redact_values(item, pii, depth + 1) for item in value]
+    return value
+
+
+def _without_tokens(choice: Any) -> Any:
+    """*choice* with ``logprobs`` and ``token_ids`` null (when present)."""
+    if not isinstance(choice, dict):
+        return choice
+    return {**choice, **{field: None for field in _TOKEN_FIELDS if field in choice}}
+
+
+def _redacted_completion(data: dict, pii: Any) -> dict:
+    """A non-streaming completion with every string redacted as a whole
+    value, except structural values and the completion's identity, and
+    with ``logprobs`` and ``token_ids`` of each choice null."""
+    out: dict = {}
+    for key, value in data.items():
+        if key in _COMPLETION_KEPT_FIELDS and _is_scalar(value):
+            out[key] = value
+        elif key == "choices" and isinstance(value, list):
+            out[key] = [_redact_values(_without_tokens(c), pii, 1) for c in value]
+        else:
+            out[key] = _redact_values(value, pii)
+    return out
 
 
 class _StreamedText:
-    """Redacts the text a model generates in streamed completion chunks.
+    """Redacts every string that streamed completion chunks carry.
 
-    Each chunk is cloned with all of its fields, and only generated text is
-    replaced: the delta's ``content``, ``reasoning_content``, ``reasoning``
-    and ``refusal``, and the ``arguments`` of tool calls and function calls.
-    That text goes through one window of a windowed
-    :class:`~admina.sdk.streaming.StreamRedactor` per choice and field (per
-    tool call for arguments), so an entity split across chunks is redacted
-    before any of it is sent. The text a window holds back is released with
-    the finish chunk of its choice, or by :meth:`remainder` at the end of
-    the stream. Token texts in ``logprobs`` and comment lines are redacted
-    one by one. Without a PII redactor the text passes unchanged.
+    Each chunk is rebuilt with all of its fields and keys. Inside a choice,
+    every string goes through one window of a windowed
+    :class:`~admina.sdk.streaming.StreamRedactor` per choice and path (a
+    list item's path uses its integer ``index``, or else its position), so
+    an entity split across chunks is redacted before any of it is sent:
+    the delta's ``content`` (a string or a list of parts), reasoning text,
+    tool and function call ``arguments`` and any other field. The text a
+    window holds back is released with the finish chunk of its choice, at
+    the same path, or by :meth:`remainder` at the end of the stream.
+
+    Kept as they are: the scalar values of structural keys (``index``,
+    ``id``, ``type``, ``role``, ``name``, ``finish_reason``) and the chunk
+    identity. Sent as ``null``: ``logprobs`` and ``token_ids``. Other
+    strings outside the choices, and comment lines, are redacted as whole
+    values. Values nested deeper than the depth limit are dropped. Without
+    a PII redactor, chunks and comments pass unchanged.
     """
 
     def __init__(self, pii_redactor: Any = None) -> None:
         self._pii = pii_redactor
         self._windows: dict[tuple, Any] = {}
+        # "type" of the last list item seen at each item path.
+        self._item_types: dict[tuple, str | None] = {}
         self._identity: dict[str, Any] = {}
 
     def chunk(self, chunk: dict) -> dict:
-        """*chunk* with its generated text redacted."""
-        self._identity = {k: chunk[k] for k in _CHUNK_IDENTITY_FIELDS if k in chunk}
-        choices = chunk.get("choices")
-        if not isinstance(choices, list):
+        """*chunk* with its text redacted."""
+        if self._pii is None:
             return chunk
-        return {**chunk, "choices": [self._choice(pos, c) for pos, c in enumerate(choices)]}
+        out: dict = {}
+        for key, value in chunk.items():
+            if key == "choices" and isinstance(value, list):
+                out[key] = [self._choice(pos, choice) for pos, choice in enumerate(value)]
+            elif key in _COMPLETION_KEPT_FIELDS and _is_scalar(value):
+                out[key] = value
+            else:
+                out[key] = _redact_values(value, self._pii)
+        identity = {k: out[k] for k in _CHUNK_IDENTITY_FIELDS if k in out}
+        if identity:
+            self._identity = identity
+        return out
 
     def comment(self, line: str) -> str:
         """An SSE comment line, redacted."""
@@ -295,102 +343,98 @@ class _StreamedText:
         """A last chunk with the text still held back, or None."""
         choices = []
         for index in sorted({key[0] for key in self._windows}):
-            delta = self._release(index, None)
-            if delta is not None:
-                choices.append({"index": index, "delta": delta, "finish_reason": None})
+            empty = {"index": index, "delta": {}, "finish_reason": None}
+            choice = self._release(index, empty)
+            if choice is not None:
+                choices.append(choice)
         return {**self._identity, "choices": choices} if choices else None
+
+    def _choice(self, pos: int, choice: Any) -> Any:
+        if not isinstance(choice, dict):
+            return _redact_values(choice, self._pii)
+        index = _as_index(choice.get("index"), pos)
+        out: dict = {}
+        for key, value in choice.items():
+            if key in _TOKEN_FIELDS:
+                out[key] = None
+            elif _kept(key, value):
+                out[key] = value
+            else:
+                out[key] = self._windowed((index, key), value, 1)
+        if choice.get("finish_reason") is not None:
+            released = self._release(index, out)
+            if released is not None:
+                out = released
+        return out
+
+    def _windowed(self, key: tuple, value: Any, depth: int) -> Any:
+        """*value* with each string sent through the window of its path."""
+        if depth > _MAX_REDACT_DEPTH:
+            return None
+        if isinstance(value, str):
+            return self._feed(key, value)
+        if isinstance(value, dict):
+            return {
+                k: v if _kept(k, v) else self._windowed((*key, k), v, depth + 1)
+                for k, v in value.items()
+            }
+        if isinstance(value, list):
+            items = []
+            for pos, item in enumerate(value):
+                item_key = (*key, _item_step(item, pos))
+                item_type = item.get("type") if isinstance(item, dict) else None
+                self._item_types[item_key] = item_type if isinstance(item_type, str) else None
+                items.append(self._windowed(item_key, item, depth + 1))
+            return items
+        return value
 
     def _feed(self, key: tuple, text: str) -> str:
         window = self._windows.get(key)
         if window is None:
-            window = self._windows[key] = self._new_window()
+            from admina.sdk.streaming import StreamRedactor
+
+            window = self._windows[key] = StreamRedactor(self._pii)
         return "".join(window.feed(text))
 
-    def _new_window(self) -> Any:
-        if self._pii is None:
-            return _PassthroughRedactor()
-        from admina.sdk.streaming import StreamRedactor
-
-        return StreamRedactor(self._pii)
-
-    def _release(self, index: int, delta: Any) -> dict | None:
-        """A copy of *delta* with the text held back for choice *index*
-        appended, or None when nothing was held back."""
-        tails = []
+    def _release(self, index: int, choice: dict) -> dict | None:
+        """A copy of *choice* with the text held back for choice *index*
+        appended at its paths, or None when nothing was held back."""
+        out: Any = choice
+        released = False
         for key in [k for k in self._windows if k[0] == index]:
             tail, _summary = self._windows.pop(key).finish()
             if tail:
-                tails.append((key[1:], tail))
-        if not tails:
-            return None
-        out = dict(delta) if isinstance(delta, dict) else {}
-        for where, tail in tails:
-            _append_text(out, where, tail)
-        return out
+                out = self._with_tail(out, key, 1, tail)
+                released = True
+        return out if released else None
 
-    def _choice(self, pos: int, choice: Any) -> Any:
-        if not isinstance(choice, dict):
-            return choice
-        index = _as_index(choice.get("index"), pos)
-        out = dict(choice)
-        if isinstance(choice.get("delta"), dict):
-            out["delta"] = self._delta(index, choice["delta"])
-        if choice.get("logprobs") is not None:
-            out["logprobs"] = self._logprobs(choice["logprobs"])
-        if choice.get("finish_reason") is not None:
-            released = self._release(index, out.get("delta"))
-            if released is not None:
-                out["delta"] = released
-        return out
+    def _with_tail(self, node: Any, key: tuple, depth: int, tail: str) -> Any:
+        """A copy of *node* with *tail* appended to the string at path
+        ``key[depth:]``, creating the containers that are missing."""
+        if depth == len(key):
+            return _text(node) + tail
+        step = key[depth]
+        if isinstance(step, str):
+            out = dict(node) if isinstance(node, dict) else {}
+            out[step] = self._with_tail(out.get(step), key, depth + 1, tail)
+            return out
+        items = list(node) if isinstance(node, list) else []
+        for pos, item in enumerate(items):
+            if _item_step(item, pos) == step:
+                items[pos] = self._with_tail(item, key, depth + 1, tail)
+                return items
+        items.append(self._with_tail(self._new_item(key[: depth + 1]), key, depth + 1, tail))
+        return items
 
-    def _delta(self, index: int, delta: dict) -> dict:
-        out = dict(delta)
-        for field in _DELTA_TEXT_FIELDS:
-            if isinstance(delta.get(field), str):
-                out[field] = self._feed((index, field), delta[field])
-        if isinstance(delta.get("tool_calls"), list):
-            out["tool_calls"] = [
-                self._tool_call(index, pos, call) for pos, call in enumerate(delta["tool_calls"])
-            ]
-        function = delta.get("function_call")
-        if isinstance(function, dict) and isinstance(function.get("arguments"), str):
-            arguments = self._feed((index, "function_call"), function["arguments"])
-            out["function_call"] = {**function, "arguments": arguments}
-        return out
-
-    def _tool_call(self, index: int, pos: int, call: Any) -> Any:
-        function = call.get("function") if isinstance(call, dict) else None
-        if not isinstance(function, dict) or not isinstance(function.get("arguments"), str):
-            return call
-        key = (index, "tool_calls", _as_index(call.get("index"), pos))
-        return {
-            **call,
-            "function": {**function, "arguments": self._feed(key, function["arguments"])},
-        }
-
-    def _logprobs(self, logprobs: Any) -> Any:
-        if self._pii is None or not isinstance(logprobs, dict):
-            return logprobs
-        out = dict(logprobs)
-        for key in ("content", "refusal"):
-            if isinstance(logprobs.get(key), list):
-                out[key] = [self._token(entry) for entry in logprobs[key]]
-        return out
-
-    def _token(self, entry: Any) -> Any:
-        if not isinstance(entry, dict):
-            return entry
-        out = dict(entry)
-        token = entry.get("token")
-        if isinstance(token, str):
-            redacted = self._pii.redact(token)["redacted_text"]
-            if redacted != token:
-                out["token"] = redacted
-                if entry.get("bytes") is not None:
-                    out["bytes"] = list(redacted.encode("utf-8"))
-        if isinstance(entry.get("top_logprobs"), list):
-            out["top_logprobs"] = [self._token(alt) for alt in entry["top_logprobs"]]
-        return out
+    def _new_item(self, item_key: tuple) -> dict:
+        """A list item to carry held-back text: its ``index`` (for an item
+        identified by it) and the ``type`` of the last item seen there."""
+        kind, number = item_key[-1]
+        item: dict = {"index": number} if kind == "index" else {}
+        item_type = self._item_types.get(item_key)
+        if item_type is not None:
+            item["type"] = item_type
+        return item
 
 
 async def _governed_sse_stream(
@@ -398,7 +442,7 @@ async def _governed_sse_stream(
 ) -> AsyncIterator[str]:
     """Re-emit upstream SSE lines as governed SSE, one chunk per chunk.
 
-    Each ``data:`` chunk is parsed, its generated text redacted through
+    Each ``data:`` chunk is parsed, its text redacted through
     :class:`_StreamedText` (unchanged when *pii_redactor* is None) and
     re-serialised. Comment lines (keep-alives) are forwarded, redacted too;
     data that is not a JSON object is dropped. ``data: [DONE]`` is forwarded when the
@@ -752,8 +796,8 @@ def create_gateway_endpoints(
         data = _json_object(resp.content)
         if data is None:
             return _error_response(502, _UPSTREAM_INVALID)
-        if isinstance(data.get("choices"), list):
-            data["choices"], _ = redact_response_result(data["choices"], state.pii_redactor)
-        return JSONResponse(content=data, status_code=resp.status_code)
+        return JSONResponse(
+            content=_redacted_completion(data, state.pii_redactor), status_code=resp.status_code
+        )
 
     return router

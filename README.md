@@ -421,13 +421,24 @@ environment variable wins), sets how streamed chat completions are relayed:
 | Mode | Behaviour |
 |---|---|
 | `passthrough` (default) | While no response transformation is active (`PII_REDACTION_ENABLED=false`), the client receives the upstream bytes unchanged, every field included, each SSE event as soon as it is complete. With PII redaction on, the gateway relays as in `governed`. |
-| `governed` | Each SSE chunk is parsed and re-serialised, one chunk for each upstream chunk, with all of its fields. With PII redaction on, the generated text (`content`, `reasoning_content`, `reasoning`, `refusal`, tool and function call `arguments`), the token texts of `logprobs` and comment lines are redacted; text held back to catch an entity split across chunks is sent with the choice's finish chunk, or in a last chunk at the end of the stream. `data: [DONE]` is sent when the upstream sends it. |
+| `governed` | Each SSE chunk is parsed and re-serialised, one chunk for each upstream chunk, with all of its fields. With PII redaction on, every string of a choice is redacted, per choice and per field across chunks: `content` (a string or a list of parts), reasoning text, tool and function call `arguments` and any other field; text held back to catch an entity split across chunks is sent with the choice's finish chunk, at the same place, or in a last chunk at the end of the stream. `data: [DONE]` is sent when the upstream sends it. |
 
 A non-streaming response is forwarded unchanged unless PII redaction is on;
 then the gateway parses it, and a successful response that is not a JSON
 object gets 502 (code `upstream_invalid_response`). An upstream error (4xx,
 5xx) reaches the client with its status, body and content type, streaming or
 not.
+
+With PII redaction on, in streamed and non-streaming completions alike:
+
+- structural values are kept as they are: `index`, `id`, `type`, `role`,
+  `name` and `finish_reason`, and the completion's `id`, `object`,
+  `created`, `model`, `system_fingerprint` and `service_tier`;
+- `logprobs` and `token_ids` of each choice are sent as `null`, since
+  generated text split into tokens cannot be redacted token by token;
+- other strings outside the choices, and SSE comment lines, are redacted as
+  whole values;
+- values nested more than 16 levels deep are dropped.
 
 The gateway talks to its upstreams through a client of its own:
 

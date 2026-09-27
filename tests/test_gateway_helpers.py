@@ -165,12 +165,3 @@ def test_governed_sse_no_finish_chunk_still_flushes_tail():
     out = asyncio.run(_collect(_governed_sse_stream(_aiter(upstream), _EchoPII())))
     assert out[-1] == "data: [DONE]\n\n"
     assert _reassemble(out) == "Hello"
-
-
-def test_passthrough_redactor_echoes():
-    from admina.proxy.api.gateway import _PassthroughRedactor
-
-    r = _PassthroughRedactor()
-    assert r.feed("abc") == ["abc"]
-    assert r.feed("") == []
-    assert r.finish() == ("", {"pii_count": 0})

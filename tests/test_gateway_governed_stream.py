@@ -12,23 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Governed streaming: every field kept, every text field redacted.
+"""Governed completions: every field kept, every string redacted.
 
 With PII redaction on (or ``ADMINA_GATEWAY_STREAM_MODE=governed``) each
 upstream chunk is parsed and re-serialised. The gateway sends one chunk for
 each upstream chunk, with all of its fields: ids, choice indexes (n > 1),
-roles, tool call ids and names, finish reasons, logprobs and the final usage
-chunk. The text a model generates (``content``, ``reasoning_content``,
-``reasoning``, ``refusal``, tool and function call arguments) goes through
-the PII redactor, per choice and per field, so that an entity split across
-chunks is caught; held-back text is sent with the choice's finish chunk.
-Token texts in ``logprobs`` are redacted one by one.
+roles, tool call ids and names, finish reasons and the final usage chunk.
+With redaction on, every string of a choice goes through the PII redactor,
+per choice and per path, so that an entity split across chunks is caught:
+``content`` (a string or a list of parts), reasoning text, tool and
+function call arguments and any other field. Held-back text is sent with
+the choice's finish chunk. Structural values (index, id, type, role, name,
+finish reason) are kept; ``logprobs`` and ``token_ids`` are sent as
+``null``; strings outside the choices are redacted as whole values, except
+the chunk identity. Non-streaming completions follow the same rules for
+``logprobs``, ``token_ids`` and the fields outside the choices.
 """
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
+import re
 
 import pytest
 
@@ -75,9 +81,12 @@ def _arguments(chunks: list[dict], index: int = 0, call: int = 0) -> str:
 
 
 def _without_text(chunk: dict) -> dict:
-    """*chunk* without generated text: what must reach the client unchanged."""
+    """*chunk* without generated text, and with ``logprobs`` null: what
+    must reach the client unchanged while redacting."""
     chunk = copy.deepcopy(chunk)
     for choice in chunk.get("choices") or []:
+        if "logprobs" in choice:
+            choice["logprobs"] = None
         delta = choice.get("delta") or {}
         for field in _TEXT_FIELDS:
             delta.pop(field, None)
@@ -95,15 +104,24 @@ def _without_text(chunk: dict) -> dict:
     return chunk
 
 
-def _upstream_chunk(delta: dict, *, index: int = 0, finish=None, logprobs=None) -> bytes:
+def _upstream_chunk(
+    delta: dict,
+    *,
+    index: int = 0,
+    finish=None,
+    logprobs=None,
+    extra: dict | None = None,
+    top: dict | None = None,
+) -> bytes:
+    """One upstream chunk; *extra* adds choice fields, *top* chunk fields."""
+    choice = {"index": index, "delta": delta, "logprobs": logprobs, "finish_reason": finish}
     body = {
         "id": "chatcmpl-0005",
         "object": "chat.completion.chunk",
         "created": 1767225604,
         "model": "example-model",
-        "choices": [
-            {"index": index, "delta": delta, "logprobs": logprobs, "finish_reason": finish}
-        ],
+        "choices": [{**choice, **(extra or {})}],
+        **(top or {}),
     }
     return b"data: " + json.dumps(body).encode() + b"\n\n"
 
@@ -168,14 +186,70 @@ def test_usage_chunk_is_kept_as_sent():
     assert _chunks(events)[-1]["choices"] == []
 
 
-def test_logprobs_are_kept():
+def test_logprobs_are_kept_when_redaction_is_off():
     upstream_chunks = _chunks(_events(b"".join(fixture("logprobs")["chunks"])))
 
-    _raw, events = _governed(fixture("logprobs")["chunks"])
+    _raw, events = _governed(fixture("logprobs")["chunks"], redaction=False)
 
     assert [c["choices"][0]["logprobs"] for c in _chunks(events)] == [
         c["choices"][0]["logprobs"] for c in upstream_chunks
     ]
+
+
+class _EveryWord:
+    """A PII engine that flags every word, as an over-eager engine can."""
+
+    def redact(self, text: str) -> dict:
+        redacted, count = re.subn(r"\w+", "[X]", text)
+        return {"redacted_text": redacted, "entities": [], "count": count}
+
+    def get_stats(self) -> dict:
+        return {}
+
+
+_STRUCTURAL = ("index", "id", "type", "role", "name", "finish_reason")
+_IDENTITY = ("id", "object", "created", "model", "system_fingerprint")
+
+
+def _structural_values(value, path=()) -> set:
+    """(path, value) of every structural scalar at any depth of *value*."""
+    found = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in _STRUCTURAL and not isinstance(item, (dict, list)):
+                found.add(((*path, key), item))
+            else:
+                found |= _structural_values(item, (*path, key))
+    elif isinstance(value, list):
+        for pos, item in enumerate(value):
+            found |= _structural_values(item, (*path, pos))
+    return found
+
+
+def _governed_stream_only(pieces: list[bytes], pii) -> list:
+    """*pieces* through the governed stream path alone, with *pii*."""
+    from admina.proxy.api.gateway import _governed_sse_stream
+
+    async def lines():
+        for line in b"".join(pieces).decode("utf-8").splitlines():
+            yield line
+
+    async def collect() -> str:
+        return "".join([part async for part in _governed_sse_stream(lines(), pii)])
+
+    return _events(asyncio.run(collect()).encode("utf-8"))
+
+
+@pytest.mark.parametrize("name", FIXTURES)
+def test_structural_values_are_kept_by_an_engine_that_flags_every_word(name):
+    upstream_chunks = _chunks(_events(b"".join(fixture(name)["chunks"])))
+
+    chunks = _chunks(_governed_stream_only(fixture(name)["chunks"], _EveryWord()))
+
+    assert len(chunks) == len(upstream_chunks)
+    for sent, received in zip(chunks, upstream_chunks, strict=True):
+        assert {k: sent.get(k) for k in _IDENTITY} == {k: received.get(k) for k in _IDENTITY}
+        assert _structural_values(received["choices"]) <= _structural_values(sent["choices"])
 
 
 # ── Every text field redacted ─────────────────────────────────
@@ -293,23 +367,281 @@ def test_choices_are_redacted_separately_and_keep_their_index():
     assert _HEAD.encode() not in raw
 
 
-def test_logprob_tokens_are_redacted():
-    def entry(token: str, logprob: float) -> dict:
-        return {"token": token, "logprob": logprob, "bytes": list(token.encode())}
+def _token(text: str) -> dict:
+    entry = {"token": text, "logprob": -0.1, "bytes": list(text.encode())}
+    return {**entry, "top_logprobs": [entry]}
 
-    logprobs = {"content": [{**entry(EMAIL, -0.1), "top_logprobs": [entry(EMAIL, -0.1)]}]}
-    pieces = [_upstream_chunk({"content": EMAIL}, logprobs=logprobs), _DONE]
+
+# Tokens of "Write to jane.doe@example.com today.", three chunks of them: the
+# address is split over five tokens and three chunks.
+_TOKENS = [["Write", " to", " jane"], [".doe", "@exa"], ["mple", ".com", " today", "."]]
+_ADDRESS_TOKENS = (" jane", ".doe", "@exa", "mple", ".com")
+
+
+def _address_tokens_in(raw: bytes) -> list[str]:
+    """The tokens of the address found in *raw* as JSON strings, and its
+    local part found anywhere."""
+    found = [t for t in _ADDRESS_TOKENS if json.dumps(t).encode() in raw]
+    return found + (["jane"] if b"jane" in raw else [])
+
+
+def test_logprobs_are_null_while_redacting():
+    pieces = [
+        _upstream_chunk({"content": "".join(part)}, logprobs={"content": [_token(t) for t in part]})
+        for part in _TOKENS
+    ]
+    pieces += [_upstream_chunk({}, finish="stop"), _DONE]
+
+    raw, events = _governed(pieces)
+    chunks = _chunks(events)
+
+    assert _text(chunks, "content") == "Write to [EMAIL] today."
+    assert [c["choices"][0]["logprobs"] for c in chunks] == [None] * len(chunks)
+    assert _address_tokens_in(raw) == []
+    assert b'"token"' not in raw and b'"bytes"' not in raw
+
+
+def test_refusal_logprobs_are_null_while_redacting():
+    pieces = [
+        _upstream_chunk({"refusal": "".join(part)}, logprobs={"refusal": [_token(t) for t in part]})
+        for part in _TOKENS
+    ]
+    pieces += [_upstream_chunk({}, finish="stop"), _DONE]
 
     raw, events = _governed(pieces)
 
-    sent = _chunks(events)[0]["choices"][0]["logprobs"]["content"][0]
-    assert sent["token"] == "[EMAIL]"
-    assert sent["bytes"] == list(b"[EMAIL]")
-    assert sent["logprob"] == -0.1
-    assert sent["top_logprobs"] == [
-        {"token": "[EMAIL]", "logprob": -0.1, "bytes": list(b"[EMAIL]")}
+    assert _text(_chunks(events), "refusal") == "Write to [EMAIL] today."
+    assert _address_tokens_in(raw) == []
+
+
+def test_token_ids_are_null_while_redacting():
+    pieces = [
+        _upstream_chunk({"content": f"Hello {EMAIL}"}, extra={"token_ids": [9906, 57010]}),
+        _upstream_chunk({}, finish="stop", extra={"token_ids": []}),
+        _DONE,
     ]
+
+    raw, events = _governed(pieces)
+
+    assert [c["choices"][0]["token_ids"] for c in _chunks(events)] == [None, None]
+    assert b"9906" not in raw
+
+
+def test_token_ids_are_kept_when_redaction_is_off():
+    pieces = [_upstream_chunk({"content": "Hello"}, extra={"token_ids": [9906]}), _DONE]
+
+    _raw, events = _governed(pieces, redaction=False)
+
+    assert _chunks(events)[0]["choices"][0]["token_ids"] == [9906]
+
+
+def _parts(chunks: list[dict], field: str, index: int = 0) -> list:
+    """The list items of delta *field* of choice *index*, over all chunks."""
+    return [
+        item for c in _choices(chunks, index) for item in (c.get("delta") or {}).get(field) or []
+    ]
+
+
+def test_content_parts_are_redacted_across_chunks():
+    pieces = [
+        _upstream_chunk({"role": "assistant", "content": []}),
+        _upstream_chunk({"content": [{"type": "text", "text": f"Write to {_HEAD}"}]}),
+        _upstream_chunk({"content": [{"type": "text", "text": f"{_TAIL} today."}]}),
+        _upstream_chunk({}, finish="stop"),
+        _DONE,
+    ]
+
+    raw, events = _governed(pieces)
+    parts = _parts(_chunks(events), "content")
+
+    assert "".join(p["text"] for p in parts) == "Write to [EMAIL] today."
+    assert {p["type"] for p in parts} == {"text"}
+    assert _HEAD.encode() not in raw and _TAIL.encode() not in raw
+
+
+def test_reasoning_details_are_redacted_across_chunks():
+    def detail(text: str) -> dict:
+        return {"type": "reasoning.text", "text": text, "index": 0}
+
+    pieces = [
+        _upstream_chunk({"reasoning_details": [detail(f"Write to {_HEAD}")]}),
+        _upstream_chunk({"reasoning_details": [detail(f"{_TAIL} today.")]}),
+        _upstream_chunk({}, finish="stop"),
+        _DONE,
+    ]
+
+    raw, events = _governed(pieces)
+    details = _parts(_chunks(events), "reasoning_details")
+
+    assert "".join(d["text"] for d in details) == "Write to [EMAIL] today."
+    assert {(d["type"], d["index"]) for d in details} == {("reasoning.text", 0)}
+    assert _HEAD.encode() not in raw and _TAIL.encode() not in raw
+
+
+def test_audio_transcript_is_redacted_across_chunks():
+    pieces = [
+        _upstream_chunk({"audio": {"id": "audio_0001", "transcript": f"Write to {_HEAD}"}}),
+        _upstream_chunk({"audio": {"transcript": f"{_TAIL} today."}}),
+        _upstream_chunk({}, finish="stop"),
+        _DONE,
+    ]
+
+    raw, events = _governed(pieces)
+    audio = [(c.get("delta") or {}).get("audio") or {} for c in _choices(_chunks(events), 0)]
+
+    assert "".join(a.get("transcript", "") for a in audio) == "Write to [EMAIL] today."
+    assert audio[0]["id"] == "audio_0001"
+    assert _HEAD.encode() not in raw and _TAIL.encode() not in raw
+
+
+@pytest.mark.parametrize(
+    ("where", "shape"),
+    [
+        ("delta", lambda text: {"x_note": text}),
+        ("delta", lambda text: {"x_meta": {"summary": [text]}}),
+        ("choice", lambda text: {"x_trace": text}),
+    ],
+    ids=["delta-string", "delta-nested", "choice-field"],
+)
+def test_other_fields_of_a_choice_are_redacted_across_chunks(where, shape):
+    def chunk(text: str) -> bytes:
+        if where == "delta":
+            return _upstream_chunk(shape(text))
+        return _upstream_chunk({}, extra=shape(text))
+
+    pieces = [
+        chunk(f"Write to {_HEAD}"),
+        chunk(f"{_TAIL} today."),
+        _upstream_chunk({}, finish="stop"),
+    ]
+    pieces.append(_DONE)
+
+    raw, events = _governed(pieces)
+
+    assert _HEAD.encode() not in raw and _TAIL.encode() not in raw
+    assert b"Write to [EMAIL] today." in raw
+
+
+def test_held_text_of_a_list_item_goes_back_to_its_item():
+    pieces = [
+        _upstream_chunk({"content": [{"type": "text", "text": f"Hello {EMAIL}"}]}),
+        _DONE,
+    ]
+
+    _raw, events = _governed(pieces)
+    chunks = _chunks(events)
+
+    assert chunks[-1]["choices"] == [
+        {
+            "index": 0,
+            "delta": {"content": [{"type": "text", "text": "Hello [EMAIL]"}]},
+            "finish_reason": None,
+        }
+    ]
+
+
+def test_strings_outside_the_choices_are_redacted_as_whole_values():
+    top = {"system_fingerprint": "fp_0001", "x_note": f"to {EMAIL}", "x_meta": {"items": [EMAIL]}}
+    error = {"error": {"message": f"failed for {EMAIL}", "type": "server_error", "code": 500}}
+    pieces = [
+        _upstream_chunk({"content": "ok"}, top=top),
+        b"data: " + json.dumps(error).encode() + b"\n\n",
+    ]
+
+    raw, events = _governed(pieces)
+    first, second, last = _chunks(events)
+
+    assert (first["x_note"], first["x_meta"]) == ("to [EMAIL]", {"items": ["[EMAIL]"]})
+    assert {k: first[k] for k in _IDENTITY} == {
+        "id": "chatcmpl-0005",
+        "object": "chat.completion.chunk",
+        "created": 1767225604,
+        "model": "example-model",
+        "system_fingerprint": "fp_0001",
+    }
+    assert second == {
+        "error": {"message": "failed for [EMAIL]", "type": "server_error", "code": 500}
+    }
+    # The held-back "ok" comes last, with the identity of the last chunk that had one.
+    assert (last["id"], last["model"], _text([last], "content")) == (
+        "chatcmpl-0005",
+        "example-model",
+        "ok",
+    )
     assert EMAIL.encode() not in raw
+
+
+def test_values_nested_deeper_than_the_limit_are_dropped_while_redacting():
+    deep: object = "bottom text"
+    for _ in range(40):
+        deep = {"x": deep}
+    pieces = [
+        _upstream_chunk({"content": "ok", "x_deep": deep}),
+        _upstream_chunk({}, finish="stop"),
+    ]
+
+    raw, events = _governed(pieces)
+
+    assert b"bottom text" not in raw
+    assert _text(_chunks(events), "content") == "ok"
+
+
+# ── Non-streaming completions ─────────────────────────────────
+
+
+def _completion(choice: dict, **top) -> bytes:
+    body = {
+        "id": "chatcmpl-0006",
+        "object": "chat.completion",
+        "created": 1767225605,
+        "model": "example-model",
+        "choices": [{"index": 0, "finish_reason": "stop", **choice}],
+        **top,
+    }
+    return json.dumps(body).encode()
+
+
+def _non_streaming(body: bytes, cfg=_REDACTION_ON):
+    upstream = MockUpstream([body], content_type="application/json")
+    resp = through(upstream, chat_body(stream=False), cfg)
+    assert resp.status_code == 200
+    return resp
+
+
+def test_completion_logprobs_and_token_ids_are_null_while_redacting():
+    tokens = [t for part in _TOKENS for t in part]
+    body = _completion(
+        {
+            "message": {"role": "assistant", "content": "".join(tokens)},
+            "logprobs": {"content": [_token(t) for t in tokens]},
+            "token_ids": [9906, 57010],
+        }
+    )
+
+    resp = _non_streaming(body)
+    choice = resp.json()["choices"][0]
+
+    assert choice["message"]["content"] == "Write to [EMAIL] today."
+    assert (choice["logprobs"], choice["token_ids"]) == (None, None)
+    assert _address_tokens_in(resp.content) == []
+
+
+def test_completion_strings_outside_the_choices_are_redacted_while_redacting():
+    body = _completion({"message": {"role": "assistant", "content": "ok"}}, x_note=f"to {EMAIL}")
+
+    resp = _non_streaming(body)
+
+    assert resp.json()["x_note"] == "to [EMAIL]"
+    assert resp.json()["id"] == "chatcmpl-0006"
+    assert EMAIL.encode() not in resp.content
+
+
+def test_completion_is_forwarded_unchanged_when_redaction_is_off():
+    body = _completion(
+        {"message": {"role": "assistant", "content": "ok"}, "logprobs": {"content": [_token("ok")]}}
+    )
+
+    assert _non_streaming(body, settings()).content == body
 
 
 # ── End of the stream ─────────────────────────────────────────
@@ -377,3 +709,27 @@ def test_redaction_is_the_default_path_in_passthrough_mode():
 
     assert EMAIL.encode() not in resp.content
     assert b"[EMAIL]" in resp.content
+
+
+def _nested(value: object, levels: int) -> object:
+    for _ in range(levels):
+        value = {"x": value}
+    return value
+
+
+def test_completion_values_are_redacted_at_any_depth_within_the_limit():
+    message = {"role": "assistant", "content": "ok", "x_deep": _nested(f"to {EMAIL}", 10)}
+
+    resp = _non_streaming(_completion({"message": message}))
+
+    assert resp.json()["choices"][0]["message"]["x_deep"] == _nested("to [EMAIL]", 10)
+    assert EMAIL.encode() not in resp.content
+
+
+def test_completion_values_nested_deeper_than_the_limit_are_dropped_while_redacting():
+    message = {"role": "assistant", "content": "ok", "x_deep": _nested("bottom text", 40)}
+
+    resp = _non_streaming(_completion({"message": message}))
+
+    assert b"bottom text" not in resp.content
+    assert resp.json()["choices"][0]["message"]["content"] == "ok"
