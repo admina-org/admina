@@ -136,9 +136,8 @@ class Settings(BaseSettings):
     INJECTION_FAST_PATH_ENABLED: bool = True
     INJECTION_DEEP_PATH_ENABLED: bool = True
     PII_REDACTION_ENABLED: bool = True
-    # Longest request content accepted on /mcp and on the gateway's chat
-    # completions, estimated as its length in characters (0 = no limit).
-    # Longer requests get 413.
+    # Longest request content accepted on /mcp, estimated as its length in
+    # characters (0 = no limit). Longer requests get 413.
     MAX_REQUEST_TOKENS: int = 100000
     # Largest request body accepted on any route, in bytes (0 = no limit).
     # A larger body gets 413 before it is parsed: at once when its
@@ -176,6 +175,10 @@ class Settings(BaseSettings):
     # Content returned to the caller when governance blocks a request,
     # shaped as an OpenAI completion with finish_reason="content_filter".
     ADMINA_GATEWAY_BLOCK_MESSAGE: str = "This request was blocked by the Admina governance policy."
+    # Longest message text accepted on the gateway's chat completions, in
+    # characters: the text of every message, as scanned (0 = no limit).
+    # Longer requests get 413 before any governance check.
+    ADMINA_GATEWAY_MAX_PROMPT_CHARS: int = Field(default=0, ge=0)
     # Optional comma-separated allow-list applied to GET /v1/models.
     # Empty = passthrough of the upstream's full model list.
     ADMINA_GATEWAY_MODELS_ALLOWLIST: str = ""

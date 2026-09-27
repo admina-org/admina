@@ -16,9 +16,9 @@
 
 ``ADMINA_MAX_REQUEST_BYTES`` caps the request body on every route: a body
 over the cap gets 413 before it is parsed, whether its length is declared
-(``Content-Length``) or not (chunked). ``MAX_REQUEST_TOKENS`` also applies
-to the gateway's chat completions, estimated from the length of the message
-text as on ``/mcp``.
+(``Content-Length``) or not (chunked). ``ADMINA_GATEWAY_MAX_PROMPT_CHARS``
+caps the message text of the gateway's chat completions, in characters (no
+limit by default); ``MAX_REQUEST_TOKENS`` applies to ``/mcp`` only.
 """
 
 from __future__ import annotations
@@ -121,7 +121,15 @@ class _Upstream:
 class _Proxy:
     """The real proxy app with fake engines, one upstream fake and parser spies."""
 
-    def __init__(self, monkeypatch, *, max_bytes: int, max_tokens: int = 100000, api_key=""):
+    def __init__(
+        self,
+        monkeypatch,
+        *,
+        max_bytes: int,
+        max_tokens: int = 100000,
+        max_prompt_chars: int = 0,
+        api_key="",
+    ):
         from admina.proxy import main as proxy_main
         from admina.proxy.multi_upstream import MultiUpstreamRouter
         from admina.proxy.state import ProxyState
@@ -136,6 +144,7 @@ class _Proxy:
         monkeypatch.setattr(settings, "ADMINA_GATEWAY_UPSTREAM", "http://upstream.test/v1")
         monkeypatch.setattr(settings, "ADMINA_MAX_REQUEST_BYTES", max_bytes)
         monkeypatch.setattr(settings, "MAX_REQUEST_TOKENS", max_tokens)
+        monkeypatch.setattr(settings, "ADMINA_GATEWAY_MAX_PROMPT_CHARS", max_prompt_chars)
 
         self.upstream = _Upstream()
         self.firewall = _Firewall()
@@ -258,7 +267,7 @@ def test_negative_cap_is_rejected():
         Settings(ADMINA_MAX_REQUEST_BYTES=-1)
 
 
-# ── MAX_REQUEST_TOKENS on the gateway ─────────────────────────
+# ── Message length limit on the gateway ───────────────────────
 
 
 def _chat(*contents: str) -> bytes:
@@ -267,18 +276,18 @@ def _chat(*contents: str) -> bytes:
     )
 
 
-def test_gateway_rejects_content_over_max_request_tokens(monkeypatch):
-    proxy = _Proxy(monkeypatch, max_bytes=0, max_tokens=10)
+def test_gateway_rejects_message_text_over_its_limit(monkeypatch):
+    proxy = _Proxy(monkeypatch, max_bytes=0, max_prompt_chars=10)
 
     resp = proxy.post("/v1/chat/completions", _chat("x" * 11))
 
     assert resp.status_code == 413
     assert resp.json() == {
         "error": {
-            "message": "Request content exceeds the token limit.",
+            "message": "The message text exceeds the length limit.",
             "type": "invalid_request_error",
             "param": None,
-            "code": "request_tokens_exceeded",
+            "code": "prompt_too_long",
         }
     }
     assert proxy.upstream.calls == []
@@ -287,14 +296,14 @@ def test_gateway_rejects_content_over_max_request_tokens(monkeypatch):
 
 
 def test_gateway_counts_the_text_of_every_message(monkeypatch):
-    proxy = _Proxy(monkeypatch, max_bytes=0, max_tokens=10)
+    proxy = _Proxy(monkeypatch, max_bytes=0, max_prompt_chars=10)
 
     # "12345" + "\n" + "12345" = 11 characters.
     assert proxy.post("/v1/chat/completions", _chat("12345", "12345")).status_code == 413
 
 
-def test_gateway_accepts_content_at_max_request_tokens(monkeypatch):
-    proxy = _Proxy(monkeypatch, max_bytes=0, max_tokens=10)
+def test_gateway_accepts_message_text_at_its_limit(monkeypatch):
+    proxy = _Proxy(monkeypatch, max_bytes=0, max_prompt_chars=10)
 
     resp = proxy.post("/v1/chat/completions", _chat("x" * 10))
 
@@ -302,7 +311,32 @@ def test_gateway_accepts_content_at_max_request_tokens(monkeypatch):
     assert proxy.upstream.calls == ["http://upstream.test/v1/chat/completions"]
 
 
-def test_gateway_zero_max_request_tokens_means_no_limit(monkeypatch):
-    proxy = _Proxy(monkeypatch, max_bytes=0, max_tokens=0)
+def test_gateway_message_text_is_not_limited_by_max_request_tokens(monkeypatch):
+    proxy = _Proxy(monkeypatch, max_bytes=0, max_tokens=10, max_prompt_chars=0)
 
     assert proxy.post("/v1/chat/completions", _chat("x" * 200_000)).status_code == 200
+
+
+def test_max_request_tokens_still_applies_to_mcp(monkeypatch):
+    proxy = _Proxy(monkeypatch, max_bytes=0, max_tokens=10)
+    body = {**_MCP_BODY, "params": {"name": "echo", "arguments": {"text": "x" * 50}}}
+
+    resp = proxy.post("/mcp", _raw(body))
+
+    assert resp.status_code == 413
+    assert proxy.upstream.calls == []
+
+
+def test_gateway_message_length_limit_defaults_to_no_limit():
+    from admina.proxy.config import Settings
+
+    assert Settings().ADMINA_GATEWAY_MAX_PROMPT_CHARS == 0
+
+
+def test_negative_gateway_message_length_limit_is_rejected():
+    from pydantic import ValidationError
+
+    from admina.proxy.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(ADMINA_GATEWAY_MAX_PROMPT_CHARS=-1)

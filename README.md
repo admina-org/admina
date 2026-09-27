@@ -361,10 +361,11 @@ when its `Content-Length` is over the cap, otherwise as soon as the bytes read
 go over it. The 413 body is in the OpenAI error format on `/v1`
 (`invalid_request_error`, code `request_too_large`) and `{"detail": ...}`
 elsewhere. `MAX_REQUEST_TOKENS` (default 100000, `0` = no limit) caps the
-request content on `/mcp` and on `POST /v1/chat/completions`, estimated as the
-length in characters of the scanned text (on the gateway, the text of every
-message); longer requests get 413 (code `request_tokens_exceeded` on the
-gateway) before any governance check.
+request content on `/mcp`, estimated as the length in characters of the
+scanned text. `ADMINA_GATEWAY_MAX_PROMPT_CHARS` (default `0`, no limit) caps
+the message text of `POST /v1/chat/completions`, in characters (the text of
+every message, as scanned); longer requests get 413 (`invalid_request_error`,
+code `prompt_too_long`) before any governance check.
 
 ### OpenAI-compatible gateway
 

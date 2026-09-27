@@ -97,7 +97,7 @@ def _settings(**over):
         PII_REDACTION_ENABLED=True,
         GOVERNANCE_MODE="enforce",
         GUARD_FAIL_MODE="open",
-        MAX_REQUEST_TOKENS=100000,
+        ADMINA_GATEWAY_MAX_PROMPT_CHARS=0,
         ADMINA_GATEWAY_TIMEOUT_TOTAL=0.0,
     )
     base.update(over)

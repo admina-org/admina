@@ -684,14 +684,13 @@ def create_gateway_endpoints(
         session_id = re.sub(r"[\r\n]", "", request.headers.get("X-Session-Id", "default"))[:128]
         agent_id = re.sub(r"[\r\n]", "", request.headers.get("X-Agent-Id", "gateway"))[:128]
         prompt_text = _extract_prompt_text(messages)
-        # Same estimate as /mcp: the length of the scanned text.
-        if 0 < cfg.MAX_REQUEST_TOKENS < len(prompt_text):
+        if 0 < cfg.ADMINA_GATEWAY_MAX_PROMPT_CHARS < len(prompt_text):
             return _error_response(
                 413,
                 _error(
-                    "Request content exceeds the token limit.",
+                    "The message text exceeds the length limit.",
                     "invalid_request_error",
-                    "request_tokens_exceeded",
+                    "prompt_too_long",
                 ),
             )
         event_id = uuid.uuid4().hex
