@@ -73,8 +73,70 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   every message). A longer request gets 413 (`invalid_request_error`, code
   `prompt_too_long`) before any governance check. `MAX_REQUEST_TOKENS`
   applies to `/mcp` only.
+- `admina.core.jcs.canonicalize()`: the RFC 8785 (JSON Canonicalization
+  Scheme) serialisation of a JSON value, as UTF-8 bytes.
+- `ruleset_sha256()` (`admina.domains.agent_security.ruleset`): the SHA-256,
+  as 64 lowercase hex characters, of the RFC 8785 serialisation of
+  `{"admina_version", "engine", "builtin", "pattern_packs",
+  "custom_patterns", "disabled_categories", "heuristic_threshold_milli"}`,
+  an object of strings and integers only. `builtin` lists the active builtin
+  patterns (`{regex, category, risk_level}`, in order, without those of a
+  disabled category) for the `python` engine and is
+  `{"admina_core_version": ...}` for the `rust` engine; `custom_patterns`
+  are the entries as the firewall loads them; `disabled_categories` are
+  sorted without duplicates; `heuristic_threshold_milli` is the threshold ×
+  1000, rounded. The module imports neither FastAPI nor the proxy.
+  `agent_security.firewall.pattern_packs` (a list of names) is read from
+  `admina.yaml` and is part of the hash.
+- The proxy computes `ruleset_sha256()` at startup for the engine its
+  firewall runs on. Every `POST /v1/chat/completions` response carries it in
+  `X-Admina-Ruleset`; `GET /v1/admina/ruleset` (API key required) returns it
+  with `engine`, `admina_core_version`, `admina_version`,
+  `accepted_prescan_rulesets`, `prescan_tags` and `scan_roles`.
+- Scan scope of the gateway. `ADMINA_GATEWAY_SCAN_ROLES` (default
+  `system,user,assistant,tool`) sets the message roles the firewall scans;
+  messages with any other role are always scanned. A request can narrow the
+  scan with `X-Admina-Scan-Policy: v1; roles=user,tool;
+  prescanned=source,document; ruleset=<sha256>`: only the listed roles, and
+  without the text of `<tag …>…</tag>` blocks of the listed tags that are
+  also in `gateway.prescan_tags` of `admina.yaml`. The policy applies only
+  when `ruleset` is the proxy's own or one in `gateway.prescan_rulesets`;
+  otherwise, or when the header is malformed, the request is scanned in
+  full. Unclosed, nested or stray tags leave the whole text to the scan.
+  The `gateway_request` forensic record carries the outcome as `prescan`
+  (`accepted`, `status`, `roles`, `tags`, `ruleset`), and `/metrics` counts
+  `admina_prescan_accepted_total`, `admina_prescan_ruleset_mismatch_total`
+  and `admina_prescan_malformed_total`.
+- `ADMINA_GATEWAY_PIPELINE_WORKERS` (default `0`, the number of CPUs): the
+  worker threads that run the gateway's governance pipeline, the most
+  requests governed at once. `ADMINA_GATEWAY_PIPELINE_TIMEOUT` (default `0`,
+  no limit): seconds a request waits for its governance decision, the wait
+  for a thread included; past it the request is blocked in every governance
+  mode and recorded with `checks.pipeline` (`time_budget_exceeded`).
+- `admina_event_loop_lag_seconds` on `/metrics`: a histogram of how late the
+  event loop wakes up a task that sleeps 0.1 s at a time.
+- `ADMINA_GATEWAY_SCAN_RESPONSE` (default `false`): the firewall also checks
+  the content of each choice of a chat completion. A non-streaming completion
+  flagged in `enforce` mode, or whose check runs over the time budget, is
+  replaced by the block message; a streamed completion is checked after it
+  has been sent and the outcome is only recorded. Each check writes a
+  forensic record of type `gateway_response_scan`, linked to the request
+  record by `request_event_id`.
+- `scripts/bench_gateway.py`: time to the first chunk added by the gateway
+  and event loop lag on a retrieval-augmented trace, per firewall engine.
 
 ### Changed
+
+- The gateway runs the governance pipeline (firewall, PII redaction, egress
+  analysis, governance guards) in worker threads instead of the event loop;
+  governance guards run there too, each thread with an event loop of its
+  own. An exception inside the gateway's pipeline follows
+  `ADMINA_GUARD_FAIL_MODE` (`open` forwards the request, `closed` blocks it)
+  and is recorded as `checks.pipeline` (0.12 answered 500).
+- `run_pipeline()` takes the texts the firewall scans (`scan_texts`); by
+  default it scans every string of the body, as before.
+- A malformed entry of `agent_security.firewall.custom_patterns` skips only
+  that entry.
 
 - Firewall patterns match in linear time on long inputs. Categories, risk
   levels and matching results are unchanged.
