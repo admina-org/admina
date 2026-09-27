@@ -1,5 +1,9 @@
 # Admina configuration
 # Copy to admina.yaml and customize for your deployment.
+# Admina loads the file named by the ADMINA_CONFIG environment variable when
+# it is set (for example /etc/admina/admina.yaml; a missing or invalid file is
+# an error), otherwise admina.yaml in the current directory, then in the
+# directory of the admina package.
 # If admina.yaml is absent, Admina falls back to .env variables.
 #
 # schema_version is an incremental integer bumped only on breaking

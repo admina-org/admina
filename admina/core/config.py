@@ -16,6 +16,8 @@
 
 Reads ``admina.yaml`` if present, falls back to ``.env`` variables for
 backward compatibility.  Exposes a typed :class:`AdminaConfig` object.
+The ``ADMINA_CONFIG`` environment variable names the file to read instead
+of searching for it (see :func:`load_config`).
 """
 
 from __future__ import annotations
@@ -38,7 +40,27 @@ except ImportError:  # pragma: no cover
     _HAS_YAML = False
 
 
-__all__ = ["GATEWAY_STREAM_MODES", "PRESCAN_TAG_NAME", "AdminaConfig", "load_config"]
+__all__ = [
+    "CONFIG_ENV",
+    "GATEWAY_STREAM_MODES",
+    "PRESCAN_TAG_NAME",
+    "AdminaConfig",
+    "ConfigFileError",
+    "load_config",
+]
+
+#: Environment variable naming the admina.yaml to load (see :func:`load_config`).
+CONFIG_ENV = "ADMINA_CONFIG"
+
+
+class ConfigFileError(Exception):
+    """The file named by ``ADMINA_CONFIG`` cannot be loaded.
+
+    Deliberately neither a ``ValueError`` nor an ``OSError``: readers of the
+    configuration that fall back to the defaults on those errors must not do
+    so for a file that was named explicitly.
+    """
+
 
 # How the gateway relays streamed responses (``gateway.stream_mode`` and
 # ADMINA_GATEWAY_STREAM_MODE); the first one is the default.
@@ -610,6 +632,13 @@ def load_config(
 ) -> AdminaConfig:
     """Load configuration from ``admina.yaml`` or ``.env`` fallback.
 
+    The file is, in this order: *yaml_path* when it is a file; else the
+    first ``admina.yaml`` in *search_paths* when they are given; else the
+    file named by the ``ADMINA_CONFIG`` environment variable when it is set
+    and not empty (it must load, see below); else ``admina.yaml`` in the
+    current directory, then in the directory of the ``admina`` package.
+    Without a file the configuration comes from the environment.
+
     Args:
         yaml_path: Explicit path to a YAML config file.
         search_paths: Directories to search for ``admina.yaml`` when
@@ -617,6 +646,10 @@ def load_config(
 
     Returns:
         A fully populated :class:`AdminaConfig` instance.
+
+    Raises:
+        ConfigFileError: ``ADMINA_CONFIG`` names a file that is missing,
+            unreadable or not a YAML mapping.
     """
     # 1. Explicit path
     if yaml_path is not None:
@@ -626,6 +659,9 @@ def load_config(
 
     # 2. Search common locations
     if search_paths is None:
+        named = os.environ.get(CONFIG_ENV, "")
+        if named:
+            return _load_named(named)
         search_paths = [Path.cwd(), Path(__file__).resolve().parent.parent]
     for base in search_paths:
         candidate = Path(base) / "admina.yaml"
@@ -635,6 +671,20 @@ def load_config(
     # 3. Fallback to environment / .env
     logger.info("No admina.yaml found — using .env fallback")
     return _build_from_env()
+
+
+def _load_named(value: str) -> AdminaConfig:
+    """Load the file named by ``ADMINA_CONFIG``; any failure is a
+    :class:`ConfigFileError`, never a fallback to the defaults."""
+    if not _HAS_YAML:  # pragma: no cover — PyYAML is a core dependency
+        raise ConfigFileError(f"{CONFIG_ENV}: cannot load {value!r} (PyYAML is not installed)")
+    try:
+        return _load_yaml(Path(value))
+    except OSError as exc:
+        reason = exc.strerror or type(exc).__name__
+        raise ConfigFileError(f"{CONFIG_ENV}: cannot read {value!r} ({reason})") from None
+    except (yaml.YAMLError, ValueError) as exc:
+        raise ConfigFileError(f"{CONFIG_ENV}: {value!r} is not a valid admina.yaml: {exc}") from exc
 
 
 def _load_yaml(path: Path) -> AdminaConfig:

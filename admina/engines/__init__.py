@@ -114,7 +114,9 @@ def _resolve_pii_engine() -> str:
 
 def _load_firewall_yaml_overrides() -> tuple[list, list]:
     """Read agent_security.firewall.{custom_patterns,disabled_categories}
-    from admina.yaml if present. Falls back to no overrides on any error.
+    from admina.yaml if present. Falls back to no overrides when the file
+    cannot be read, except for a file named by ``ADMINA_CONFIG``, whose
+    failure raises :class:`~admina.core.config.ConfigFileError`.
     Each custom pattern in YAML is ``{regex, category, risk_level}``.
     """
     extras: list = []
@@ -370,13 +372,20 @@ def get_egress_policy() -> EgressPolicy | None:
 
     There is no Rust variant: the stage is a set lookup and a handful of
     string comparisons, so acceleration would not pay for itself.
+
+    A configuration that cannot be read gives an empty allowlist, except a
+    file named by ``ADMINA_CONFIG``, whose failure raises
+    :class:`~admina.core.config.ConfigFileError`.
     """
+    from admina.core.config import ConfigFileError
     from admina.domains.agent_security.egress import EgressPolicy
 
     try:
         from admina.core.config import load_config
 
         cfg = load_config().agent_security.egress
+    except ConfigFileError:
+        raise
     except Exception as exc:
         logger.warning("Egress config unavailable or malformed, using an empty allowlist: %s", exc)
         return EgressPolicy(allow=[])
