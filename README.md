@@ -437,15 +437,15 @@ does not start when they are enabled without it.
 {
   "status": "healthy",
   "service": "admina-proxy",
-  "version": "0.12.1",
+  "version": "0.13.0rc1",
   "mode": "enforce",
   "surfaces": ["gateway"],
-  "ruleset_sha256": "f10630f3bbdd03394a09e65739af1c6a9f77d9fe9de7b348f12566d56070d284",
+  "ruleset_sha256": "b9ddba234d55b532c2be464124c01a9d906e9fb7f492729807e0a7eadb39faa0",
   "forensic_writable": true,
   "engine": {
     "engine": "rust",
     "rust_available": true,
-    "rust_version": "0.12.1",
+    "rust_version": "0.13.0-rc.1",
     "selection": "auto",
     "active": "rust",
     "pii_active": "python"

@@ -13,6 +13,24 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.13.0rc1] — 2026-09-27
+
+Release candidate of 0.13.0: an OpenAI-compatible gateway for embedded
+deployments (named upstream routes with keys, streams passed through
+unchanged, upstream errors propagated, request limits, the governance
+pipeline in worker threads, the firewall ruleset hash on every response),
+secrets from files, `ADMINA_CONFIG`, `ADMINA_ENABLED_SURFACES` and the
+`proxy-minimal` extra, linear-time pattern matching, and signed release
+images with a `-slim` variant. Installers take it only when asked:
+`pip install --pre admina-framework` or `admina-framework==0.13.0rc1`.
+
+### Security
+
+- Firewall patterns match in linear time on long inputs. Categories, risk
+  levels and matching results are unchanged.
+- PII redaction and the spaCy + regex PII engine match e-mail addresses in
+  linear time on long inputs. Detected spans are unchanged.
+
 ### Added
 
 - Local make targets that mirror the CI jobs: `make ci-local`, `make ci-linux`
@@ -173,15 +191,15 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   {
     "status": "healthy",
     "service": "admina-proxy",
-    "version": "0.12.1",
+    "version": "0.13.0rc1",
     "mode": "enforce",
     "surfaces": ["gateway"],
-    "ruleset_sha256": "f10630f3bbdd03394a09e65739af1c6a9f77d9fe9de7b348f12566d56070d284",
+    "ruleset_sha256": "b9ddba234d55b532c2be464124c01a9d906e9fb7f492729807e0a7eadb39faa0",
     "forensic_writable": true,
     "engine": {
       "engine": "rust",
       "rust_available": true,
-      "rust_version": "0.12.1",
+      "rust_version": "0.13.0-rc.1",
       "selection": "auto",
       "active": "rust",
       "pii_active": "python"
@@ -243,10 +261,6 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 - A malformed entry of `agent_security.firewall.custom_patterns` skips only
   that entry.
 
-- Firewall patterns match in linear time on long inputs. Categories, risk
-  levels and matching results are unchanged.
-- PII redaction and the spaCy + regex PII engine match e-mail addresses in
-  linear time on long inputs. Detected spans are unchanged.
 - **Streamed chat completions pass through unchanged.** With
   `ADMINA_GATEWAY_STREAM_MODE=passthrough` (the default) and PII redaction
   off, the gateway forwards the upstream SSE bytes as they are, every field
@@ -1145,7 +1159,8 @@ environment in `docker-compose.benchmark.yml`.
 
 ---
 
-[Unreleased]: https://github.com/admina-org/admina/compare/v0.12.1...HEAD
+[Unreleased]: https://github.com/admina-org/admina/compare/v0.13.0rc1...HEAD
+[0.13.0rc1]: https://github.com/admina-org/admina/compare/v0.12.1...v0.13.0rc1
 [0.12.1]: https://github.com/admina-org/admina/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/admina-org/admina/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/admina-org/admina/compare/v0.11.0...v0.11.1
