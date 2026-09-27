@@ -210,6 +210,17 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `true` and `false` (default) keep their meaning; the usual boolean
   spellings are accepted and any other value stops the proxy.
 
+- `slim` target of the proxy Dockerfile, published as
+  `ghcr.io/admina-org/admina-proxy:<version>-slim`: the `proxy` extra and
+  the Rust engine, without the `nlp` and `telemetry` extras and without the
+  dashboard files.
+- The release images are pushed with an SBOM and a max-mode provenance
+  attestation and signed with cosign, keyless through GitHub OIDC (the
+  `cosign verify` command is in `.github/workflows/release-docker.yml`).
+  They carry `org.opencontainers.image.*` labels, the proxy images also
+  `org.admina.engine=rust`, and the `LICENSE` and `NOTICE` files in
+  `/usr/share/licenses/admina/`.
+
 ### Changed
 
 - The gateway runs the governance pipeline (firewall, PII redaction, egress
@@ -278,6 +289,23 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   and prints only whether the key is set, not any of its characters.
 - Validation errors of the proxy settings name the setting without echoing
   the configured values.
+
+- The release workflows run the CI workflow on the tagged commit and
+  publish only when it passes. A PEP 440 pre-release tag (for example
+  `v0.13.0rc1`) makes a GitHub pre-release, and the `latest` image tags
+  move only with a final release.
+- The proxy and dashboard images pin their base images by digest. The
+  proxy image build fails when the Rust engine does not build (previously
+  the image fell back to the Python engines).
+- `uv.lock` resolves `admina-core` from `./core-rust` (`[tool.uv.sources]`),
+  so `uv sync --extra rust` or `--all-extras` builds the Rust engine of the
+  same checkout and needs a Rust toolchain; a sync without the `rust` extra
+  does not. The published package metadata keeps the version range of the
+  `rust` extra. The CI python-tests job, `make ci-python` and
+  `make ci-linux` test against this engine.
+- `scripts/check-versions.py` compares versions in their PEP 440 spelling
+  (`0.13.0-rc.1` in the Cargo files matches `0.13.0rc1`) and also checks the
+  `admina-core` entry of `uv.lock`.
 
 ### Fixed
 
