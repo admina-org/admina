@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -37,11 +38,16 @@ except ImportError:  # pragma: no cover
     _HAS_YAML = False
 
 
-__all__ = ["GATEWAY_STREAM_MODES", "AdminaConfig", "load_config"]
+__all__ = ["GATEWAY_STREAM_MODES", "PRESCAN_TAG_NAME", "AdminaConfig", "load_config"]
 
 # How the gateway relays streamed responses (``gateway.stream_mode`` and
 # ADMINA_GATEWAY_STREAM_MODE); the first one is the default.
 GATEWAY_STREAM_MODES = ("passthrough", "governed")
+
+# Name of a tag whose blocks a caller may declare as already scanned
+# (``gateway.prescan_tags``, ``X-Admina-Scan-Policy``).
+PRESCAN_TAG_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
+_HEX64 = re.compile(r"[0-9a-fA-F]{64}")
 
 # ── Section dataclasses ──────────────────────────────────────
 
@@ -234,6 +240,11 @@ class GatewayConfig:
     default_upstream: str = ""
     # One of GATEWAY_STREAM_MODES; empty = not set here.
     stream_mode: str = ""
+    # Tags whose blocks a request may declare as already scanned.
+    prescan_tags: list[str] = field(default_factory=list)
+    # Rulesets (SHA-256, lowercase hex) accepted in X-Admina-Scan-Policy
+    # besides the proxy's own.
+    prescan_rulesets: list[str] = field(default_factory=list)
     # Shape errors found while parsing the section. Parsing never raises, so
     # the other readers of admina.yaml are unaffected; the proxy reports
     # these at startup and does not start.
@@ -338,12 +349,34 @@ def _parse_gateway(raw: Any) -> GatewayConfig:
         if stream_mode not in ("", *GATEWAY_STREAM_MODES):
             errors.append("gateway.stream_mode must be one of: " + " | ".join(GATEWAY_STREAM_MODES))
             stream_mode = None
+    prescan_tags = _string_list(raw, "prescan_tags", PRESCAN_TAG_NAME, "tag names", errors)
+    prescan_rulesets = _string_list(
+        raw, "prescan_rulesets", _HEX64, "SHA-256 values (64 hex characters)", errors
+    )
     return GatewayConfig(
         upstreams=upstreams,
         default_upstream=default or "",
         stream_mode=stream_mode or "",
+        prescan_tags=prescan_tags,
+        prescan_rulesets=[value.lower() for value in prescan_rulesets],
         errors=errors,
     )
+
+
+def _string_list(
+    raw: dict, key: str, pattern: re.Pattern[str], what: str, errors: list[str]
+) -> list[str]:
+    """``gateway.<key>``: a list of strings matching *pattern*; else an
+    error in *errors* and an empty list."""
+    values = raw.get(key)
+    if values is None:
+        return []
+    if not isinstance(values, list) or not all(
+        isinstance(value, str) and pattern.fullmatch(value) for value in values
+    ):
+        errors.append(f"gateway.{key} must be a list of {what}")
+        return []
+    return list(values)
 
 
 def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:

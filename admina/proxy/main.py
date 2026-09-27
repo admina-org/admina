@@ -67,6 +67,7 @@ from admina.proxy.api.gateway import create_gateway_endpoints
 from admina.proxy.api.integration import create_integration_endpoints
 from admina.proxy.body_limit import BodyLimitMiddleware
 from admina.proxy.config import GovernanceEvent, settings
+from admina.proxy.gateway_scan import build_gateway_scan_config
 from admina.proxy.gateway_transport import build_gateway_http_client, resolve_stream_mode
 from admina.proxy.gateway_upstreams import build_gateway_upstreams
 from admina.proxy.multi_upstream import MultiUpstreamRouter
@@ -222,6 +223,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         egress_policy=get_egress_policy(),
         router=MultiUpstreamRouter(default_upstream=settings.UPSTREAM_MCP_URL),
     )
+    # The ruleset of the firewall just built: its engine, admina.yaml rules.
+    state.gateway_scan = build_gateway_scan_config(state.firewall, _admina_config)
 
     # ── Plugin discovery ──────────────────────────────────────
     _plugin_modules = list(_admina_config.plugins) if _admina_config else []
@@ -450,6 +453,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         gateway_upstreams.default,
     )
     logger.info("  Gateway stream mode: %s", state.gateway_stream_mode)
+    logger.info(
+        "  Firewall ruleset: %s (%s engine)",
+        state.gateway_scan.ruleset_sha256,
+        state.gateway_scan.engine,
+    )
     logger.info(
         "  Auth: %s",
         "ON" if settings.ADMINA_API_KEY else "OFF (set ADMINA_API_KEY for production)",

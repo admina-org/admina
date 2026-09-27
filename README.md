@@ -458,6 +458,40 @@ A timeout of `0` means no limit. A timeout before the response starts gets
 with one `data: {"error": {...}}` event and no `data: [DONE]`. When the client
 disconnects, the gateway closes the upstream request.
 
+#### Firewall ruleset
+
+`ruleset_sha256()` (`admina.domains.agent_security.ruleset`) names the firewall
+rules a configuration applies: the SHA-256, as 64 lowercase hex characters, of
+the RFC 8785 (JCS) serialisation of the Admina version, the engine, the active
+builtin patterns (Python engine) or the `admina-core` version (Rust engine),
+`pattern_packs`, `custom_patterns`, `disabled_categories` and
+`heuristic_threshold` in thousandths. The exact form is in the module
+docstring. The SDK can compute it from `admina.yaml` without the proxy:
+
+```python
+from admina.core.config import load_config
+from admina.domains.agent_security.ruleset import ruleset_sha256
+
+ruleset_sha256(load_config("admina.yaml"))                 # Python engine
+ruleset_sha256(load_config("admina.yaml"), engine="rust")  # Rust engine
+```
+
+The proxy computes it at startup for the engine its firewall runs on. Every
+`POST /v1/chat/completions` response carries it in `X-Admina-Ruleset` (allowed,
+blocked and error responses), and `GET /v1/admina/ruleset` (API key required)
+returns:
+
+```json
+{
+  "ruleset_sha256": "<64 hex>",
+  "engine": "python",
+  "admina_core_version": null,
+  "admina_version": "<version>",
+  "accepted_prescan_rulesets": ["<64 hex>"],
+  "prescan_tags": []
+}
+```
+
 <a id="compliance-scope"></a>
 
 <details open>

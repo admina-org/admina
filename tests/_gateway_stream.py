@@ -182,10 +182,19 @@ def settings(**over: Any):
     return Settings(**base)
 
 
-def gateway_app(client: Any, cfg: Any = None, *, stream_mode: str = "passthrough") -> FastAPI:
-    """The gateway router alone, with fake engines and *client* upstream."""
+def gateway_app(
+    client: Any,
+    cfg: Any = None,
+    *,
+    stream_mode: str = "passthrough",
+    state: dict[str, Any] | None = None,
+) -> FastAPI:
+    """The gateway router alone, with fake engines and *client* upstream.
+
+    *state* replaces or adds attributes of the proxy state.
+    """
     cfg = cfg if cfg is not None else settings()
-    state = SimpleNamespace(
+    proxy_state = SimpleNamespace(
         firewall=FakeFirewall(),
         pii_redactor=FakePII(),
         loop_breaker=FakeLoopBreaker(),
@@ -195,8 +204,12 @@ def gateway_app(client: Any, cfg: Any = None, *, stream_mode: str = "passthrough
         gateway_http_client=client,
         gateway_stream_mode=stream_mode,
     )
+    for name, value in (state or {}).items():
+        setattr(proxy_state, name, value)
     app = FastAPI()
-    app.include_router(create_gateway_endpoints(get_state=lambda: state, get_settings=lambda: cfg))
+    app.include_router(
+        create_gateway_endpoints(get_state=lambda: proxy_state, get_settings=lambda: cfg)
+    )
     return app
 
 
@@ -214,15 +227,17 @@ async def post_through(
     stream_mode: str = "passthrough",
     method: str = "POST",
     path: str = "/v1/chat/completions",
+    state: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> httpx.Response:
     """The request sent through the gateway router to *upstream*."""
     async with upstream.client() as client:
-        app = gateway_app(client, cfg, stream_mode=stream_mode)
+        app = gateway_app(client, cfg, stream_mode=stream_mode, state=state)
         transport = httpx.ASGITransport(app=app, raise_app_exceptions=True)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
             if method == "GET":
-                return await c.get(path)
-            return await c.post(path, json=body)
+                return await c.get(path, headers=headers)
+            return await c.post(path, json=body, headers=headers)
 
 
 def through(upstream: MockUpstream, body: dict, cfg: Any = None, **kw: Any) -> httpx.Response:

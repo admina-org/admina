@@ -30,6 +30,7 @@ from admina.domains.compliance.gdpr import ProcessingActivitiesRegistry
 from admina.domains.compliance.nis2 import NIS2Compliance
 from admina.domains.compliance.otel import OTELGovernanceExporter
 from admina.plugins.registry import PluginRegistry
+from admina.proxy.gateway_scan import GatewayScanConfig
 from admina.proxy.gateway_transport import DEFAULT_STREAM_MODE
 from admina.proxy.gateway_upstreams import GatewayUpstreams
 from admina.proxy.multi_upstream import MultiUpstreamRouter
@@ -69,6 +70,8 @@ class ProxyState:
     gateway_upstreams: GatewayUpstreams | None = None
     # How the gateway relays streamed responses, resolved at startup.
     gateway_stream_mode: str = DEFAULT_STREAM_MODE
+    # Firewall ruleset and prescan settings of the gateway, resolved at startup.
+    gateway_scan: GatewayScanConfig | None = None
     registry: PluginRegistry = field(default_factory=PluginRegistry)
 
     # Plugins

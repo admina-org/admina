@@ -23,6 +23,11 @@ the upstream and get governance with no further configuration.
 Routes (prefix /v1):
   POST /v1/chat/completions   — streaming (SSE) and non-streaming
   GET  /v1/models             — passthrough with optional allow-list
+  GET  /v1/admina/ruleset     — the active firewall ruleset
+
+Every chat completion response carries ``X-Admina-Ruleset``, the
+:func:`~admina.domains.agent_security.ruleset.ruleset_sha256` of the rules
+the gateway scans with (see :mod:`admina.proxy.gateway_scan`).
 
 Both forward to the upstream route named by the ``X-Admina-Upstream``
 request header, or to the default route without it (see
@@ -56,12 +61,18 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
+from admina import __version__
 from admina.core.types import EventType
 from admina.domains.agent_security.egress import resolve_egress_mode
 from admina.domains.governance import run_pipeline, safe_serialize
+from admina.proxy.gateway_scan import (
+    RULESET_HEADER,
+    GatewayScanConfig,
+    default_gateway_scan_config,
+)
 from admina.proxy.gateway_transport import DEFAULT_STREAM_MODE, total_deadline
 from admina.proxy.gateway_upstreams import UPSTREAM_HEADER, GatewayUpstream, GatewayUpstreams
 
@@ -88,6 +99,12 @@ def _select_upstream(request: Request, state: Any, cfg: Any) -> GatewayUpstream 
         cfg.ADMINA_GATEWAY_UPSTREAM
     )
     return upstreams.select(_requested_route(request.headers.get(UPSTREAM_HEADER, "")))
+
+
+def _scan_config(state: Any) -> GatewayScanConfig:
+    """The scan settings resolved at startup, or the defaults for a router
+    used without them."""
+    return getattr(state, "gateway_scan", None) or default_gateway_scan_config()
 
 
 def _error(message: str, error_type: str, code: str) -> dict:
@@ -624,6 +641,139 @@ async def _relay(
         await stream_cm.__aexit__(None, None, None)
 
 
+async def _chat_completion(request: Request, state: Any, cfg: Any) -> Response:
+    """Govern one chat completion and relay it upstream (the route handler
+    adds the ruleset header)."""
+    route = _select_upstream(request, state, cfg)
+    if route is None:
+        return _unknown_upstream()
+    try:
+        body = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"})
+
+    messages = body.get("messages") or []
+    model = body.get("model", "unknown")
+    stream = bool(body.get("stream", False))
+    session_id = re.sub(r"[\r\n]", "", request.headers.get("X-Session-Id", "default"))[:128]
+    agent_id = re.sub(r"[\r\n]", "", request.headers.get("X-Agent-Id", "gateway"))[:128]
+    prompt_text = _extract_prompt_text(messages)
+    if 0 < cfg.ADMINA_GATEWAY_MAX_PROMPT_CHARS < len(prompt_text):
+        return _error_response(
+            413,
+            _error(
+                "The message text exceeds the length limit.",
+                "invalid_request_error",
+                "prompt_too_long",
+            ),
+        )
+    event_id = uuid.uuid4().hex
+
+    pre = await run_pipeline(
+        body={"params": {"messages": messages}},
+        content_str=prompt_text,
+        session_id=session_id,
+        agent_id=agent_id,
+        request_id=event_id,
+        params={"messages": messages},
+        firewall=state.firewall,
+        pii_redactor=state.pii_redactor,
+        loop_breaker=state.loop_breaker,
+        governance_guards=state.governance_guards,
+        injection_enabled=cfg.INJECTION_FAST_PATH_ENABLED,
+        pii_enabled=cfg.PII_REDACTION_ENABLED,
+        loop_enabled=False,
+        mode=cfg.GOVERNANCE_MODE,
+        guard_fail_mode=cfg.GUARD_FAIL_MODE,
+        egress_policy=state.egress_policy,
+        egress_mode=resolve_egress_mode(cfg.GOVERNANCE_MODE),
+    )
+    action = pre.gov_response.action  # uppercase: ALLOW/BLOCK/CIRCUIT_BREAK
+
+    await _record_forensic(
+        state.forensic_box,
+        event_id=event_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        upstream=route.name,
+        action=action,
+        risk_level=pre.gov_response.risk_level,
+        pre=pre,
+    )
+
+    block_message = cfg.ADMINA_GATEWAY_BLOCK_MESSAGE
+    if action in ("BLOCK", "CIRCUIT_BREAK"):
+        if stream:
+            return StreamingResponse(
+                _aiter_list(_synthetic_stream(model, block_message)),
+                media_type="text/event-stream",
+            )
+        return JSONResponse(content=_synthetic_completion(model, block_message))
+
+    url = f"{route.url}/chat/completions"
+    headers = {"X-Admina-Event-Id": event_id, **route.auth_headers()}
+
+    pii_count = pre.checks.get("pii_redaction", {}).get("count", 0)
+    fwd_messages = pre.redacted_body["params"]["messages"] if pii_count > 0 else messages
+    forward_body = {**body, "messages": fwd_messages}
+    client = state.gateway_http_client
+    deadline = total_deadline(cfg)
+
+    if stream:
+        forward_body["stream"] = True
+
+        # Open the upstream response here, before the StreamingResponse
+        # exists: until the upstream has answered, a failure can still
+        # get a status of its own (504/502), and an upstream error keeps
+        # its status and body.
+        stream_cm = client.stream("POST", url, json=forward_body, headers=headers)
+        try:
+            async with asyncio.timeout_at(deadline):
+                upstream = await stream_cm.__aenter__()
+        except (TimeoutError, httpx.RequestError) as exc:
+            return _failure_response(route, exc)
+
+        if not _is_success(upstream.status_code):
+            try:
+                async with asyncio.timeout_at(deadline):
+                    content = await upstream.aread()
+            except (TimeoutError, httpx.RequestError) as exc:
+                return _failure_response(route, exc)
+            finally:
+                await stream_cm.__aexit__(None, None, None)
+            return _as_received(upstream.status_code, upstream.headers, content)
+
+        passthrough = getattr(
+            state, "gateway_stream_mode", DEFAULT_STREAM_MODE
+        ) == "passthrough" and not _transforms_response(cfg)
+        if passthrough:
+            chunks: AsyncIterator[Any] = _sse_events(upstream.aiter_bytes())
+            content_type = upstream.headers.get("content-type") or "text/event-stream"
+        else:
+            pii = state.pii_redactor if cfg.PII_REDACTION_ENABLED else None
+            chunks = _governed_sse_stream(upstream.aiter_lines(), pii)
+            content_type = "text/event-stream"
+        return StreamingResponse(
+            _relay(chunks, stream_cm, deadline, route),
+            status_code=upstream.status_code,
+            headers={"content-type": content_type},
+        )
+
+    try:
+        async with asyncio.timeout_at(deadline):
+            resp = await client.post(url, json=forward_body, headers=headers)
+    except (TimeoutError, httpx.RequestError) as exc:
+        return _failure_response(route, exc)
+    if not (_transforms_response(cfg) and _is_success(resp.status_code)):
+        return _as_received(resp.status_code, resp.headers, resp.content)
+    data = _json_object(resp.content)
+    if data is None:
+        return _error_response(502, _UPSTREAM_INVALID)
+    return JSONResponse(
+        content=_redacted_completion(data, state.pii_redactor), status_code=resp.status_code
+    )
+
+
 def create_gateway_endpoints(
     *,
     get_state: Any,
@@ -637,7 +787,8 @@ def create_gateway_endpoints(
     Args:
         get_state: Callable returning the ProxyState (firewall, pii_redactor,
             loop_breaker, egress_policy, governance_guards, forensic_box,
-            gateway_http_client, gateway_upstreams, gateway_stream_mode).
+            gateway_http_client, gateway_upstreams, gateway_stream_mode,
+            gateway_scan).
         get_settings: Callable returning the settings object.
     """
     router = APIRouter(prefix="/v1", tags=["gateway"])
@@ -667,136 +818,22 @@ def create_gateway_endpoints(
         return JSONResponse(content=data, status_code=resp.status_code)
 
     @router.post("/chat/completions", summary="Governed OpenAI chat completions")
-    async def chat_completions(request: Request):
+    async def chat_completions(request: Request) -> Response:
         state = get_state()
-        cfg = get_settings()
-        route = _select_upstream(request, state, cfg)
-        if route is None:
-            return _unknown_upstream()
-        try:
-            body = await request.json()
-        except (ValueError, UnicodeDecodeError):
-            raise HTTPException(status_code=400, detail="Invalid JSON body")
+        response = await _chat_completion(request, state, get_settings())
+        response.headers[RULESET_HEADER] = _scan_config(state).ruleset_sha256
+        return response
 
-        messages = body.get("messages") or []
-        model = body.get("model", "unknown")
-        stream = bool(body.get("stream", False))
-        session_id = re.sub(r"[\r\n]", "", request.headers.get("X-Session-Id", "default"))[:128]
-        agent_id = re.sub(r"[\r\n]", "", request.headers.get("X-Agent-Id", "gateway"))[:128]
-        prompt_text = _extract_prompt_text(messages)
-        if 0 < cfg.ADMINA_GATEWAY_MAX_PROMPT_CHARS < len(prompt_text):
-            return _error_response(
-                413,
-                _error(
-                    "The message text exceeds the length limit.",
-                    "invalid_request_error",
-                    "prompt_too_long",
-                ),
-            )
-        event_id = uuid.uuid4().hex
-
-        pre = await run_pipeline(
-            body={"params": {"messages": messages}},
-            content_str=prompt_text,
-            session_id=session_id,
-            agent_id=agent_id,
-            request_id=event_id,
-            params={"messages": messages},
-            firewall=state.firewall,
-            pii_redactor=state.pii_redactor,
-            loop_breaker=state.loop_breaker,
-            governance_guards=state.governance_guards,
-            injection_enabled=cfg.INJECTION_FAST_PATH_ENABLED,
-            pii_enabled=cfg.PII_REDACTION_ENABLED,
-            loop_enabled=False,
-            mode=cfg.GOVERNANCE_MODE,
-            guard_fail_mode=cfg.GUARD_FAIL_MODE,
-            egress_policy=state.egress_policy,
-            egress_mode=resolve_egress_mode(cfg.GOVERNANCE_MODE),
-        )
-        action = pre.gov_response.action  # uppercase: ALLOW/BLOCK/CIRCUIT_BREAK
-
-        await _record_forensic(
-            state.forensic_box,
-            event_id=event_id,
-            agent_id=agent_id,
-            session_id=session_id,
-            upstream=route.name,
-            action=action,
-            risk_level=pre.gov_response.risk_level,
-            pre=pre,
-        )
-
-        block_message = cfg.ADMINA_GATEWAY_BLOCK_MESSAGE
-        if action in ("BLOCK", "CIRCUIT_BREAK"):
-            if stream:
-                return StreamingResponse(
-                    _aiter_list(_synthetic_stream(model, block_message)),
-                    media_type="text/event-stream",
-                )
-            return JSONResponse(content=_synthetic_completion(model, block_message))
-
-        url = f"{route.url}/chat/completions"
-        headers = {"X-Admina-Event-Id": event_id, **route.auth_headers()}
-
-        pii_count = pre.checks.get("pii_redaction", {}).get("count", 0)
-        fwd_messages = pre.redacted_body["params"]["messages"] if pii_count > 0 else messages
-        forward_body = {**body, "messages": fwd_messages}
-        client = state.gateway_http_client
-        deadline = total_deadline(cfg)
-
-        if stream:
-            forward_body["stream"] = True
-
-            # Open the upstream response here, before the StreamingResponse
-            # exists: until the upstream has answered, a failure can still
-            # get a status of its own (504/502), and an upstream error keeps
-            # its status and body.
-            stream_cm = client.stream("POST", url, json=forward_body, headers=headers)
-            try:
-                async with asyncio.timeout_at(deadline):
-                    upstream = await stream_cm.__aenter__()
-            except (TimeoutError, httpx.RequestError) as exc:
-                return _failure_response(route, exc)
-
-            if not _is_success(upstream.status_code):
-                try:
-                    async with asyncio.timeout_at(deadline):
-                        content = await upstream.aread()
-                except (TimeoutError, httpx.RequestError) as exc:
-                    return _failure_response(route, exc)
-                finally:
-                    await stream_cm.__aexit__(None, None, None)
-                return _as_received(upstream.status_code, upstream.headers, content)
-
-            passthrough = getattr(
-                state, "gateway_stream_mode", DEFAULT_STREAM_MODE
-            ) == "passthrough" and not _transforms_response(cfg)
-            if passthrough:
-                chunks: AsyncIterator[Any] = _sse_events(upstream.aiter_bytes())
-                content_type = upstream.headers.get("content-type") or "text/event-stream"
-            else:
-                pii = state.pii_redactor if cfg.PII_REDACTION_ENABLED else None
-                chunks = _governed_sse_stream(upstream.aiter_lines(), pii)
-                content_type = "text/event-stream"
-            return StreamingResponse(
-                _relay(chunks, stream_cm, deadline, route),
-                status_code=upstream.status_code,
-                headers={"content-type": content_type},
-            )
-
-        try:
-            async with asyncio.timeout_at(deadline):
-                resp = await client.post(url, json=forward_body, headers=headers)
-        except (TimeoutError, httpx.RequestError) as exc:
-            return _failure_response(route, exc)
-        if not (_transforms_response(cfg) and _is_success(resp.status_code)):
-            return _as_received(resp.status_code, resp.headers, resp.content)
-        data = _json_object(resp.content)
-        if data is None:
-            return _error_response(502, _UPSTREAM_INVALID)
-        return JSONResponse(
-            content=_redacted_completion(data, state.pii_redactor), status_code=resp.status_code
-        )
+    @router.get("/admina/ruleset", summary="Active firewall ruleset")
+    async def active_ruleset() -> dict[str, Any]:
+        scan = _scan_config(get_state())
+        return {
+            "ruleset_sha256": scan.ruleset_sha256,
+            "engine": scan.engine,
+            "admina_core_version": scan.admina_core_version,
+            "admina_version": __version__,
+            "accepted_prescan_rulesets": list(scan.accepted_rulesets),
+            "prescan_tags": sorted(scan.prescan_tags),
+        }
 
     return router

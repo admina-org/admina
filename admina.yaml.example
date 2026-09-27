@@ -223,6 +223,10 @@ gateway:
   # governed); governed: each chunk parsed and re-serialised.
   # ADMINA_GATEWAY_STREAM_MODE, when set, takes precedence.
   # stream_mode: passthrough
+  # Rulesets (SHA-256, 64 hex characters) a request may declare in
+  # X-Admina-Scan-Policy besides the proxy's own, e.g. the ruleset of an SDK
+  # that scanned part of the prompt with other rules.
+  # prescan_rulesets: []
 
 dashboard:
   # false: the proxy stops serving the bundled dashboard and its browser
