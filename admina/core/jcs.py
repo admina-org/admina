@@ -35,23 +35,11 @@ a double cannot hold exactly, and for strings with unpaired surrogates
 from __future__ import annotations
 
 import math
-import re
 from decimal import Decimal
+from json.encoder import encode_basestring
 from typing import Any
 
 __all__ = ["canonicalize"]
-
-_ESCAPES = {
-    '"': '\\"',
-    "\\": "\\\\",
-    "\b": "\\b",
-    "\t": "\\t",
-    "\n": "\\n",
-    "\f": "\\f",
-    "\r": "\\r",
-}
-_TO_ESCAPE = re.compile(r'["\\\x00-\x1f]')
-_SURROGATE = re.compile(r"[\ud800-\udfff]")
 
 
 def canonicalize(value: Any) -> bytes:
@@ -104,18 +92,18 @@ def _utf16_units(key: str) -> bytes:
 
 
 def _check_unicode(text: str) -> None:
-    if _SURROGATE.search(text):
-        raise ValueError("strings must not contain unpaired surrogates")
+    # Strict UTF-8 encoding fails exactly on surrogate code points.
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError("strings must not contain unpaired surrogates") from None
 
 
 def _string(text: str) -> str:
     _check_unicode(text)
-    return '"' + _TO_ESCAPE.sub(_escape, text) + '"'
-
-
-def _escape(match: re.Match[str]) -> str:
-    char = match.group(0)
-    return _ESCAPES.get(char) or f"\\u{ord(char):04x}"
+    # The json module escapes what RFC 8785 escapes, the same way: '"', '\\'
+    # and U+0000-U+001F (\b \t \n \f \r, else \u00xx in lower case).
+    return encode_basestring(text)
 
 
 def _exact_double(value: int) -> float:

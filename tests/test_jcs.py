@@ -189,6 +189,39 @@ def test_string_escapes(value, expected):
     assert _text(value) == expected
 
 
+_TWO_CHARACTER_ESCAPES = {
+    '"': '\\"',
+    "\\": "\\\\",
+    "\b": "\\b",
+    "\t": "\\t",
+    "\n": "\\n",
+    "\f": "\\f",
+    "\r": "\\r",
+}
+
+
+def _rfc8785_string(text: str) -> str:
+    """RFC 8785 section 3.2.2.2, character by character."""
+    out = []
+    for char in text:
+        if char in _TWO_CHARACTER_ESCAPES:
+            out.append(_TWO_CHARACTER_ESCAPES[char])
+        elif ord(char) < 0x20:
+            out.append(f"\\u{ord(char):04x}")
+        else:
+            out.append(char)
+    return '"' + "".join(out) + '"'
+
+
+def test_every_latin1_and_special_character_is_serialised_as_rfc8785_says():
+    code_points = [*range(0x100), 0x2028, 0x2029, 0xFEFF, 0xFFFF, 0x10FFFF]
+    for code_point in code_points:
+        for text in (chr(code_point), f"a{chr(code_point)}b{chr(code_point)}"):
+            expected = _rfc8785_string(text)
+            assert _text(text) == expected, hex(code_point)
+            assert _text({text: text}) == "{" + expected + ":" + expected + "}", hex(code_point)
+
+
 def test_lone_surrogate_is_rejected():
     with pytest.raises(ValueError):
         canonicalize("a\ud800b")
