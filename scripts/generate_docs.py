@@ -138,6 +138,7 @@ API_PAGES: list[tuple[str, str, list[tuple[str, str]]]] = [
         "Agent Security",
         [
             ("domains.agent_security.firewall", "Injection Firewall"),
+            ("domains.agent_security.pattern_timing", "Pattern Timing Probe"),
             ("domains.agent_security.loop_breaker", "Loop Breaker"),
         ],
     ),

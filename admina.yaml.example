@@ -60,6 +60,9 @@ domains:
       #   - regex: a Python regex (case-insensitive)
       #     category: short label shown in dashboards/logs
       #     risk_level: low | medium | high | critical
+      # Check each regex on long inputs before deploying it (worst search
+      # time in ms; keep it at or under 50):
+      #   python -c "from admina.domains.agent_security.pattern_timing import probe_pattern; print(probe_pattern(r'delete\s+user\s+\d+'))"
       custom_patterns: []
       # Example:
       # custom_patterns:

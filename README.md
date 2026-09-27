@@ -319,6 +319,23 @@ cp admina.yaml.example admina.yaml   # Copy and customize
 
 See [`admina.yaml.example`](https://github.com/admina-org/admina/blob/main/admina.yaml.example) for all options including domains, AI infra, plugins, dashboard, forensic storage, alert channels, and integrations.
 
+Custom firewall rules (`agent_security.firewall.custom_patterns`) run on
+Python's backtracking `re` engine. Check each one on long inputs before
+deploying it:
+
+```python
+from admina.domains.agent_security.pattern_timing import measure_pattern, probe_pattern
+
+probe_pattern(r"delete\s+user\s+\d+")    # worst search time in ms on 64k-character inputs
+measure_pattern(r"delete\s+user\s+\d+")  # the same, with the slowest input and all timings
+```
+
+A result above 50 ms flags a pattern that is too slow on some long input. One
+whitespace quantifier between two literals, with the whitespace inside each
+optional group and possessive quantifiers (`\s++`, `\s*+`) where a whitespace
+run is followed by a literal, keeps the matching time linear in the input
+length.
+
 <a id="compliance-scope"></a>
 
 <details open>
