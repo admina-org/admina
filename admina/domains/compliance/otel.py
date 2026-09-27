@@ -16,12 +16,16 @@
 
 Provides structured OTEL tracing for governance decisions.
 Every governance domain decision emits a span with action, risk level, latency.
+:meth:`OTELGovernanceExporter.start_span` starts a span in the trace of an
+incoming W3C trace context.
 """
 
 from __future__ import annotations
 
 import logging
 from typing import Any
+
+from admina.core.trace_context import TraceContext
 
 logger = logging.getLogger("admina.compliance.otel")
 
@@ -31,6 +35,14 @@ try:
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    from opentelemetry.trace import (
+        NonRecordingSpan,
+        SpanContext,
+        SpanKind,
+        TraceFlags,
+        TraceState,
+        set_span_in_context,
+    )
 
     _OTEL_AVAILABLE = True
 except ImportError:
@@ -90,6 +102,33 @@ class OTELGovernanceExporter:
             if metadata:
                 for k, v in metadata.items():
                     span.set_attribute(f"admina.meta.{k}", str(v))
+
+    def start_span(
+        self,
+        name: str,
+        parent: TraceContext | None = None,
+        attributes: dict[str, Any] | None = None,
+    ) -> Any:
+        """Start a server span named *name*, a child of the remote span of
+        *parent* when given (else the root of a new trace); None when OTEL
+        export is off. The caller ends the span."""
+        if not self._enabled or self._tracer is None:
+            return None
+        context = None
+        if parent is not None:
+            remote = SpanContext(
+                trace_id=int(parent.trace_id, 16),
+                span_id=int(parent.parent_id, 16),
+                is_remote=True,
+                trace_flags=TraceFlags(parent.flags),
+                trace_state=TraceState.from_header([parent.tracestate])
+                if parent.tracestate
+                else None,
+            )
+            context = set_span_in_context(NonRecordingSpan(remote))
+        return self._tracer.start_span(
+            name, context=context, kind=SpanKind.SERVER, attributes=attributes
+        )
 
     @property
     def enabled(self) -> bool:

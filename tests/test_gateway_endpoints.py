@@ -97,6 +97,10 @@ def _settings(**over):
         ADMINA_GATEWAY_PIPELINE_TIMEOUT=0.0,
         ADMINA_GATEWAY_SCAN_RESPONSE=False,
         ADMINA_GATEWAY_SCAN_POLICY_ENABLED=False,
+        ADMINA_GATEWAY_BLOCK_STATUS=200,
+        ADMINA_GATEWAY_REQUEST_ID_HEADER="",
+        ADMINA_GATEWAY_RECORD_HEADERS="",
+        ADMINA_GATEWAY_FORWARD_HEADERS="",
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -429,15 +433,17 @@ def test_chat_completions_records_forensic_gateway_request():
             return await c.post("/v1/chat/completions", json=body)
 
     asyncio.run(go())
-    assert len(fbox.records) == 1
+    kinds = [r["event_type"] for r in fbox.records]
+    assert kinds == [EventType.GATEWAY_REQUEST, EventType.GATEWAY_RESPONSE]
     rec = fbox.records[0]
-    assert rec["event_type"] == EventType.GATEWAY_REQUEST
     assert rec["method"] == "chat.completions"
     assert rec["action"] == "ALLOW"
     assert "checks" in rec
 
 
 def test_chat_completions_records_forensic_on_block():
+    from admina.core.types import EventType
+
     fbox = _RecordingForensic()
     app = _app(_state(_FakeHTTP(_json_response({})), forensic_box=fbox), _settings())
     body = {"model": "llama3", "messages": [{"role": "user", "content": "INJECT do bad"}]}
@@ -447,5 +453,6 @@ def test_chat_completions_records_forensic_on_block():
             return await c.post("/v1/chat/completions", json=body)
 
     asyncio.run(go())
-    assert len(fbox.records) == 1
+    kinds = [r["event_type"] for r in fbox.records]
+    assert kinds == [EventType.GATEWAY_REQUEST, EventType.GATEWAY_RESPONSE]
     assert fbox.records[0]["action"] == "BLOCK"

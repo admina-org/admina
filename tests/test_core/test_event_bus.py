@@ -32,6 +32,7 @@ class TestEventType:
             "MCP_REQUEST",
             "MCP_RESPONSE",
             "GATEWAY_REQUEST",
+            "GATEWAY_RESPONSE",
             "GATEWAY_RESPONSE_SCAN",
             "INJECTION_DETECTED",
             "PII_REDACTED",

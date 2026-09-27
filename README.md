@@ -525,7 +525,9 @@ proxy does not start when a key file is missing, unreadable or empty, when a
 key is set both directly and as a file, when a route is malformed or when
 `default_upstream` names no route. Keys are masked in the settings
 representation and are not logged. The caller's `Authorization`, `X-API-Key`,
-`Cookie` and `X-Admina-Upstream` headers are not forwarded upstream.
+`Cookie` and `X-Admina-*` headers are never forwarded upstream; other headers
+only when listed in `ADMINA_GATEWAY_FORWARD_HEADERS` (see
+[Correlation and forensic records](#correlation-and-forensic-records)).
 
 #### Upstream responses, errors and timeouts
 
@@ -735,6 +737,115 @@ The `gateway_request` forensic record carries the outcome:
 counts the policies: `admina_prescan_accepted_total`,
 `admina_prescan_ruleset_mismatch_total`, `admina_prescan_malformed_total` and
 `admina_prescan_ignored_total`.
+
+#### Governance outcome
+
+Once a request has passed the route, JSON and size checks it gets an event
+id, and every response to it carries the outcome of governance, streaming or
+not (response headers, sent before the first event):
+
+| Header | Value |
+|---|---|
+| `X-Admina-Event-Id` | the `event_id` of the call's forensic records (32 hex characters); the upstream receives it too |
+| `X-Admina-Action` | `ALLOW` or `BLOCK` |
+| `X-Admina-Would-Action` | only in `observe` and `dry-run` mode, when governance would have blocked: `BLOCK` (`X-Admina-Action` is then `ALLOW`) |
+| `X-Admina-Risk` | `LOW`, `MEDIUM`, `HIGH` or `CRITICAL` |
+| `X-Admina-Categories` | the names of the firewall categories that matched, comma-separated (for example `instruction_override,prompt_extraction`); empty when none. Never text |
+| `X-Admina-Record-Hash` | the `record_hash` of the `gateway_request` record, written before the request is forwarded (64 hex characters) |
+
+Allowed and blocked requests, upstream errors (with their status), timeouts
+(504) and connection failures (502) all carry them. `X-Admina-Ruleset` (see
+[Firewall ruleset](#firewall-ruleset)) and `X-Admina-Version` (the Admina
+version, `admina.__version__`) are on these responses and on those the
+gateway sends before the event id exists (unknown route, invalid JSON,
+message text over the limit). Read the outcome from `X-Admina-Action`, not
+from the body.
+
+`ADMINA_GATEWAY_BLOCK_STATUS` sets how a blocked request is answered:
+
+| Value | Response |
+|---|---|
+| `200` (default) | a completion carrying `ADMINA_GATEWAY_BLOCK_MESSAGE` with `finish_reason: "content_filter"`; for `stream: true`, one SSE chunk and `data: [DONE]` |
+| `403` | `{"error": {"message": "<ADMINA_GATEWAY_BLOCK_MESSAGE>", "type": "governance_blocked", "param": null, "code": "governance_blocked", "categories": ["instruction_override"]}}`, as JSON, streaming or not |
+
+The same applies to a non-streaming completion blocked by the response scan,
+or whose PII redaction did not finish.
+
+#### Correlation and forensic records
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `ADMINA_GATEWAY_REQUEST_ID_HEADER` | empty | header recorded as `request_id`; empty: `request_id` is `null` |
+| `ADMINA_GATEWAY_RECORD_HEADERS` | empty | headers recorded in `context` (lower-case name to value); others never are |
+| `ADMINA_GATEWAY_FORWARD_HEADERS` | empty | headers forwarded upstream |
+
+```bash
+ADMINA_GATEWAY_REQUEST_ID_HEADER=X-Request-Id
+ADMINA_GATEWAY_RECORD_HEADERS=X-Request-Id,X-Example-Purpose,X-Example-Client
+ADMINA_GATEWAY_FORWARD_HEADERS=traceparent,tracestate,X-Request-Id
+```
+
+Header names are case-insensitive. Recorded values lose CR and LF and keep at
+most 128 characters. The proxy does not start when a setting names an invalid
+header, or a credential (`Authorization`, `Proxy-Authorization`, `Cookie`,
+`X-API-Key`); the forward list cannot name connection or body headers
+(`Host`, `Content-Length`, `Transfer-Encoding`, …) or `X-Admina-*` either.
+The upstream receives the listed headers, the route's `Authorization` and
+`X-Admina-Event-Id`, and nothing else from the client. `X-Session-Id` and
+`X-Agent-Id` are still recorded as `session_id` and `agent_id`.
+
+**W3C trace context.** A valid `traceparent` (one header; lowercase hex; not
+version `ff`; non-zero trace and parent ids; nothing after the flags in
+version `00`) is recorded as `trace_id`, and forwarded with `tracestate` when
+they are listed. An invalid `traceparent` is neither recorded nor forwarded,
+and neither is `tracestate`. With OpenTelemetry on (the `telemetry` extra),
+each call has a span, `gateway.chat.completions`, a child of the caller's span
+(or the root of a new trace), with `admina.event_id`, `admina.upstream`,
+`admina.action`, `http.response.status_code` and, when they apply,
+`admina.cancelled` and `error.type`; the upstream then receives a
+`traceparent` naming this span, and `trace_id` is the span's trace.
+
+Each call writes two forensic records with the same `event_id`. The
+`gateway_request` record, written before the request is forwarded, carries
+the governance decision (`action`, `risk_level`, `checks`, `categories`,
+`would_action` in `observe` and `dry-run` mode), `upstream`, `prescan`,
+`ruleset_sha256`, `session_id`, `agent_id`, `request_id`, `trace_id`,
+`context` and `request_sha256`: the SHA-256 of the RFC 8785 (JCS) canonical
+form of the `messages` array forwarded upstream (`null` when the array has
+none, for example with an unpaired surrogate). Test vectors for other
+implementations are in `tests/fixtures/jcs_vectors.json`.
+
+The `gateway_response` record is written once the response has ended: sent
+whole, left by the client, or failed.
+
+```json
+{
+  "event_id": "<event id>", "event_type": "gateway_response",
+  "request_id": "req-0001", "method": "chat.completions", "upstream": "default",
+  "stream": true, "action": "ALLOW", "status_code": 200, "upstream_status_code": 200,
+  "finish_reason": "stop",
+  "usage": {"prompt_tokens": 9, "completion_tokens": 4, "total_tokens": 13},
+  "duration_ms": 812.4, "response_sha256": "<64 hex>",
+  "cancelled": false, "error": null
+}
+```
+
+- `response_sha256`: the SHA-256 of the bytes sent to the client, counted as
+  a stream goes out;
+- `finish_reason`: of the first choice; `usage`: the numbers of the `usage`
+  object (the last stream chunk that has one, with
+  `stream_options.include_usage`, or the body), `null` when there is none;
+- `status_code`: the status sent to the client; `upstream_status_code`:
+  `null` when the upstream was not called or did not answer;
+- `cancelled`: the client went away before the end of the response;
+- `error`: the class of the exception that ended the upstream exchange (for
+  example `ReadTimeout`), never its message.
+
+A blocked request, and one whose upstream fails, get their `gateway_response`
+record too: count `gateway_request` records to count requests. Neither record
+holds prompt or completion text. Both are chained and hashed as before:
+`record_hash` is the SHA-256 of `json.dumps(record_without_record_hash,
+sort_keys=True, default=str)`.
 
 <a id="compliance-scope"></a>
 

@@ -103,6 +103,10 @@ def _settings(**over):
         ADMINA_GATEWAY_PIPELINE_TIMEOUT=0.0,
         ADMINA_GATEWAY_SCAN_RESPONSE=False,
         ADMINA_GATEWAY_SCAN_POLICY_ENABLED=False,
+        ADMINA_GATEWAY_BLOCK_STATUS=200,
+        ADMINA_GATEWAY_REQUEST_ID_HEADER="",
+        ADMINA_GATEWAY_RECORD_HEADERS="",
+        ADMINA_GATEWAY_FORWARD_HEADERS="",
     )
     base.update(over)
     return SimpleNamespace(**base)

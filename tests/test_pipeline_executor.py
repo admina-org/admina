@@ -109,7 +109,9 @@ class _Recorder:
         self.events: list[dict] = []
 
     def record(self, event: dict) -> dict:
-        self.events.append(event)
+        # Completion records: see tests/test_forensic_gateway_records.py.
+        if event["event_type"] != "gateway_response":
+            self.events.append(event)
         return {"record_hash": "0" * 64}
 
 

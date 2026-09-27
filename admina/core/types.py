@@ -64,6 +64,8 @@ class EventType(str, Enum):
     MCP_REQUEST = "mcp_request"
     MCP_RESPONSE = "mcp_response"
     GATEWAY_REQUEST = "gateway_request"
+    # The completion record of a gateway call (same event_id as its request).
+    GATEWAY_RESPONSE = "gateway_response"
     GATEWAY_RESPONSE_SCAN = "gateway_response_scan"
     INJECTION_DETECTED = "injection_detected"
     PII_REDACTED = "pii_redacted"

@@ -28,6 +28,11 @@ from admina.core.types import EventType, GovernanceAction, RiskLevel
 from admina.domains.agent_security.scan_policy import SCAN_ROLES, parse_scan_roles
 from admina.domains.governance import normalize_guard_fail_mode
 from admina.proxy.dashboard_session import parse_cookie_secure
+from admina.proxy.gateway_correlation import (
+    forward_header_names,
+    record_header_names,
+    request_id_header_name,
+)
 from admina.proxy.log_format import LOG_FORMATS
 from admina.proxy.surfaces import parse_surfaces
 
@@ -208,6 +213,27 @@ class Settings(BaseSettings):
     # Content returned to the caller when governance blocks a request,
     # shaped as an OpenAI completion with finish_reason="content_filter".
     ADMINA_GATEWAY_BLOCK_MESSAGE: str = "This request was blocked by the Admina governance policy."
+    # HTTP status of a blocked chat completion:
+    #   200: a completion carrying ADMINA_GATEWAY_BLOCK_MESSAGE (a stream of
+    #        one chunk and data: [DONE] for stream=true);
+    #   403: {"error": {"message": <ADMINA_GATEWAY_BLOCK_MESSAGE>,
+    #        "type": "governance_blocked", "param": null,
+    #        "code": "governance_blocked", "categories": [...]}}, streaming or not.
+    # Either way the response has X-Admina-Action: BLOCK.
+    ADMINA_GATEWAY_BLOCK_STATUS: int = 200
+    # Header whose value the gateway records as request_id (e.g.
+    # X-Request-Id; at most 128 characters). Empty = none: request_id is null.
+    ADMINA_GATEWAY_REQUEST_ID_HEADER: str = ""
+    # Comma-separated request headers recorded in the context of the
+    # forensic record (lower-case name -> value, at most 128 characters).
+    # Headers not listed are never recorded. Credentials cannot be listed.
+    ADMINA_GATEWAY_RECORD_HEADERS: str = ""
+    # Comma-separated request headers forwarded upstream (e.g.
+    # traceparent,tracestate,X-Request-Id). traceparent and tracestate are
+    # forwarded only with a valid W3C trace context. The upstream receives
+    # nothing else from the client. Credentials, connection and body headers
+    # and X-Admina-* cannot be listed.
+    ADMINA_GATEWAY_FORWARD_HEADERS: str = ""
     # Longest message text accepted on the gateway's chat completions, in
     # characters: the text of every message, as scanned (0 = no limit).
     # Longer requests get 413 before any governance check.
@@ -300,6 +326,28 @@ class Settings(BaseSettings):
                 f"{' | '.join(GATEWAY_STREAM_MODES)} (got {v!r})"
             )
         return v
+
+    @field_validator("ADMINA_GATEWAY_BLOCK_STATUS")
+    @classmethod
+    def validate_gateway_block_status(cls, v: int) -> int:
+        if v not in (200, 403):
+            raise ValueError(f"ADMINA_GATEWAY_BLOCK_STATUS must be 200 or 403 (got {v})")
+        return v
+
+    @field_validator("ADMINA_GATEWAY_REQUEST_ID_HEADER")
+    @classmethod
+    def validate_gateway_request_id_header(cls, v: str) -> str:
+        return request_id_header_name(v)
+
+    @field_validator("ADMINA_GATEWAY_RECORD_HEADERS")
+    @classmethod
+    def validate_gateway_record_headers(cls, v: str) -> str:
+        return ",".join(record_header_names(v))
+
+    @field_validator("ADMINA_GATEWAY_FORWARD_HEADERS")
+    @classmethod
+    def validate_gateway_forward_headers(cls, v: str) -> str:
+        return ",".join(forward_header_names(v))
 
     @field_validator("GOVERNANCE_MODE")
     @classmethod

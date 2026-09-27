@@ -27,11 +27,27 @@ Routes (prefix /v1):
 
 Every chat completion response carries ``X-Admina-Ruleset``, the
 :func:`~admina.domains.agent_security.ruleset.ruleset_sha256` of the rules
-the gateway scans with (see :mod:`admina.proxy.gateway_scan`). The firewall
-scans the messages of the roles in ``ADMINA_GATEWAY_SCAN_ROLES``, narrowed
-by an accepted ``X-Admina-Scan-Policy`` while
-``ADMINA_GATEWAY_SCAN_POLICY_ENABLED`` is on (see
-:mod:`admina.domains.agent_security.scan_policy`).
+the gateway scans with (see :mod:`admina.proxy.gateway_scan`), and
+``X-Admina-Version``. The firewall scans the messages of the roles in
+``ADMINA_GATEWAY_SCAN_ROLES``, narrowed by an accepted
+``X-Admina-Scan-Policy`` while ``ADMINA_GATEWAY_SCAN_POLICY_ENABLED`` is on
+(see :mod:`admina.domains.agent_security.scan_policy`).
+
+Once a request has its event id, every response also carries the
+governance outcome: ``X-Admina-Event-Id``, ``X-Admina-Action``,
+``X-Admina-Risk``, ``X-Admina-Categories`` and ``X-Admina-Record-Hash``
+(see :mod:`admina.proxy.gateway_outcome`). A blocked request is answered
+as ``ADMINA_GATEWAY_BLOCK_STATUS`` says: with the block message as a
+completion (``200``, the default) or with a ``governance_blocked`` error
+(``403``).
+
+Each chat completion writes two forensic records: ``gateway_request``
+before it is forwarded, with the request id, trace id and recorded headers
+of :mod:`admina.proxy.gateway_correlation` and ``request_sha256`` (the
+RFC 8785 SHA-256 of the ``messages`` forwarded upstream), and
+``gateway_response`` once its response has ended (sent whole, left by the
+client, or failed), with the same ``event_id``. With OpenTelemetry on, the
+call has a span of its own, a child of the caller's W3C trace context.
 
 The governance pipeline runs in the worker threads of
 :mod:`admina.proxy.pipeline_executor`, within the time budget
@@ -54,7 +70,8 @@ Both forward to the upstream route named by the ``X-Admina-Upstream``
 request header, or to the default route without it (see
 :mod:`admina.proxy.gateway_upstreams`). An unknown route name is answered
 with 400 before anything else happens. The upstream receives the route's
-own API key, if any, never the caller's credentials or headers.
+own API key, if any, never the caller's credentials; of the caller's
+headers, only those listed in ``ADMINA_GATEWAY_FORWARD_HEADERS``.
 
 Upstream responses (stream mode, timeouts and connection pool: see
 :mod:`admina.proxy.gateway_transport`):
@@ -78,7 +95,7 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterable
 from functools import cache, partial
 from typing import Any
 
@@ -86,8 +103,10 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
+from starlette.types import Receive, Scope, Send
 
 from admina import __version__
+from admina.core.trace_context import TraceContext
 from admina.core.types import EventType, GovernanceAction
 from admina.domains.agent_security.egress import resolve_egress_mode
 from admina.domains.agent_security.scan_policy import (
@@ -103,6 +122,23 @@ from admina.domains.governance import (
     run_pipeline,
     safe_serialize,
     unfinished_pipeline_result,
+)
+from admina.proxy.gateway_correlation import (
+    context_of,
+    forward_header_names,
+    forwarded_headers,
+    record_header_names,
+    request_id_header_name,
+    request_id_of,
+    trace_context_of,
+)
+from admina.proxy.gateway_outcome import (
+    VERSION_HEADER,
+    Delivery,
+    GatewayCall,
+    completion_record,
+    firewall_categories,
+    messages_sha256,
 )
 from admina.proxy.gateway_response_scan import (
     completion_texts,
@@ -123,6 +159,8 @@ logger = logging.getLogger("admina.proxy.gateway")
 
 # Longest X-Admina-Upstream value considered, as for X-Session-Id.
 _ROUTE_HEADER_MAX = 128
+# Name of the OpenTelemetry span of a chat completion.
+_SPAN_NAME = "gateway.chat.completions"
 
 
 def _requested_route(value: str) -> str:
@@ -346,6 +384,21 @@ async def _aiter_list(items) -> AsyncIterator[str]:
     """Adapt a synchronous list of SSE lines to an async iterator."""
     for item in items:
         yield item
+
+
+def _block_response(cfg: Any, model: str, stream: bool, categories: Iterable[str]) -> Response:
+    """The response to a blocked chat completion, as
+    ``ADMINA_GATEWAY_BLOCK_STATUS`` says: 403 with a ``governance_blocked``
+    error (streaming or not), or the block message as a completion."""
+    message = cfg.ADMINA_GATEWAY_BLOCK_MESSAGE
+    if cfg.ADMINA_GATEWAY_BLOCK_STATUS == 403:
+        error = _error(message, "governance_blocked", "governance_blocked")
+        return _error_response(403, {**error, "categories": list(categories)})
+    if stream:
+        return StreamingResponse(
+            _aiter_list(_synthetic_stream(model, message)), media_type="text/event-stream"
+        )
+    return JSONResponse(content=_synthetic_completion(model, message))
 
 
 # Keys whose scalar values name or classify a part of a completion instead
@@ -641,36 +694,57 @@ async def _governed_sse_stream(
 
 async def _record_forensic(
     forensic_box: Any,
+    call: GatewayCall,
     *,
-    event_id: str,
     agent_id: str,
     session_id: str,
-    upstream: str,
-    action: str,
-    risk_level: str,
     pre: Any,
     prescan: dict,
-) -> None:
+    trace_id: str | None,
+    context: dict[str, str],
+    ruleset_sha256: str,
+    messages: Any,
+) -> str | None:
     """Record the gateway request to the forensic log — the fifth surface
-    on the canonical pipeline. Runs off the event loop like /mcp does.
+    on the canonical pipeline — and return its ``record_hash`` (None
+    without a forensic store). Runs off the event loop like /mcp does, the
+    ``request_sha256`` of *messages* (the array forwarded upstream) included.
 
     *prescan* is the scan scope (:meth:`ScanScope.record`)."""
-    await _record(
-        forensic_box,
-        {
-            "event_id": event_id,
-            "event_type": EventType.GATEWAY_REQUEST,
-            "agent_id": agent_id,
-            "session_id": session_id,
-            "method": "chat.completions",
-            "upstream": upstream,
-            "action": action,
-            "risk_level": risk_level,
-            "governance_latency_ms": round(pre.latency_ms, 2),
-            "checks": {k: safe_serialize(v) for k, v in pre.checks.items()},
-            "prescan": prescan,
-        },
-    )
+    if forensic_box is None:
+        return None
+    event: dict[str, Any] = {
+        "event_id": call.event_id,
+        "event_type": EventType.GATEWAY_REQUEST,
+        "agent_id": agent_id,
+        "session_id": session_id,
+        "request_id": call.request_id,
+        "trace_id": trace_id,
+        "context": context,
+        "method": "chat.completions",
+        "upstream": call.upstream,
+        "action": call.action,
+        "risk_level": call.risk_level,
+        "categories": list(call.categories),
+        "governance_latency_ms": round(pre.latency_ms, 2),
+        "checks": {k: safe_serialize(v) for k, v in pre.checks.items()},
+        "prescan": prescan,
+        "ruleset_sha256": ruleset_sha256,
+    }
+    if call.would_action is not None:
+        event["would_action"] = call.would_action
+
+    def write() -> Any:
+        event["request_sha256"] = messages_sha256(messages)
+        return forensic_box.record(event)
+
+    return _record_hash(await asyncio.get_running_loop().run_in_executor(None, write))
+
+
+def _record_hash(result: Any) -> str | None:
+    """The ``record_hash`` of a forensic store's result, or None."""
+    value = result.get("record_hash") if isinstance(result, dict) else None
+    return value if isinstance(value, str) else None
 
 
 async def _record(forensic_box: Any, event: dict) -> None:
@@ -678,6 +752,111 @@ async def _record(forensic_box: Any, event: dict) -> None:
     if forensic_box is None:
         return
     await asyncio.get_running_loop().run_in_executor(None, forensic_box.record, event)
+
+
+async def _record_completion(forensic_box: Any, event: dict) -> None:
+    """Append the completion record *event*, off the event loop. The write
+    is handed to a thread before anything is awaited, so it is done even
+    when the request is cancelled meanwhile; a failure is logged."""
+    if forensic_box is None:
+        return
+    write = asyncio.get_running_loop().run_in_executor(None, forensic_box.record, event)
+    try:
+        await write
+    except Exception as exc:  # noqa: BLE001 — the response has been sent
+        logger.error("Gateway completion record failed: %s", type(exc).__name__)
+
+
+def _open_trace(
+    state: Any, call: GatewayCall, incoming: TraceContext | None
+) -> TraceContext | None:
+    """Start the span of *call* when OpenTelemetry is on, a child of
+    *incoming*; return the call's trace context: the span's, else
+    *incoming*."""
+    exporter = getattr(state, "otel_exporter", None)
+    if exporter is None or not exporter.enabled:
+        return incoming
+    call.span = exporter.start_span(
+        _SPAN_NAME,
+        parent=incoming,
+        attributes={"admina.event_id": call.event_id, "admina.upstream": call.upstream},
+    )
+    if call.span is None:
+        return incoming
+    ids = call.span.get_span_context()
+    return TraceContext.of(
+        f"{ids.trace_id:032x}",
+        f"{ids.span_id:016x}",
+        int(ids.trace_flags),
+        incoming.tracestate if incoming is not None else None,
+    )
+
+
+def _end_span(span: Any, record: dict) -> None:
+    """End *span* with the outcome of its completion *record*."""
+    if span is None:
+        return
+    span.set_attribute("admina.action", record["action"])
+    span.set_attribute("http.response.status_code", record["status_code"])
+    if record["cancelled"]:
+        span.set_attribute("admina.cancelled", True)
+    if record["error"] is not None:
+        span.set_attribute("error.type", record["error"])
+    span.end()
+
+
+async def _end_call(
+    state: Any,
+    call: GatewayCall,
+    status_code: int,
+    delivery: Delivery,
+    body: bytes | None,
+    sent: bool,
+) -> None:
+    """End *call*, whose response has *status_code* and, unless streamed,
+    *body*: end its span and write its completion record. *sent* is False
+    when sending the response raised."""
+    if body is not None:
+        delivery.body(body)
+    if not sent:
+        delivery.completed = False
+    record = completion_record(call, status_code, delivery)
+    _end_span(call.span, record)
+    await _record_completion(state.forensic_box, record)
+
+
+class _Finished(Response):
+    """A response sent as it is, then *end* awaited with whether sending it
+    returned: once it has been sent whole, left by the client, or failed."""
+
+    def __init__(self, response: Response, end: Callable[[bool], Awaitable[None]]) -> None:
+        # The wrapped response renders and sends itself.
+        self.response = response
+        self.end = end
+        self.background = None
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        sent = False
+        try:
+            await self.response(scope, receive, send)
+            sent = True
+        finally:
+            await self.end(sent)
+
+
+def _finish(state: Any, call: GatewayCall, response: Response) -> Response:
+    """*response* with the outcome headers of *call*, ending the call once
+    it has been sent: the bytes of a stream are counted as they go out."""
+    response.headers.update(call.headers())
+    delivery = Delivery()
+    body = None
+    if isinstance(response, StreamingResponse):
+        response.body_iterator = delivery.relay(response.body_iterator)
+    else:
+        body = bytes(response.body)
+    return _Finished(
+        response, partial(_end_call, state, call, response.status_code, delivery, body)
+    )
 
 
 def _scans_response(cfg: Any) -> bool:
@@ -751,7 +930,11 @@ def _failure(route: GatewayUpstream, exc: Exception) -> tuple[int, dict]:
     return 502, _UPSTREAM_FAILED
 
 
-def _failure_response(route: GatewayUpstream, exc: Exception) -> JSONResponse:
+def _failure_response(
+    route: GatewayUpstream, exc: Exception, call: GatewayCall | None = None
+) -> JSONResponse:
+    if call is not None:
+        call.failed(exc)
     return _error_response(*_failure(route, exc))
 
 
@@ -821,12 +1004,14 @@ async def _relay(
     stream_cm: Any,
     deadline: float | None,
     route: GatewayUpstream,
+    on_failure: Callable[[BaseException], None] | None = None,
 ) -> AsyncIterator[Any]:
     """Send *chunks* on as they come, within the total *deadline*.
 
     An upstream failure ends the stream with one ``data: {"error": ...}``
-    event and no ``data: [DONE]``. The upstream response is closed in every
-    case, also when the client goes away.
+    event and no ``data: [DONE]``, and is passed to *on_failure*. The
+    upstream response is closed in every case, also when the client goes
+    away.
     """
     try:
         iterator = aiter(chunks)
@@ -837,6 +1022,8 @@ async def _relay(
             except StopAsyncIteration:
                 return
             except (TimeoutError, httpx.RequestError) as exc:
+                if on_failure is not None:
+                    on_failure(exc)
                 _status, error = _failure(route, exc)
                 yield _sse_format({"error": error})
                 return
@@ -847,16 +1034,21 @@ async def _relay(
 
 async def _chat_completion(
     request: Request, state: Any, cfg: Any, scan: GatewayScanConfig
-) -> Response:
-    """Govern one chat completion and relay it upstream (the route handler
-    adds the ruleset header)."""
+) -> tuple[Response, GatewayCall | None]:
+    """Govern one chat completion and relay it upstream.
+
+    Returns the response and, once the request has its event id, its call:
+    the route handler adds the ruleset and version headers and, with
+    :func:`_finish`, the outcome headers and the end of the call.
+    """
+    arrived = time.perf_counter()
     route = _select_upstream(request, state, cfg)
     if route is None:
-        return _unknown_upstream()
+        return _unknown_upstream(), None
     try:
         body = await request.json()
     except (ValueError, UnicodeDecodeError):
-        return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"})
+        return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"}), None
 
     messages = body.get("messages") or []
     model = body.get("model", "unknown")
@@ -865,16 +1057,24 @@ async def _chat_completion(
     agent_id = re.sub(r"[\r\n]", "", request.headers.get("X-Agent-Id", "gateway"))[:128]
     prompt_text = _extract_prompt_text(messages)
     if 0 < cfg.ADMINA_GATEWAY_MAX_PROMPT_CHARS < len(prompt_text):
-        return _error_response(
-            413,
-            _error(
-                "The message text exceeds the length limit.",
-                "invalid_request_error",
-                "prompt_too_long",
-            ),
+        too_long = _error(
+            "The message text exceeds the length limit.",
+            "invalid_request_error",
+            "prompt_too_long",
         )
+        return _error_response(413, too_long), None
     event_id = uuid.uuid4().hex
     scope = _scan_scope(request, state, cfg, scan)
+    call = GatewayCall(
+        event_id=event_id,
+        upstream=route.name,
+        stream=stream,
+        arrived=arrived,
+        request_id=request_id_of(
+            request.headers, request_id_header_name(cfg.ADMINA_GATEWAY_REQUEST_ID_HEADER)
+        ),
+    )
+    trace = _open_trace(state, call, trace_context_of(request.headers))
 
     def pipeline() -> Coroutine[Any, Any, GovernanceResult]:
         # Called in a worker thread: selecting the texts to scan runs there too.
@@ -900,34 +1100,37 @@ async def _chat_completion(
         )
 
     pre = await _govern(state, cfg, pipeline, event_id)
-    action = pre.gov_response.action  # uppercase: ALLOW/BLOCK/CIRCUIT_BREAK
-
-    await _record_forensic(
-        state.forensic_box,
-        event_id=event_id,
-        agent_id=agent_id,
-        session_id=session_id,
-        upstream=route.name,
-        action=action,
-        risk_level=pre.gov_response.risk_level,
-        pre=pre,
-        prescan=scope.record(),
-    )
-
-    block_message = cfg.ADMINA_GATEWAY_BLOCK_MESSAGE
-    if action in ("BLOCK", "CIRCUIT_BREAK"):
-        if stream:
-            return StreamingResponse(
-                _aiter_list(_synthetic_stream(model, block_message)),
-                media_type="text/event-stream",
-            )
-        return JSONResponse(content=_synthetic_completion(model, block_message))
-
-    url = f"{route.url}/chat/completions"
-    headers = {"X-Admina-Event-Id": event_id, **route.auth_headers()}
+    call.action = pre.gov_response.action  # uppercase: ALLOW/BLOCK/CIRCUIT_BREAK
+    call.risk_level = pre.gov_response.risk_level
+    call.categories = firewall_categories(pre.checks.get("firewall"))
+    if pre.would_action is not None:
+        call.would_action = str(safe_serialize(pre.would_action)).upper()
 
     pii_count = pre.checks.get("pii_redaction", {}).get("count", 0)
     fwd_messages = pre.redacted_body["params"]["messages"] if pii_count > 0 else messages
+    call.record_hash = await _record_forensic(
+        state.forensic_box,
+        call,
+        agent_id=agent_id,
+        session_id=session_id,
+        pre=pre,
+        prescan=scope.record(),
+        trace_id=trace.trace_id if trace is not None else None,
+        context=context_of(request.headers, record_header_names(cfg.ADMINA_GATEWAY_RECORD_HEADERS)),
+        ruleset_sha256=scan.ruleset_sha256,
+        messages=fwd_messages,
+    )
+
+    if call.action in ("BLOCK", "CIRCUIT_BREAK"):
+        return _block_response(cfg, model, stream, call.categories), call
+
+    url = f"{route.url}/chat/completions"
+    forwarded = forward_header_names(cfg.ADMINA_GATEWAY_FORWARD_HEADERS)
+    headers = {
+        **forwarded_headers(request.headers, forwarded, trace),
+        "X-Admina-Event-Id": event_id,
+        **route.auth_headers(),
+    }
     forward_body = {**body, "messages": fwd_messages}
     client = state.gateway_http_client
     deadline = total_deadline(cfg)
@@ -944,17 +1147,18 @@ async def _chat_completion(
             async with asyncio.timeout_at(deadline):
                 upstream = await stream_cm.__aenter__()
         except (TimeoutError, httpx.RequestError) as exc:
-            return _failure_response(route, exc)
+            return _failure_response(route, exc, call), call
+        call.upstream_status = upstream.status_code
 
         if not _is_success(upstream.status_code):
             try:
                 async with asyncio.timeout_at(deadline):
                     content = await upstream.aread()
             except (TimeoutError, httpx.RequestError) as exc:
-                return _failure_response(route, exc)
+                return _failure_response(route, exc, call), call
             finally:
                 await stream_cm.__aexit__(None, None, None)
-            return _as_received(upstream.status_code, upstream.headers, content)
+            return _as_received(upstream.status_code, upstream.headers, content), call
 
         passthrough = getattr(
             state, "gateway_stream_mode", DEFAULT_STREAM_MODE
@@ -985,17 +1189,18 @@ async def _chat_completion(
                 stream=True,
             )
         return StreamingResponse(
-            _relay(chunks, stream_cm, deadline, route),
+            _relay(chunks, stream_cm, deadline, route, call.failed),
             status_code=upstream.status_code,
             headers={"content-type": content_type},
             background=scan,
-        )
+        ), call
 
     try:
         async with asyncio.timeout_at(deadline):
             resp = await client.post(url, json=forward_body, headers=headers)
     except (TimeoutError, httpx.RequestError) as exc:
-        return _failure_response(route, exc)
+        return _failure_response(route, exc, call), call
+    call.upstream_status = resp.status_code
     if _scans_response(cfg) and _is_success(resp.status_code):
         completion = _json_object(resp.content)
         if completion is not None:
@@ -1010,16 +1215,21 @@ async def _chat_completion(
                 stream=False,
             )
             if checked.action == GovernanceAction.BLOCK:
-                return JSONResponse(content=_synthetic_completion(model, block_message))
+                call.action = "BLOCK"
+                call.risk_level = str(safe_serialize(checked.risk_level)).upper()
+                call.categories = firewall_categories(checked.checks.get("response_firewall"))
+                return _block_response(cfg, model, False, call.categories), call
     if not (_transforms_response(cfg) and _is_success(resp.status_code)):
-        return _as_received(resp.status_code, resp.headers, resp.content)
+        return _as_received(resp.status_code, resp.headers, resp.content), call
     data = _json_object(resp.content)
     if data is None:
-        return _error_response(502, _UPSTREAM_INVALID)
+        return _error_response(502, _UPSTREAM_INVALID), call
     redacted = await _redacted(state, cfg, partial(_redacted_completion, data, state.pii_redactor))
     if redacted is None:
-        return JSONResponse(content=_synthetic_completion(model, block_message))
-    return JSONResponse(content=redacted, status_code=resp.status_code)
+        # The completion could not be redacted: the block message instead.
+        call.action = "BLOCK"
+        return _block_response(cfg, model, False, call.categories), call
+    return JSONResponse(content=redacted, status_code=resp.status_code), call
 
 
 def create_gateway_endpoints(
@@ -1069,9 +1279,10 @@ def create_gateway_endpoints(
     async def chat_completions(request: Request) -> Response:
         state = get_state()
         scan = _scan_config(state)
-        response = await _chat_completion(request, state, get_settings(), scan)
+        response, call = await _chat_completion(request, state, get_settings(), scan)
         response.headers[RULESET_HEADER] = scan.ruleset_sha256
-        return response
+        response.headers[VERSION_HEADER] = __version__
+        return response if call is None else _finish(state, call, response)
 
     @router.get("/admina/ruleset", summary="Active firewall ruleset")
     async def active_ruleset() -> dict[str, Any]:

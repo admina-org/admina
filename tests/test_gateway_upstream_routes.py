@@ -609,5 +609,6 @@ def test_forensic_record_names_the_route():
     _call(upstreams, headers={"X-Admina-Upstream": "util"}, forensic_box=fbox)
     _call(upstreams, forensic_box=fbox)
 
-    assert [r["upstream"] for r in fbox.records] == ["util", "main"]
+    requests = [r for r in fbox.records if r["event_type"] == "gateway_request"]
+    assert [r["upstream"] for r in requests] == ["util", "main"]
     assert UTIL_URL not in json.dumps(fbox.records, default=str)

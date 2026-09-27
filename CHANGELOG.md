@@ -13,6 +13,51 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+### Added
+
+- Governance outcome headers on the responses of `POST /v1/chat/completions`
+  once the request has its event id, streaming or not, upstream errors and
+  timeouts included: `X-Admina-Event-Id`, `X-Admina-Action` (`ALLOW` or
+  `BLOCK`), `X-Admina-Risk`, `X-Admina-Categories` (the names of the firewall
+  categories that matched, comma-separated; never text) and
+  `X-Admina-Record-Hash` (the `record_hash` of the request record, written
+  before the request is forwarded); `X-Admina-Would-Action` in `observe` and
+  `dry-run` mode. Every response of the route carries `X-Admina-Version`.
+- `ADMINA_GATEWAY_BLOCK_STATUS`: `200` (default: the block message as a
+  completion) or `403` (`{"error": {"message", "type": "governance_blocked",
+  "param", "code": "governance_blocked", "categories"}}`, streaming or not).
+- `ADMINA_GATEWAY_REQUEST_ID_HEADER`, `ADMINA_GATEWAY_RECORD_HEADERS` and
+  `ADMINA_GATEWAY_FORWARD_HEADERS`: the header recorded as `request_id`, the
+  headers recorded in `context` and the headers forwarded upstream (all empty
+  by default). Credentials cannot be listed; nor, for forwarding, connection
+  and body headers or `X-Admina-*`.
+- W3C trace context on the gateway: a valid `traceparent` is recorded as
+  `trace_id` and, when listed, forwarded with `tracestate`. With
+  OpenTelemetry on, each chat completion has a `gateway.chat.completions`
+  span, a child of the caller's span.
+- `gateway_request` record fields: `request_id`, `trace_id`, `context`,
+  `request_sha256` (the SHA-256 of the RFC 8785 canonical form of the
+  `messages` forwarded upstream; test vectors in
+  `tests/fixtures/jcs_vectors.json`), `ruleset_sha256`, `categories`, and
+  `would_action` in `observe` and `dry-run` mode.
+- A `gateway_response` forensic record (`EventType.GATEWAY_RESPONSE`) for
+  each gateway chat completion, with the `event_id` of its request, written
+  once the response has ended: `response_sha256` (the bytes sent to the
+  client, counted as a stream goes out), `finish_reason`, `usage`,
+  `duration_ms`, `status_code`, `upstream_status_code`, `cancelled` and
+  `error` (the exception class only).
+- `admina.core.trace_context` (W3C `traceparent` and `tracestate` parsing)
+  and `OTELGovernanceExporter.start_span()`.
+
+### Changed
+
+- Each gateway chat completion writes two forensic records,
+  `gateway_request` and then `gateway_response`; count `gateway_request`
+  records to count requests.
+- A non-streaming completion blocked by the response scan, or whose PII
+  redaction did not finish, is answered as `ADMINA_GATEWAY_BLOCK_STATUS`
+  says, with `X-Admina-Action: BLOCK`.
+
 ## [0.13.0rc1] — 2026-09-27
 
 Release candidate of 0.13.0: an OpenAI-compatible gateway for embedded
