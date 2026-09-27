@@ -154,22 +154,6 @@ def _parse_sse_data(line: str) -> dict | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _delta_content(chunk: dict) -> str:
-    """Return ``choices[0].delta.content`` or "" when absent/None."""
-    try:
-        return chunk["choices"][0]["delta"].get("content") or ""
-    except (KeyError, IndexError, TypeError, AttributeError):
-        return ""
-
-
-def _finish_reason(chunk: dict) -> str | None:
-    """Return ``choices[0].finish_reason`` or None when absent."""
-    try:
-        return chunk["choices"][0].get("finish_reason")
-    except (KeyError, IndexError, TypeError):
-        return None
-
-
 def _synthetic_completion(model: str, message: str) -> dict:
     """A non-streaming OpenAI completion carrying the governance block.
 
@@ -212,30 +196,6 @@ def _synthetic_stream(model: str, message: str) -> list[str]:
     return [_sse_format(chunk), "data: [DONE]\n\n"]
 
 
-def _content_chunk(template: dict, content: str, model: str) -> dict:
-    """A content-bearing chat.completion.chunk cloned from *template*'s
-    identity fields (id/created/model) with a fresh redacted delta."""
-    return {
-        "id": template.get("id", ""),
-        "object": "chat.completion.chunk",
-        "created": template.get("created", int(time.time())),
-        "model": template.get("model", model),
-        "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}],
-    }
-
-
-def _finish_chunk(template: dict, reason: str, model: str) -> dict:
-    """A terminal chat.completion.chunk (empty delta) preserving the
-    upstream finish_reason so clients close the turn correctly."""
-    return {
-        "id": template.get("id", ""),
-        "object": "chat.completion.chunk",
-        "created": template.get("created", int(time.time())),
-        "model": template.get("model", model),
-        "choices": [{"index": 0, "delta": {}, "finish_reason": reason}],
-    }
-
-
 class _PassthroughRedactor:
     """Drop-in for StreamRedactor used when PII redaction is disabled:
     echoes each delta immediately, holds nothing, redacts nothing."""
@@ -253,40 +213,213 @@ async def _aiter_list(items) -> AsyncIterator[str]:
         yield item
 
 
-async def _governed_sse_stream(lines, redactor, model: str) -> AsyncIterator[str]:
-    """Re-emit upstream SSE as governed SSE.
+# Generated text in a streamed delta, besides tool and function call
+# arguments: what the governed path redacts.
+_DELTA_TEXT_FIELDS = ("content", "reasoning_content", "reasoning", "refusal")
+# Chunk identity, copied onto the chunk that carries text held back until
+# the end of the stream.
+_CHUNK_IDENTITY_FIELDS = ("id", "object", "created", "model", "system_fingerprint")
 
-    Content deltas are recomposed and redacted through *redactor* (feed);
-    at the upstream's finish chunk the window is flushed (finish) and the
-    trailing redacted tail is emitted before the terminal finish marker.
-    The stream always ends with ``data: [DONE]``. Role-only and empty
-    deltas are dropped; identity fields (id/created/model) are preserved.
+
+def _as_index(value: Any, default: int) -> int:
+    """An ``index`` field, or *default* when it is missing or not an integer."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else default
+
+
+def _text(value: Any) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _append_text(delta: dict, where: tuple, tail: str) -> None:
+    """Append *tail* to the text at *where* (a window key without the
+    choice index) in *delta*, a dict the caller owns."""
+    field = where[0]
+    if field == "tool_calls":
+        calls = list(delta["tool_calls"]) if isinstance(delta.get("tool_calls"), list) else []
+        for pos, call in enumerate(calls):
+            if isinstance(call, dict) and _as_index(call.get("index"), pos) == where[1]:
+                function = call["function"] if isinstance(call.get("function"), dict) else {}
+                arguments = _text(function.get("arguments")) + tail
+                calls[pos] = {**call, "function": {**function, "arguments": arguments}}
+                break
+        else:
+            calls.append({"index": where[1], "function": {"arguments": tail}})
+        delta["tool_calls"] = calls
+    elif field == "function_call":
+        function = delta["function_call"] if isinstance(delta.get("function_call"), dict) else {}
+        delta["function_call"] = {
+            **function,
+            "arguments": _text(function.get("arguments")) + tail,
+        }
+    else:
+        delta[field] = _text(delta.get(field)) + tail
+
+
+class _StreamedText:
+    """Redacts the text a model generates in streamed completion chunks.
+
+    Each chunk is cloned with all of its fields, and only generated text is
+    replaced: the delta's ``content``, ``reasoning_content``, ``reasoning``
+    and ``refusal``, and the ``arguments`` of tool calls and function calls.
+    That text goes through one window of a windowed
+    :class:`~admina.sdk.streaming.StreamRedactor` per choice and field (per
+    tool call for arguments), so an entity split across chunks is redacted
+    before any of it is sent. The text a window holds back is released with
+    the finish chunk of its choice, or by :meth:`remainder` at the end of
+    the stream. Token texts in ``logprobs`` and comment lines are redacted
+    one by one. Without a PII redactor the text passes unchanged.
     """
-    flushed = False
-    async for raw in lines:
-        stripped = (raw or "").strip()
-        if not stripped or stripped == "data: [DONE]":
-            continue
-        chunk = _parse_sse_data(stripped)
-        if chunk is None:
-            continue
-        content = _delta_content(chunk)
-        if content:
-            for safe in redactor.feed(content):
-                if safe:
-                    yield _sse_format(_content_chunk(chunk, safe, model))
-        reason = _finish_reason(chunk)
-        if reason is not None and not flushed:
-            tail, _summary = redactor.finish()
-            flushed = True
+
+    def __init__(self, pii_redactor: Any = None) -> None:
+        self._pii = pii_redactor
+        self._windows: dict[tuple, Any] = {}
+        self._identity: dict[str, Any] = {}
+
+    def chunk(self, chunk: dict) -> dict:
+        """*chunk* with its generated text redacted."""
+        self._identity = {k: chunk[k] for k in _CHUNK_IDENTITY_FIELDS if k in chunk}
+        choices = chunk.get("choices")
+        if not isinstance(choices, list):
+            return chunk
+        return {**chunk, "choices": [self._choice(pos, c) for pos, c in enumerate(choices)]}
+
+    def comment(self, line: str) -> str:
+        """An SSE comment line, redacted."""
+        return line if self._pii is None else self._pii.redact(line)["redacted_text"]
+
+    def remainder(self) -> dict | None:
+        """A last chunk with the text still held back, or None."""
+        choices = []
+        for index in sorted({key[0] for key in self._windows}):
+            delta = self._release(index, None)
+            if delta is not None:
+                choices.append({"index": index, "delta": delta, "finish_reason": None})
+        return {**self._identity, "choices": choices} if choices else None
+
+    def _feed(self, key: tuple, text: str) -> str:
+        window = self._windows.get(key)
+        if window is None:
+            window = self._windows[key] = self._new_window()
+        return "".join(window.feed(text))
+
+    def _new_window(self) -> Any:
+        if self._pii is None:
+            return _PassthroughRedactor()
+        from admina.sdk.streaming import StreamRedactor
+
+        return StreamRedactor(self._pii)
+
+    def _release(self, index: int, delta: Any) -> dict | None:
+        """A copy of *delta* with the text held back for choice *index*
+        appended, or None when nothing was held back."""
+        tails = []
+        for key in [k for k in self._windows if k[0] == index]:
+            tail, _summary = self._windows.pop(key).finish()
             if tail:
-                yield _sse_format(_content_chunk(chunk, tail, model))
-            yield _sse_format(_finish_chunk(chunk, reason, model))
-    if not flushed:
-        tail, _summary = redactor.finish()
-        if tail:
-            yield _sse_format(_content_chunk({}, tail, model))
-    yield "data: [DONE]\n\n"
+                tails.append((key[1:], tail))
+        if not tails:
+            return None
+        out = dict(delta) if isinstance(delta, dict) else {}
+        for where, tail in tails:
+            _append_text(out, where, tail)
+        return out
+
+    def _choice(self, pos: int, choice: Any) -> Any:
+        if not isinstance(choice, dict):
+            return choice
+        index = _as_index(choice.get("index"), pos)
+        out = dict(choice)
+        if isinstance(choice.get("delta"), dict):
+            out["delta"] = self._delta(index, choice["delta"])
+        if choice.get("logprobs") is not None:
+            out["logprobs"] = self._logprobs(choice["logprobs"])
+        if choice.get("finish_reason") is not None:
+            released = self._release(index, out.get("delta"))
+            if released is not None:
+                out["delta"] = released
+        return out
+
+    def _delta(self, index: int, delta: dict) -> dict:
+        out = dict(delta)
+        for field in _DELTA_TEXT_FIELDS:
+            if isinstance(delta.get(field), str):
+                out[field] = self._feed((index, field), delta[field])
+        if isinstance(delta.get("tool_calls"), list):
+            out["tool_calls"] = [
+                self._tool_call(index, pos, call) for pos, call in enumerate(delta["tool_calls"])
+            ]
+        function = delta.get("function_call")
+        if isinstance(function, dict) and isinstance(function.get("arguments"), str):
+            arguments = self._feed((index, "function_call"), function["arguments"])
+            out["function_call"] = {**function, "arguments": arguments}
+        return out
+
+    def _tool_call(self, index: int, pos: int, call: Any) -> Any:
+        function = call.get("function") if isinstance(call, dict) else None
+        if not isinstance(function, dict) or not isinstance(function.get("arguments"), str):
+            return call
+        key = (index, "tool_calls", _as_index(call.get("index"), pos))
+        return {
+            **call,
+            "function": {**function, "arguments": self._feed(key, function["arguments"])},
+        }
+
+    def _logprobs(self, logprobs: Any) -> Any:
+        if self._pii is None or not isinstance(logprobs, dict):
+            return logprobs
+        out = dict(logprobs)
+        for key in ("content", "refusal"):
+            if isinstance(logprobs.get(key), list):
+                out[key] = [self._token(entry) for entry in logprobs[key]]
+        return out
+
+    def _token(self, entry: Any) -> Any:
+        if not isinstance(entry, dict):
+            return entry
+        out = dict(entry)
+        token = entry.get("token")
+        if isinstance(token, str):
+            redacted = self._pii.redact(token)["redacted_text"]
+            if redacted != token:
+                out["token"] = redacted
+                if entry.get("bytes") is not None:
+                    out["bytes"] = list(redacted.encode("utf-8"))
+        if isinstance(entry.get("top_logprobs"), list):
+            out["top_logprobs"] = [self._token(alt) for alt in entry["top_logprobs"]]
+        return out
+
+
+async def _governed_sse_stream(
+    lines: AsyncIterator[str], pii_redactor: Any = None
+) -> AsyncIterator[str]:
+    """Re-emit upstream SSE lines as governed SSE, one chunk per chunk.
+
+    Each ``data:`` chunk is parsed, its generated text redacted through
+    :class:`_StreamedText` (unchanged when *pii_redactor* is None) and
+    re-serialised. Comment lines (keep-alives) are forwarded, redacted too;
+    data that is not a JSON object is dropped. ``data: [DONE]`` is forwarded when the
+    upstream sends it, after a chunk with any text still held back; a
+    stream that ends without it gets only that chunk.
+    """
+    text = _StreamedText(pii_redactor)
+    async for line in lines:
+        if line.startswith(":"):
+            yield f"{text.comment(line.rstrip())}\n\n"
+            continue
+        if not line.startswith("data:"):
+            continue
+        if line[len("data:") :].strip() == "[DONE]":
+            last = text.remainder()
+            if last is not None:
+                yield _sse_format(last)
+            yield "data: [DONE]\n\n"
+            continue
+        chunk = _parse_sse_data(line)
+        if chunk is not None:
+            yield _sse_format(text.chunk(chunk))
+    last = text.remainder()
+    if last is not None:
+        yield _sse_format(last)
 
 
 async def _record_forensic(
@@ -609,13 +742,8 @@ def create_gateway_endpoints(
                 chunks: AsyncIterator[Any] = _sse_events(upstream.aiter_bytes())
                 content_type = upstream.headers.get("content-type") or "text/event-stream"
             else:
-                if cfg.PII_REDACTION_ENABLED:
-                    from admina.sdk.streaming import StreamRedactor
-
-                    redactor = StreamRedactor(state.pii_redactor)
-                else:
-                    redactor = _PassthroughRedactor()
-                chunks = _governed_sse_stream(upstream.aiter_lines(), redactor, model)
+                pii = state.pii_redactor if cfg.PII_REDACTION_ENABLED else None
+                chunks = _governed_sse_stream(upstream.aiter_lines(), pii)
                 content_type = "text/event-stream"
             return StreamingResponse(
                 _relay(chunks, stream_cm, deadline, route),

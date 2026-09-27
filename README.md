@@ -421,7 +421,7 @@ environment variable wins), sets how streamed chat completions are relayed:
 | Mode | Behaviour |
 |---|---|
 | `passthrough` (default) | While no response transformation is active (`PII_REDACTION_ENABLED=false`), the client receives the upstream bytes unchanged, every field included, each SSE event as soon as it is complete. With PII redaction on, the gateway relays as in `governed`. |
-| `governed` | Each SSE chunk is parsed and re-serialised. |
+| `governed` | Each SSE chunk is parsed and re-serialised, one chunk for each upstream chunk, with all of its fields. With PII redaction on, the generated text (`content`, `reasoning_content`, `reasoning`, `refusal`, tool and function call `arguments`), the token texts of `logprobs` and comment lines are redacted; text held back to catch an entity split across chunks is sent with the choice's finish chunk, or in a last chunk at the end of the stream. `data: [DONE]` is sent when the upstream sends it. |
 
 A non-streaming response is forwarded unchanged unless PII redaction is on;
 then the gateway parses it, and a successful response that is not a JSON
