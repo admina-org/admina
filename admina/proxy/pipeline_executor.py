@@ -19,6 +19,8 @@ governance guards) here, so that scanning a long prompt does not hold up
 the event loop that serves every other request and stream.
 
 - At most ``workers`` jobs run at once; further jobs wait for a free thread.
+  The threads, each with its event loop, start with the executor, not on
+  the first jobs.
 - ``timeout`` bounds how long the caller waits for a job, the wait for a
   free thread included: past it the caller gets :class:`PipelineTimeout`
   and a job that has not started is dropped. A job already running cannot
@@ -69,6 +71,20 @@ class PipelineExecutor:
         self._local = threading.local()
         self._loops: list[asyncio.AbstractEventLoop] = []
         self._loops_lock = threading.Lock()
+        self._start_threads()
+
+    def _start_threads(self) -> None:
+        """Start every thread now: the pool starts one per job otherwise,
+        on the path of the first requests."""
+        # Each job waits for the others, so each one needs a thread of its own.
+        all_started = threading.Barrier(self.workers)
+
+        def start() -> None:
+            self._thread_loop()
+            all_started.wait(timeout=10)
+
+        for future in [self._pool.submit(start) for _ in range(self.workers)]:
+            future.exception()  # wait; a broken barrier only leaves threads to start later
 
     async def run(self, fn: Callable[[], T], *, timeout: float = 0.0) -> T:
         """The result of ``fn()``, called in a worker thread.
@@ -82,16 +98,25 @@ class PipelineExecutor:
             RuntimeError: The executor has been shut down.
             Exception: Whatever ``fn()`` raised.
         """
-        future = asyncio.get_running_loop().run_in_executor(self._pool, fn)
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(self._pool, fn)
+        if not timeout:
+            return await future
+        expired = False
+
+        def expire() -> None:
+            nonlocal expired
+            expired = future.cancel()  # a queued job is dropped too
+
+        timer = loop.call_later(timeout, expire)
         try:
-            done, _ = await asyncio.wait({future}, timeout=timeout or None)
-        except BaseException:
-            future.cancel()
+            return await future
+        except asyncio.CancelledError:
+            if expired:
+                raise PipelineTimeout(timeout) from None
             raise
-        if not done:
-            future.cancel()
-            raise PipelineTimeout(timeout)
-        return future.result()
+        finally:
+            timer.cancel()
 
     async def run_coroutine(
         self, factory: Callable[[], Awaitable[T]], *, timeout: float = 0.0

@@ -393,6 +393,19 @@ def test_executor_timeout_cancels_a_queued_job():
     assert not ran.is_set()
 
 
+def test_executor_starts_its_threads_up_front():
+    from admina.proxy.pipeline_executor import PipelineExecutor
+
+    executor = PipelineExecutor(workers=3)
+    try:
+        threads = executor._pool._threads
+        assert len(threads) == 3
+        assert all(thread.is_alive() for thread in threads)
+        assert len(executor._loops) == 3  # one event loop per thread, ready
+    finally:
+        executor.shutdown()
+
+
 def test_executor_default_size_is_the_cpu_count():
     from admina.proxy.pipeline_executor import PipelineExecutor, default_workers
 
