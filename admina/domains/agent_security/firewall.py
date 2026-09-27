@@ -178,10 +178,10 @@ def normalize_text(text: str) -> str:
 # must NOT match) in the same file.
 #
 # Matching time must stay linear in the input length: one whitespace
-# quantifier between two literals, the whitespace inside each optional
-# group, and possessive quantifiers (\s++, \s*+) for a whitespace run
-# followed by a literal. tests/test_firewall_pattern_timing.py times every
-# pattern on 64k-character inputs (see pattern_timing.py).
+# quantifier between two literals, whitespace inside each optional group,
+# possessive quantifiers (\s++, \s*+) before a literal, and no leading
+# repeated class that a search can enter at each position of a long run.
+# tests/test_firewall_pattern_timing.py times every pattern (pattern_timing.py).
 
 # A shared verb list for instruction-override variants. Kept here so it
 # can be shared across the four English regexes (ignore/disregard/forget/

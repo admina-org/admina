@@ -49,8 +49,20 @@ Passing the probe is evidence, not proof: the inputs are derived from the
 pattern source and cannot cover every possible text. Writing one
 whitespace quantifier between two literals, with the whitespace inside
 each optional group, and possessive quantifiers (``\\s++``, ``\\s*+``,
-Python 3.11+) where a quantifier is followed by a literal, keeps a
-pattern linear by construction.
+Python 3.11+) where a quantifier is followed by a literal, keeps the
+backtracking over a whitespace run linear in the length of the run.
+
+That rule does not limit how many positions a search starts from. A
+pattern that begins with a repeated character class can start at every
+position of a long run of that class and read to the end of the run each
+time: ``\\b[\\w.]+=\\d`` passes the probe, yet on ``"a." * 32768`` (no
+``=``) it takes time proportional to the square of the run length. The
+generated inputs contain no such runs; time them with :func:`search_ms`::
+
+    search_ms(re.compile(r"\\b[\\w.]+=\\d"), "a." * 32768)
+
+Anchoring the start of the run, ``(?<![\\w.])[\\w.]++=\\d``, gives one
+attempt per run (a match then starts where the run starts).
 """
 
 from __future__ import annotations

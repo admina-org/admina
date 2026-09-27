@@ -333,8 +333,25 @@ measure_pattern(r"delete\s+user\s+\d+")  # the same, with the slowest input and 
 A result above 50 ms flags a pattern that is too slow on some long input. One
 whitespace quantifier between two literals, with the whitespace inside each
 optional group and possessive quantifiers (`\s++`, `\s*+`) where a whitespace
-run is followed by a literal, keeps the matching time linear in the input
-length.
+run is followed by a literal, keeps the backtracking over a whitespace run
+linear in the length of the run.
+
+That rule does not limit how many positions a search starts from. A pattern
+that begins with a repeated character class can start at every position of a
+long run of that class and read to the end of the run each time:
+`\b[\w.]+=\d` passes the probe, yet takes time proportional to the square of
+the run length on `a.a.a.…` (no `=`). The generated inputs contain no such
+runs, so time them as well:
+
+```python
+import re
+from admina.domains.agent_security.pattern_timing import search_ms
+
+search_ms(re.compile(r"\b[\w.]+=\d"), "a." * 32768)   # ms on a 64k-character run
+```
+
+Anchoring the start of the run, `(?<![\w.])[\w.]++=\d`, gives one attempt per
+run (a match then starts where the run starts).
 
 <a id="compliance-scope"></a>
 
