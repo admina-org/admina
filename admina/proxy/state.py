@@ -96,6 +96,10 @@ class ProxyState:
             "coordination_confirmed": 0,
             "coordination_suspected": 0,
             "coordination_degraded": 0,
+            # X-Admina-Scan-Policy of gateway requests, per outcome.
+            "prescan_accepted": 0,
+            "prescan_ruleset_mismatch": 0,
+            "prescan_malformed": 0,
             "avg_latency_ms": 0.0,
             "started_at": datetime.now(UTC).isoformat(),
         }

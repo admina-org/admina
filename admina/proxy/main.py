@@ -1005,6 +1005,22 @@ async def prometheus_metrics(request: Request) -> Response:
         "Rolling average pipeline latency in milliseconds",
         "gauge",
     )
+    _metric(
+        "prescan_accepted_total",
+        m.get("prescan_accepted", 0),
+        "Gateway requests whose X-Admina-Scan-Policy was applied",
+    )
+    _metric(
+        "prescan_ruleset_mismatch_total",
+        m.get("prescan_ruleset_mismatch", 0),
+        "Gateway requests whose X-Admina-Scan-Policy named a ruleset the proxy "
+        "does not accept (scanned in full)",
+    )
+    _metric(
+        "prescan_malformed_total",
+        m.get("prescan_malformed", 0),
+        "Gateway requests with a malformed X-Admina-Scan-Policy (scanned in full)",
+    )
     for _status, _counter in COORDINATION_COUNTERS.items():
         _metric(
             "coordination_verdicts_total",

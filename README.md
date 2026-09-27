@@ -488,9 +488,63 @@ returns:
   "admina_core_version": null,
   "admina_version": "<version>",
   "accepted_prescan_rulesets": ["<64 hex>"],
-  "prescan_tags": []
+  "prescan_tags": [],
+  "scan_roles": ["system", "user", "assistant", "tool"]
 }
 ```
+
+#### Scan scope
+
+The firewall of the gateway scans the messages whose role is in
+`ADMINA_GATEWAY_SCAN_ROLES` (comma-separated, among `system`, `user`,
+`assistant` and `tool`; default all four). Messages with any other role, or
+none, are always scanned. The scan scope applies to the firewall only: PII
+redaction and governance guards still see every message.
+
+A caller that has already scanned part of a prompt, for example retrieved
+documents scanned with the SDK, can narrow the scan of one request with the
+`X-Admina-Scan-Policy` header:
+
+```
+X-Admina-Scan-Policy: v1; roles=user,tool; prescanned=source,document; ruleset=<sha256>
+```
+
+| Field | Meaning |
+|---|---|
+| `v1` | format version (required, first) |
+| `roles` | scan only these of the configured roles (optional) |
+| `prescanned` | skip the text of `<tag …>…</tag>` blocks of these tags (optional); only tags listed in `gateway.prescan_tags` of `admina.yaml` are skipped |
+| `ruleset` | `ruleset_sha256()` of the rules the caller scanned with (required) |
+
+The policy applies only when `ruleset` is the proxy's own ruleset or one listed
+in `gateway.prescan_rulesets`:
+
+```yaml
+gateway:
+  prescan_tags: [source, document]
+  prescan_rulesets: ["<sha256 of the caller's rules>"]
+```
+
+Otherwise, or when the header is malformed (unknown version or field, duplicate
+field, unknown role, invalid tag name or ruleset, more than one header), the
+request is scanned in full, never refused. A block is skipped only when each
+of its tags pairs up (an opening tag followed by its closing tag); an unclosed,
+nested or stray tag leaves the whole text to the scan. Tag names are
+case-sensitive. The caller must keep these tags out of text written by
+untrusted parties, because the gateway cannot tell such text from its own
+blocks.
+
+The `gateway_request` forensic record carries the outcome:
+
+```json
+"prescan": {"accepted": true, "status": "accepted", "roles": ["user", "tool"],
+            "tags": ["document", "source"], "ruleset": "<sha256>"}
+```
+
+`status` is `none` (no header), `accepted`, `ruleset_mismatch` or `malformed`;
+`roles` and `tags` are what was applied, `ruleset` what the header declared.
+`/metrics` counts the policies: `admina_prescan_accepted_total`,
+`admina_prescan_ruleset_mismatch_total` and `admina_prescan_malformed_total`.
 
 <a id="compliance-scope"></a>
 

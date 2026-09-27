@@ -27,7 +27,10 @@ Routes (prefix /v1):
 
 Every chat completion response carries ``X-Admina-Ruleset``, the
 :func:`~admina.domains.agent_security.ruleset.ruleset_sha256` of the rules
-the gateway scans with (see :mod:`admina.proxy.gateway_scan`).
+the gateway scans with (see :mod:`admina.proxy.gateway_scan`). The firewall
+scans the messages of the roles in ``ADMINA_GATEWAY_SCAN_ROLES``, narrowed
+by an accepted ``X-Admina-Scan-Policy`` (see
+:mod:`admina.domains.agent_security.scan_policy`).
 
 Both forward to the upstream route named by the ``X-Admina-Upstream``
 request header, or to the default route without it (see
@@ -67,6 +70,14 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from admina import __version__
 from admina.core.types import EventType
 from admina.domains.agent_security.egress import resolve_egress_mode
+from admina.domains.agent_security.scan_policy import (
+    SCAN_POLICY_HEADER,
+    SCAN_ROLES,
+    ScanScope,
+    parse_scan_roles,
+    resolve_scan_scope,
+    scope_texts,
+)
 from admina.domains.governance import run_pipeline, safe_serialize
 from admina.proxy.gateway_scan import (
     RULESET_HEADER,
@@ -105,6 +116,20 @@ def _scan_config(state: Any) -> GatewayScanConfig:
     """The scan settings resolved at startup, or the defaults for a router
     used without them."""
     return getattr(state, "gateway_scan", None) or default_gateway_scan_config()
+
+
+def _scan_scope(request: Request, state: Any, cfg: Any, scan: GatewayScanConfig) -> ScanScope:
+    """The scan scope of *request*; a scan policy is counted by outcome."""
+    scope = resolve_scan_scope(
+        request.headers.getlist(SCAN_POLICY_HEADER),
+        scan_roles=parse_scan_roles(cfg.ADMINA_GATEWAY_SCAN_ROLES),
+        prescan_tags=scan.prescan_tags,
+        accepted_rulesets=scan.accepted_rulesets,
+    )
+    inc_metric = getattr(state, "inc_metric", None)
+    if scope.status != "none" and inc_metric is not None:
+        inc_metric(f"prescan_{scope.status}")
+    return scope
 
 
 def _error(message: str, error_type: str, code: str) -> dict:
@@ -497,9 +522,12 @@ async def _record_forensic(
     action: str,
     risk_level: str,
     pre: Any,
+    prescan: dict,
 ) -> None:
     """Record the gateway request to the forensic log — the fifth surface
-    on the canonical pipeline. Runs off the event loop like /mcp does."""
+    on the canonical pipeline. Runs off the event loop like /mcp does.
+
+    *prescan* is the scan scope (:meth:`ScanScope.record`)."""
     if forensic_box is None:
         return
     loop = asyncio.get_running_loop()
@@ -517,6 +545,7 @@ async def _record_forensic(
                 "risk_level": risk_level,
                 "governance_latency_ms": round(pre.latency_ms, 2),
                 "checks": {k: safe_serialize(v) for k, v in pre.checks.items()},
+                "prescan": prescan,
             }
         ),
     )
@@ -641,7 +670,9 @@ async def _relay(
         await stream_cm.__aexit__(None, None, None)
 
 
-async def _chat_completion(request: Request, state: Any, cfg: Any) -> Response:
+async def _chat_completion(
+    request: Request, state: Any, cfg: Any, scan: GatewayScanConfig
+) -> Response:
     """Govern one chat completion and relay it upstream (the route handler
     adds the ruleset header)."""
     route = _select_upstream(request, state, cfg)
@@ -668,6 +699,7 @@ async def _chat_completion(request: Request, state: Any, cfg: Any) -> Response:
             ),
         )
     event_id = uuid.uuid4().hex
+    scope = _scan_scope(request, state, cfg, scan)
 
     pre = await run_pipeline(
         body={"params": {"messages": messages}},
@@ -687,6 +719,7 @@ async def _chat_completion(request: Request, state: Any, cfg: Any) -> Response:
         guard_fail_mode=cfg.GUARD_FAIL_MODE,
         egress_policy=state.egress_policy,
         egress_mode=resolve_egress_mode(cfg.GOVERNANCE_MODE),
+        scan_texts=scope_texts(messages, scope),
     )
     action = pre.gov_response.action  # uppercase: ALLOW/BLOCK/CIRCUIT_BREAK
 
@@ -699,6 +732,7 @@ async def _chat_completion(request: Request, state: Any, cfg: Any) -> Response:
         action=action,
         risk_level=pre.gov_response.risk_level,
         pre=pre,
+        prescan=scope.record(),
     )
 
     block_message = cfg.ADMINA_GATEWAY_BLOCK_MESSAGE
@@ -820,13 +854,15 @@ def create_gateway_endpoints(
     @router.post("/chat/completions", summary="Governed OpenAI chat completions")
     async def chat_completions(request: Request) -> Response:
         state = get_state()
-        response = await _chat_completion(request, state, get_settings())
-        response.headers[RULESET_HEADER] = _scan_config(state).ruleset_sha256
+        scan = _scan_config(state)
+        response = await _chat_completion(request, state, get_settings(), scan)
+        response.headers[RULESET_HEADER] = scan.ruleset_sha256
         return response
 
     @router.get("/admina/ruleset", summary="Active firewall ruleset")
     async def active_ruleset() -> dict[str, Any]:
         scan = _scan_config(get_state())
+        roles = parse_scan_roles(get_settings().ADMINA_GATEWAY_SCAN_ROLES)
         return {
             "ruleset_sha256": scan.ruleset_sha256,
             "engine": scan.engine,
@@ -834,6 +870,7 @@ def create_gateway_endpoints(
             "admina_version": __version__,
             "accepted_prescan_rulesets": list(scan.accepted_rulesets),
             "prescan_tags": sorted(scan.prescan_tags),
+            "scan_roles": [role for role in SCAN_ROLES if role in roles],
         }
 
     return router

@@ -93,6 +93,7 @@ def _settings(**over):
         GUARD_FAIL_MODE="open",
         ADMINA_GATEWAY_MAX_PROMPT_CHARS=0,
         ADMINA_GATEWAY_TIMEOUT_TOTAL=0.0,
+        ADMINA_GATEWAY_SCAN_ROLES="system,user,assistant,tool",
     )
     base.update(over)
     return SimpleNamespace(**base)

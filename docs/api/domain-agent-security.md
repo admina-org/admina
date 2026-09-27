@@ -16,6 +16,11 @@
 ::: domains.agent_security.ruleset
 
 
+## Scan Scope
+
+::: domains.agent_security.scan_policy
+
+
 ## Loop Breaker
 
 ::: domains.agent_security.loop_breaker

@@ -24,6 +24,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from admina.core.config import GATEWAY_STREAM_MODES
 from admina.core.types import EventType, GovernanceAction, RiskLevel
+from admina.domains.agent_security.scan_policy import SCAN_ROLES, parse_scan_roles
 from admina.domains.governance import normalize_guard_fail_mode
 
 
@@ -203,6 +204,17 @@ class Settings(BaseSettings):
     # Connection pool of the gateway's upstream client (all routes).
     ADMINA_GATEWAY_MAX_CONNECTIONS: int = Field(default=100, ge=1)
     ADMINA_GATEWAY_MAX_KEEPALIVE_CONNECTIONS: int = Field(default=20, ge=0)
+    # Message roles the gateway's firewall scans, comma-separated, among
+    # system, user, assistant and tool (empty = all four). Messages with any
+    # other role are always scanned. A request can narrow the scan further
+    # with X-Admina-Scan-Policy, never widen it.
+    ADMINA_GATEWAY_SCAN_ROLES: str = ",".join(SCAN_ROLES)
+
+    @field_validator("ADMINA_GATEWAY_SCAN_ROLES")
+    @classmethod
+    def validate_gateway_scan_roles(cls, v: str) -> str:
+        roles = parse_scan_roles(v)
+        return ",".join(role for role in SCAN_ROLES if role in roles)
 
     @field_validator("ADMINA_GATEWAY_STREAM_MODE")
     @classmethod

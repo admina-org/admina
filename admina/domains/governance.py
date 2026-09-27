@@ -89,6 +89,7 @@ async def run_pipeline(
     guard_fail_mode: str = "open",
     egress_policy: Any = None,
     egress_mode: str = "observe",
+    scan_texts: list[str] | None = None,
 ) -> GovernanceResult:
     """Execute the full governance pipeline and return a GovernanceResult.
 
@@ -111,6 +112,9 @@ async def run_pipeline(
     disabled egress control). ``egress_mode`` is ``"observe"`` (default) or
     ``"enforce"``, typically produced by
     :func:`~admina.domains.agent_security.egress.resolve_egress_mode`.
+
+    ``scan_texts`` are the texts the firewall scans; ``None`` (default)
+    scans every string of ``body``, keys included.
     """
     start_time = time.perf_counter()
     result = GovernanceResult()
@@ -129,7 +133,7 @@ async def run_pipeline(
 
     # 2. Anti-Injection Firewall
     if result.action != GovernanceAction.CIRCUIT_BREAK and injection_enabled:
-        texts_to_scan = _extract_text_fields(body)
+        texts_to_scan = _extract_text_fields(body) if scan_texts is None else scan_texts
         for text in texts_to_scan:
             fw_result = firewall.check(text)
             result.checks["firewall"] = fw_result
