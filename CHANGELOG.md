@@ -11,6 +11,13 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- Local make targets that mirror the CI jobs: `make ci-local`, `make ci-linux`
+  and `make ci-audit` (see `make help`).
+
 ## [0.12.1] — 2026-MM-DD
 
 Patch release: hardened dashboard session handling. Upgrading is
