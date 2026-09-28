@@ -204,8 +204,9 @@ _FALSE_WORDS = frozenset({"0", "false", "no", "off", "f", "n"})
 
 
 def _deep_path_from_env() -> bool:
-    """``INJECTION_DEEP_PATH_ENABLED``: False for 0, false, no, off (any
-    case); True otherwise, and when unset or empty."""
+    """``INJECTION_DEEP_PATH_ENABLED``: False for 0, false, f, no, n, off
+    (any case, as the proxy settings read it); True otherwise, and when
+    unset or empty."""
     return os.environ.get(DEEP_PATH_ENV, "").strip().lower() not in _FALSE_WORDS
 
 
