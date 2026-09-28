@@ -19,8 +19,9 @@ check digits and upper-case letters and digits up to the country's length
 (Italy: 27 characters), written compact or with a single space before any
 character after the check digits, and not followed by a letter or a digit.
 Its ISO 7064 mod-97 checksum must be valid. :data:`IBAN_RX` finds where an
-IBAN may start; :func:`iter_iban_matches` reads each one from there, in time
-linear in ``len(text)`` (at most 67 characters per start).
+IBAN may start; :func:`iter_iban_matches` reads each one from there with a
+regular expression of its country's length, in time linear in ``len(text)``
+(at most 67 characters per start).
 """
 
 from __future__ import annotations
@@ -49,6 +50,16 @@ IBAN_RX = re.compile(r"(?<![A-Za-z0-9])[A-Z]{2}[0-9]{2}(?= ?[A-Z0-9])")
 """Where an IBAN may start: a country code and two check digits."""
 
 _CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+
+# The characters after the check digits, for each length: each one after an
+# optional single space, then no letter or digit.
+_REST_RX: dict[int, re.Pattern[str]] = {
+    count: re.compile(rf"(?: ?[A-Z0-9]){{{count}}}(?![^\W_])")
+    for count in {length - 4 for length in IBAN_LENGTHS.values()}
+}
+
+# Letters as the numbers of the mod-97 check (A = 10, …, Z = 35).
+_AS_DIGITS = str.maketrans({chr(code): str(code - 55) for code in range(ord("A"), ord("Z") + 1)})
 
 
 @dataclass(frozen=True)
@@ -79,28 +90,7 @@ def is_valid_iban(value: str) -> bool:
         return False
     if not compact[2:4].isdigit():
         return False
-    remainder = 0
-    for char in compact[4:] + compact[:4]:
-        for digit in str(int(char, 36)):
-            remainder = (remainder * 10 + int(digit)) % 97
-    return remainder == 1
-
-
-def _end_of_iban(text: str, position: int, count: int) -> int | None:
-    """Where the *count* IBAN characters from *position* end (a single space
-    may come before each one), or None when they are not there or are
-    followed by a letter or a digit."""
-    size = len(text)
-    while count:
-        if position < size and text[position] == " ":
-            position += 1
-        if position >= size or text[position] not in _CHARS:
-            return None
-        position += 1
-        count -= 1
-    if position < size and text[position].isalnum():
-        return None
-    return position
+    return int((compact[4:] + compact[:4]).translate(_AS_DIGITS)) % 97 == 1
 
 
 def iter_iban_matches(text: str) -> Iterator[IbanMatch]:
@@ -113,9 +103,10 @@ def iter_iban_matches(text: str) -> Iterator[IbanMatch]:
         length = IBAN_LENGTHS.get(text[start : start + 2])
         if length is None:
             continue
-        end = _end_of_iban(text, candidate.end(), length - 4)
-        if end is None:
+        rest = _REST_RX[length - 4].match(text, candidate.end())
+        if rest is None:
             continue
+        end = rest.end()
         value = text[start:end]
         if is_valid_iban(value):
             yield IbanMatch(start, end, value)
