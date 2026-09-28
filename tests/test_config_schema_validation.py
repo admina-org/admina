@@ -284,6 +284,11 @@ def test_every_unknown_key_is_listed_once(tmp_path):
         ("pii_engine: [spacy-regex]\n", "pii_engine: must be a string"),
         ("plugins: example_plugin\n", "plugins: must be a list of strings"),
         ("alert_channels: {type: log}\n", "alert_channels: must be a list of mappings"),
+        ("alert_channels: [log]\n", "alert_channels: must be a list of mappings"),
+        (
+            "domains:\n  agent_security:\n    firewall:\n      custom_patterns: {regex: x}\n",
+            "domains.agent_security.firewall.custom_patterns: must be a list",
+        ),
         ("schema_version: one\n", "schema_version: must be an integer"),
     ],
 )
