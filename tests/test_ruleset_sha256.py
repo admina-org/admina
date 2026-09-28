@@ -60,12 +60,12 @@ def _custom_config() -> FirewallConfig:
 
 _RUST_CANONICAL = (
     b'{"admina_version":"0.13.0","builtin":{"admina_core_version":"0.9.3"},'
-    b'"custom_patterns":[],"disabled_categories":[],"engine":"rust",'
+    b'"custom_patterns":[],"disabled_categories":[],"disabled_patterns":[],"engine":"rust",'
     b'"heuristic_threshold_milli":700,"pattern_packs":[]}'
 )
-_RUST_VECTOR = "891f57c384fdca649dc4cd0bccf012171fb25ee1ca74c0ffc9716326866563f7"
-_PYTHON_VECTOR = "6238f5e45ab738e835b2d68d860f745220b006f1e8f534fc159c95cc1bb9e5ff"
-_PYTHON_CUSTOM_VECTOR = "b4b47c2298b1f2c5822456a8d74cb301bf4cd2cf676f3ab0a8e82164da682e11"
+_RUST_VECTOR = "f3302142af311422e4eb8f3821adff008f20caafbb7d1bcff8aacb046613a1c3"
+_PYTHON_VECTOR = "3486a8b0056ec3169abf913986fb7f54bbc942f44464c055eae5b65cd9158217"
+_PYTHON_CUSTOM_VECTOR = "cf5c6ddf4f808f3fb22255bcad12d06368e38008595de0be66ff15f40e1a3ee2"
 
 
 def test_rust_vector_canonical_bytes():
@@ -94,6 +94,7 @@ def test_python_vector_object():
         "pattern_packs": [],
         "custom_patterns": [],
         "disabled_categories": [],
+        "disabled_patterns": [],
         "heuristic_threshold_milli": 700,
     }
 
@@ -179,6 +180,8 @@ def test_changes_with_a_builtin_pattern(monkeypatch):
         {"custom_patterns": []},
         {"disabled_categories": []},
         {"disabled_categories": ["tool_abuse", "jailbreak"]},
+        {"disabled_patterns": ["role_hijack.en.1"]},
+        {"disabled_patterns": ["role_hijack.en.1", "role_hijack.en.2"]},
         {"pattern_packs": []},
         {"pattern_packs": ["example-pack", "second-pack"]},
         {"heuristic_threshold": 0.5},
@@ -190,6 +193,8 @@ def test_changes_with_a_builtin_pattern(monkeypatch):
         "no-custom",
         "no-disabled",
         "more-disabled",
+        "disabled-id",
+        "more-disabled-ids",
         "no-packs",
         "more-packs",
         "threshold",
@@ -197,6 +202,20 @@ def test_changes_with_a_builtin_pattern(monkeypatch):
 )
 def test_changes_with_the_configuration(change):
     assert ruleset_sha256(replace(_custom_config(), **change)) != ruleset_sha256(_custom_config())
+
+
+def test_disabled_patterns_are_sorted_without_duplicates():
+    a = replace(_custom_config(), disabled_patterns=["tool_abuse.en.2", "jailbreak.en.1"] * 2)
+    b = replace(_custom_config(), disabled_patterns=["jailbreak.en.1", "tool_abuse.en.2"])
+    assert ruleset_object(a)["disabled_patterns"] == ["jailbreak.en.1", "tool_abuse.en.2"]
+    assert ruleset_sha256(a) == ruleset_sha256(b)
+
+
+def test_disabled_patterns_keep_the_builtin_list():
+    """The builtin list leaves out disabled categories only; disabled ids
+    are listed in ``disabled_patterns``."""
+    cfg = FirewallConfig(disabled_patterns=["role_hijack.en.1"])
+    assert ruleset_object(cfg)["builtin"] == ruleset_object(FirewallConfig())["builtin"]
 
 
 def test_changes_with_the_admina_version():
@@ -274,7 +293,7 @@ def test_threshold_must_be_a_number(threshold):
 
 @pytest.mark.parametrize(
     "change",
-    [{"pattern_packs": [1]}, {"disabled_categories": [None]}],
+    [{"pattern_packs": [1]}, {"disabled_categories": [None]}, {"disabled_patterns": [2]}],
 )
 def test_names_must_be_strings(change):
     with pytest.raises(ValueError):

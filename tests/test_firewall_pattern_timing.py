@@ -54,7 +54,7 @@ SIZE = pt.DEFAULT_SIZE
 
 _BUILTINS = firewall.COMPILED_PATTERNS
 _INDICES = range(len(_BUILTINS))
-_IDS = [f"{index:02d}-{name}" for index, (_, name, _) in enumerate(_BUILTINS)]
+_IDS = list(firewall.BUILTIN_PATTERN_IDS)
 _CATEGORIES = sorted({name for _, name, _ in firewall.INJECTION_PATTERNS})
 
 

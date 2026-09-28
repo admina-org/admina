@@ -183,6 +183,8 @@ class FirewallConfig:
     heuristic_threshold: float = 0.7
     custom_patterns: list[dict] = field(default_factory=list)
     disabled_categories: list[str] = field(default_factory=list)
+    # Ids of the patterns left out (builtin, pack-qualified or custom.<n>).
+    disabled_patterns: list[str] = field(default_factory=list)
     # Names of the pattern packs listed in admina.yaml, in order.
     pattern_packs: list[str] = field(default_factory=list)
 
@@ -442,6 +444,21 @@ def _string_list(
     return list(values)
 
 
+def _firewall_strings(raw: dict, key: str) -> list[str]:
+    """``agent_security.firewall.<key>``: a list of strings (missing or
+    empty: ``[]``).
+
+    Raises:
+        ValueError: the value is not a list of strings.
+    """
+    values = raw.get(key)
+    if values is None:
+        return []
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise ValueError(f"admina.yaml: agent_security.firewall.{key} must be a list of strings")
+    return list(values)
+
+
 def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
     """Build an :class:`AdminaConfig` from a parsed YAML dict."""
     domains = data.get("domains", {})
@@ -529,6 +546,7 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
             heuristic_threshold=fw_raw.get("heuristic_threshold", 0.7),
             custom_patterns=list(fw_raw.get("custom_patterns") or []),
             disabled_categories=list(fw_raw.get("disabled_categories") or []),
+            disabled_patterns=_firewall_strings(fw_raw, "disabled_patterns"),
             pattern_packs=list(fw_raw.get("pattern_packs") or []),
         ),
         loop_breaker=LoopBreakerConfig(

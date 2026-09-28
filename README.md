@@ -340,6 +340,29 @@ cp admina.yaml.example admina.yaml   # Copy and customize
 
 See [`admina.yaml.example`](https://github.com/admina-org/admina/blob/main/admina.yaml.example) for all options including domains, AI infra, plugins, dashboard, forensic storage, alert channels, and integrations.
 
+### Firewall patterns
+
+Every firewall pattern has a stable id, reported with each match in
+`patterns[].id` of the firewall check and of the forensic record:
+`<category>.<language>.<n>` for the builtin categories written in English or
+in several languages (`instruction_override.en.1`, `multilang_evasion.it.2`),
+`<category>.<n>` for the `it_*` categories, and `custom.<n>` for the entries
+of `custom_patterns`, in their order. An id never changes and is never
+reused. `agent_security.firewall.disabled_patterns` leaves out single
+patterns by id, where `disabled_categories` leaves out whole categories; an
+unknown id is logged as a warning:
+
+```yaml
+domains:
+  agent_security:
+    firewall:
+      disabled_patterns: [tool_abuse.en.4]
+```
+
+`disabled_patterns` and `custom_patterns` apply to the Python firewall only:
+with either set, `get_firewall()` uses the Python firewall even when the
+Rust engine is selected.
+
 Custom firewall rules (`agent_security.firewall.custom_patterns`) run on
 Python's backtracking `re` engine. Check each one on long inputs before
 deploying it:
@@ -968,8 +991,8 @@ the loop.
 rules a configuration applies: the SHA-256, as 64 lowercase hex characters, of
 the RFC 8785 (JCS) serialisation of the Admina version, the engine, the active
 builtin patterns (Python engine) or the `admina-core` version (Rust engine),
-`pattern_packs`, `custom_patterns`, `disabled_categories` and
-`heuristic_threshold` in thousandths. The exact form is in the module
+`pattern_packs`, `custom_patterns`, `disabled_categories`,
+`disabled_patterns` and `heuristic_threshold` in thousandths. The exact form is in the module
 docstring. The SDK can compute it from `admina.yaml` without the proxy:
 
 ```python

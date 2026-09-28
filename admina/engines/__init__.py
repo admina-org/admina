@@ -25,13 +25,14 @@ import logging
 import os
 import re
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
 from admina.core.offline import apply_offline_environment
 from admina.engines.pii_plugins import PIIEngineBridge, load_plugin_engine, plugin_engine_names
 
 if TYPE_CHECKING:
-    from admina.core.config import AdminaConfig
+    from admina.core.config import AdminaConfig, FirewallConfig
     from admina.domains.agent_security.egress import EgressPolicy
 
 logger = logging.getLogger("admina.engines")
@@ -117,6 +118,31 @@ def _resolve_pii_engine() -> str:
 # ── Firewall YAML overrides ─────────────────────────────────────────────────
 
 
+def _firewall_config() -> FirewallConfig | None:
+    """``agent_security.firewall`` of admina.yaml (or of the .env fallback);
+    None when the file cannot be read, except for a file named by
+    ``ADMINA_CONFIG``, whose failure raises
+    :class:`~admina.core.config.ConfigFileError`."""
+    try:
+        from admina.core.config import load_config
+
+        return load_config().agent_security.firewall
+    except (ImportError, AttributeError, OSError) as exc:
+        logger.debug("Firewall YAML overrides unavailable: %s", exc)
+        return None
+
+
+def _custom_patterns(fw_cfg: FirewallConfig) -> list:
+    from admina.domains.agent_security.firewall import parse_custom_patterns
+
+    return parse_custom_patterns(
+        fw_cfg.custom_patterns,
+        on_error=lambda entry, exc: logger.warning(
+            "Skipping malformed custom_pattern %r: %s", entry, exc
+        ),
+    )
+
+
 def _load_firewall_yaml_overrides() -> tuple[list, list]:
     """Read agent_security.firewall.{custom_patterns,disabled_categories}
     from admina.yaml if present. Falls back to no overrides when the file
@@ -124,23 +150,37 @@ def _load_firewall_yaml_overrides() -> tuple[list, list]:
     failure raises :class:`~admina.core.config.ConfigFileError`.
     Each custom pattern in YAML is ``{regex, category, risk_level}``.
     """
-    extras: list = []
-    disabled: list = []
-    try:
-        from admina.core.config import load_config
-        from admina.domains.agent_security.firewall import parse_custom_patterns
+    fw_cfg = _firewall_config()
+    if fw_cfg is None:
+        return [], []
+    return _custom_patterns(fw_cfg), list(fw_cfg.disabled_categories)
 
-        fw_cfg = load_config().agent_security.firewall
-        disabled = list(fw_cfg.disabled_categories)
-        extras = parse_custom_patterns(
-            fw_cfg.custom_patterns,
-            on_error=lambda entry, exc: logger.warning(
-                "Skipping malformed custom_pattern %r: %s", entry, exc
-            ),
-        )
-    except (ImportError, AttributeError, OSError) as exc:
-        logger.debug("Firewall YAML overrides unavailable: %s", exc)
-    return extras, disabled
+
+@dataclass(frozen=True)
+class _FirewallSettings:
+    """The firewall settings of admina.yaml that the Python firewall applies."""
+
+    extras: list = field(default_factory=list)
+    disabled_categories: list[str] = field(default_factory=list)
+    disabled_patterns: list[str] = field(default_factory=list)
+
+    @property
+    def python_only(self) -> bool:
+        """True when a setting only the Python firewall applies is set."""
+        return bool(self.extras or self.disabled_categories or self.disabled_patterns)
+
+
+def _firewall_settings() -> _FirewallSettings:
+    """The :class:`_FirewallSettings` of admina.yaml (none when the file
+    cannot be read, as :func:`_firewall_config`)."""
+    fw_cfg = _firewall_config()
+    if fw_cfg is None:
+        return _FirewallSettings()
+    return _FirewallSettings(
+        extras=_custom_patterns(fw_cfg),
+        disabled_categories=list(fw_cfg.disabled_categories),
+        disabled_patterns=list(fw_cfg.disabled_patterns),
+    )
 
 
 # ── Bridge Protocols ────────────────────────────────────────────────────────
@@ -175,20 +215,23 @@ class _PythonFirewallBridge:
 
     engine = "python"
 
-    def __init__(self, extras: list | None = None, disabled: list | None = None):
+    def __init__(self, settings: _FirewallSettings | None = None):
         from admina.domains.agent_security.firewall import InjectionFirewall
 
-        if extras is None and disabled is None:
-            extras, disabled = _load_firewall_yaml_overrides()
-        if extras or disabled:
+        if settings is None:
+            settings = _firewall_settings()
+        if settings.python_only:
             logger.info(
-                "Loaded %d custom firewall pattern(s); disabled: %s",
-                len(extras),
-                disabled or "(none)",
+                "Loaded %d custom firewall pattern(s); disabled categories: %s; "
+                "disabled patterns: %s",
+                len(settings.extras),
+                settings.disabled_categories or "(none)",
+                settings.disabled_patterns or "(none)",
             )
         self._impl = InjectionFirewall(
-            extra_patterns=extras or None,
-            disabled_categories=disabled or None,
+            extra_patterns=settings.extras or None,
+            disabled_categories=settings.disabled_categories or None,
+            disabled_patterns=settings.disabled_patterns,
         )
 
     def check(self, text: str) -> dict:
@@ -356,23 +399,25 @@ class _RustLoopBridge:
 def get_firewall() -> FirewallBridge:
     """Get the configured firewall engine.
 
-    If YAML overrides (custom_patterns or disabled_categories) are present,
-    the Python bridge is used even when Rust is available — Rust cannot
-    receive operator-defined patterns, so using it would silently ignore them.
+    If YAML overrides (custom_patterns, disabled_categories or
+    disabled_patterns) are present, the Python bridge is used even when Rust
+    is available — Rust cannot receive operator-defined patterns, so using
+    it would silently ignore them.
     """
-    extras, disabled = _load_firewall_yaml_overrides()
-    if extras or disabled:
+    settings = _firewall_settings()
+    if settings.python_only:
         resolved = _resolve_engine()
         if resolved == "rust":
             logger.warning(
-                "YAML firewall overrides (custom_patterns/disabled_categories) are set "
-                "but the Rust engine cannot apply them — falling back to the Python bridge "
-                "so operator rules are enforced. Remove overrides to use Rust acceleration."
+                "YAML firewall overrides (custom_patterns/disabled_categories/"
+                "disabled_patterns) are set but the Rust engine cannot apply them — "
+                "falling back to the Python bridge so operator rules are enforced. "
+                "Remove overrides to use Rust acceleration."
             )
-        return _PythonFirewallBridge(extras=extras, disabled=disabled)
+        return _PythonFirewallBridge(settings)
     if _resolve_engine() == "rust":
         return _RustFirewallBridge()
-    return _PythonFirewallBridge()
+    return _PythonFirewallBridge(settings)
 
 
 def get_loop_breaker(**kwargs: Any) -> LoopBreakerBridge:

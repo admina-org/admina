@@ -23,11 +23,20 @@ import re
 import time
 import unicodedata
 from collections.abc import Callable, Iterable
-from typing import Any
+from typing import Any, NamedTuple
 
 from admina.core.types import RiskLevel
 
 logger = logging.getLogger("admina.firewall")
+
+
+class FirewallPattern(NamedTuple):
+    """A firewall pattern with its stable id."""
+
+    id: str
+    regex: str
+    category: str
+    risk_level: RiskLevel
 
 
 # ── Text normalization (run BEFORE regex matching) ─────────────
@@ -171,6 +180,15 @@ def normalize_text(text: str) -> str:
 # Patterns are matched against BOTH the raw input and the normalised
 # input (see normalize_text above), which neutralises common evasions.
 #
+# Every builtin pattern has a stable id, reported with each match and
+# accepted by agent_security.firewall.disabled_patterns:
+# <category>.<language>.<n> for the categories written in English or in
+# several languages (en, it, fr, es, de), <category>.<n> for the it_*
+# categories, whose name carries the language. n counts from 1 in pattern
+# order within the category (and language). An id never changes and is
+# never reused: a new pattern takes the next number, and the number of a
+# removed pattern stays retired.
+#
 # Coverage targets per the v0.9 release MODEL_CARD: instruction_override,
 # role_hijack, prompt_extraction, jailbreak, delimiter_injection,
 # data_exfiltration, tool_abuse, obfuscation, multilang_evasion.
@@ -201,37 +219,54 @@ _OVERRIDE_TARGETS = (
     r"guardrails?|restrictions?|policies|the\s+above|everything|filters?|safeguards?)"
 )
 
-INJECTION_PATTERNS = [
+BUILTIN_PATTERNS: tuple[FirewallPattern, ...] = (
     # ─── 1. Direct instruction override (English) ───────────────
-    (
+    FirewallPattern(
+        "instruction_override.en.1",
         rf"{_OVERRIDE_VERBS}\s++{_OVERRIDE_QUAL}{_OVERRIDE_TARGETS}",
         "instruction_override",
         RiskLevel.CRITICAL,
     ),
     # Imperative chain (multiple short verbs separated by punctuation):
     # "Ignore. Forget. Override. Reveal everything."
-    (
+    FirewallPattern(
+        "instruction_override.en.2",
         r"\b(?:ignore|disregard|forget|override|bypass)\b[\s.;,!]+"
         r"\b(?:ignore|disregard|forget|override|bypass|reveal|expose|leak)\b",
         "instruction_override",
         RiskLevel.HIGH,
     ),
     # ─── 2. Role hijacking ─────────────────────────────────────
-    (r"you\s+are\s+now\s+(?:a|an|the|in)\s+", "role_hijack", RiskLevel.HIGH),
-    (r"act\s+as\s+(?:a|an|if\s+you\s+were|DAN|AIM|STAN|DUDE)\b", "role_hijack", RiskLevel.HIGH),
-    (r"pretend\s+(?:to\s+be|you\s+are|that\s+you)\s+", "role_hijack", RiskLevel.HIGH),
-    (
+    FirewallPattern(
+        "role_hijack.en.1", r"you\s+are\s+now\s+(?:a|an|the|in)\s+", "role_hijack", RiskLevel.HIGH
+    ),
+    FirewallPattern(
+        "role_hijack.en.2",
+        r"act\s+as\s+(?:a|an|if\s+you\s+were|DAN|AIM|STAN|DUDE)\b",
+        "role_hijack",
+        RiskLevel.HIGH,
+    ),
+    FirewallPattern(
+        "role_hijack.en.3",
+        r"pretend\s+(?:to\s+be|you\s+are|that\s+you)\s+",
+        "role_hijack",
+        RiskLevel.HIGH,
+    ),
+    FirewallPattern(
+        "role_hijack.en.4",
         r"(?:let'?s|let\s+us)\s+(?:roleplay|role\s+play|pretend|imagine)\b",
         "role_hijack",
         RiskLevel.HIGH,
     ),
-    (
+    FirewallPattern(
+        "role_hijack.en.5",
         r"from\s+now\s+on,?\s+you\s+(?:will|must|should|are|have\s+to)\s+",
         "role_hijack",
         RiskLevel.HIGH,
     ),
     # ─── 3. System prompt extraction ───────────────────────────
-    (
+    FirewallPattern(
+        "prompt_extraction.en.1",
         r"(?:show|reveal|display|print|output|repeat|echo|tell|give|share|expose)"
         r"\s++(?:me\s++)?(?:(?:your|the)\s*+)?"
         r"(?:full\s+|complete\s+|original\s+|initial\s+|verbatim\s+)?"
@@ -240,7 +275,8 @@ INJECTION_PATTERNS = [
         "prompt_extraction",
         RiskLevel.HIGH,
     ),
-    (
+    FirewallPattern(
+        "prompt_extraction.en.2",
         r"what\s+(?:are|is)\s+(?:your|the)\s+"
         r"(?:system\s+|hidden\s+|internal\s+|original\s+|initial\s+)?"
         r"(?:prompt|instructions?|rules?|guidelines?|configuration)",
@@ -249,31 +285,47 @@ INJECTION_PATTERNS = [
     ),
     # ─── 4. Jailbreak / mode-toggle ────────────────────────────
     # All "<noun> mode <toggle>" variants in one regex.
-    (
+    FirewallPattern(
+        "jailbreak.en.1",
         r"\b(?:DAN|do\s+anything\s+now|developer|admin|debug|maintenance|"
         r"god|sudo|root|jailbreak|uncensored|unrestricted)\s+mode\s+"
         r"(?:enabled|activated|on|engaged|unlock(?:ed)?)\b",
         "jailbreak",
         RiskLevel.CRITICAL,
     ),
-    (r"\bDAN\s+(?:mode|prompt)\b", "jailbreak", RiskLevel.CRITICAL),
-    (
+    FirewallPattern(
+        "jailbreak.en.2", r"\bDAN\s+(?:mode|prompt)\b", "jailbreak", RiskLevel.CRITICAL
+    ),
+    FirewallPattern(
+        "jailbreak.en.3",
         r"\b(?:do\s+anything\s+now|always\s+intelligent\s+(?:and\s+)?machiavellian)\b",
         "jailbreak",
         RiskLevel.CRITICAL,
     ),
     # ─── 5. Delimiter / template injection ─────────────────────
-    (
+    FirewallPattern(
+        "delimiter_injection.en.1",
         r"<\|im_(?:start|end)\|>|<\|endoftext\|>|<\|fim_[a-z]+\|>|"
         r"\[INST\]|\[/INST\]|<<SYS>>|<</SYS>>|"
         r"<\|system\|>|<\|user\|>|<\|assistant\|>",
         "delimiter_injection",
         RiskLevel.CRITICAL,
     ),
-    (r"</?(?:system|user|assistant)>", "delimiter_injection", RiskLevel.HIGH),
-    (r"###\s*(?:system|instruction|human|assistant)\s*:", "delimiter_injection", RiskLevel.HIGH),
+    FirewallPattern(
+        "delimiter_injection.en.2",
+        r"</?(?:system|user|assistant)>",
+        "delimiter_injection",
+        RiskLevel.HIGH,
+    ),
+    FirewallPattern(
+        "delimiter_injection.en.3",
+        r"###\s*(?:system|instruction|human|assistant)\s*:",
+        "delimiter_injection",
+        RiskLevel.HIGH,
+    ),
     # ─── 6. Data exfiltration ──────────────────────────────────
-    (
+    FirewallPattern(
+        "data_exfiltration.en.1",
         r"(?:curl|wget|fetch|nc\s+-|netcat)\s+[\w./:?&=-]*?(?:https?|ftp|file|gopher)://",
         "data_exfiltration",
         RiskLevel.HIGH,
@@ -284,7 +336,8 @@ INJECTION_PATTERNS = [
     # Between verb and preposition: whitespace, up to 80 characters of any
     # text, whitespace. The text part starts and ends with a non-space
     # character, so each whitespace run is matched by one quantifier.
-    (
+    FirewallPattern(
+        "data_exfiltration.en.2",
         r"(?:send|post|upload|exfiltrate|forward|transmit|leak)"
         r"(?:\s{2,}+|\s++\S(?:.{0,78}\S)?\s++)(?:to|via|towards|through)\s++"
         r"(?:https?://|ftp://|file://|external\s+(?:endpoint|server|url)|"
@@ -296,7 +349,8 @@ INJECTION_PATTERNS = [
     ),
     # ─── 7. Tool abuse (NEW category — agentic systems) ────────
     # System-shell execution
-    (
+    FirewallPattern(
+        "tool_abuse.en.1",
         r"\b(?:exec|spawn|system|popen|subprocess|os\.system|shell_exec|run_command|"
         r"shell\s+(?:command|tool))\b\s*+(?:[:(]\s*+)?[\"'`]?(?:rm\s+-rf|wget\s|curl\s|"
         r"bash\s|sh\s+-c|/bin/|cmd\.exe|powershell)",
@@ -304,7 +358,8 @@ INJECTION_PATTERNS = [
         RiskLevel.CRITICAL,
     ),
     # Sensitive filesystem paths
-    (
+    FirewallPattern(
+        "tool_abuse.en.2",
         r"\b(?:cat|read|fetch|get|tail|head|less|more|file_read|read_file)\b\s+"
         r"(?:/etc/(?:passwd|shadow|hosts|sudoers|ssl)|/root/|"
         r"~?/\.ssh/|~?/\.aws/credentials|~?/\.netrc|~?/\.docker/config|"
@@ -313,38 +368,58 @@ INJECTION_PATTERNS = [
         RiskLevel.CRITICAL,
     ),
     # Private/internal API calls
-    (
+    FirewallPattern(
+        "tool_abuse.en.3",
         r"\b(?:call|invoke|fetch|hit|access|GET|POST)\b\s+(?:the\s+)?(?:internal\s+|private\s+|admin\s+)"
         r"(?:api|endpoint|service|tool|function)",
         "tool_abuse",
         RiskLevel.HIGH,
     ),
-    (
+    FirewallPattern(
+        "tool_abuse.en.4",
         r"(?:^|[\s/])/admin/|/internal/|/_private/|/debug/|localhost:\d+/(?:admin|debug|metrics)",
         "tool_abuse",
         RiskLevel.HIGH,
     ),
     # Destructive commands as imperatives
-    (
+    FirewallPattern(
+        "tool_abuse.en.5",
         r"\b(?:rm\s+-rf?|drop\s+(?:database|table|schema)|delete\s+from\s+\w+|"
         r"truncate\s+table|format\s+(?:c:|/dev/)|mkfs\.|dd\s+if=)",
         "tool_abuse",
         RiskLevel.CRITICAL,
     ),
     # ─── 8. Encoded / obfuscated payloads ──────────────────────
-    (r"\bbase64\s*(?:encode|decode|\.b64|payload|encoded)", "obfuscation", RiskLevel.MEDIUM),
-    (r"\\x[0-9a-fA-F]{2}(?:\\x[0-9a-fA-F]{2}){2,}", "obfuscation", RiskLevel.HIGH),
+    FirewallPattern(
+        "obfuscation.en.1",
+        r"\bbase64\s*(?:encode|decode|\.b64|payload|encoded)",
+        "obfuscation",
+        RiskLevel.MEDIUM,
+    ),
+    FirewallPattern(
+        "obfuscation.en.2",
+        r"\\x[0-9a-fA-F]{2}(?:\\x[0-9a-fA-F]{2}){2,}",
+        "obfuscation",
+        RiskLevel.HIGH,
+    ),
     # ROT13 marker phrasings
-    (
+    FirewallPattern(
+        "obfuscation.en.3",
         r"\b(?:rot13|rot-13|caesar\s+cipher)\b\s+(?:decode|decoded|payload|this)?",
         "obfuscation",
         RiskLevel.MEDIUM,
     ),
     # Hex-escape-as-instruction
-    (r"\\x[0-9a-fA-F]{2}\s*(?:gnore|orget|verride|ypass)", "obfuscation", RiskLevel.HIGH),
+    FirewallPattern(
+        "obfuscation.en.4",
+        r"\\x[0-9a-fA-F]{2}\s*(?:gnore|orget|verride|ypass)",
+        "obfuscation",
+        RiskLevel.HIGH,
+    ),
     # ─── 9. Multilingual evasion ───────────────────────────────
     # Italian
-    (
+    FirewallPattern(
+        "multilang_evasion.it.1",
         r"(?:ignora|dimentica|scarta|annulla|bypassa|ometti|salta)\s+"
         r"(?:tutt[oae](?:\s+(?:le|i|gli|delle|dei))?\s+|ogni\s+|qualsiasi\s+|"
         r"le\s+|i\s+|gli\s+|delle\s+|dei\s+)?"
@@ -354,7 +429,8 @@ INJECTION_PATTERNS = [
         RiskLevel.CRITICAL,
     ),
     # Italian — verb after target ("istruzioni precedenti")
-    (
+    FirewallPattern(
+        "multilang_evasion.it.2",
         r"(?:ignora|dimentica|scarta|annulla|bypassa)\s+"
         r"(?:tutt[oae]\s+)?(?:le\s+|i\s+|gli\s+)?"
         r"(?:istruzioni?|regole|direttive)\s+(?:precedenti|sopra)",
@@ -362,7 +438,8 @@ INJECTION_PATTERNS = [
         RiskLevel.CRITICAL,
     ),
     # French
-    (
+    FirewallPattern(
+        "multilang_evasion.fr.1",
         r"(?:ignor(?:ez|e)|oublie[zr]?|écart[eo]z|annul(?:e|ez)|contournez|sautez)\s+"
         r"(?:tout(?:e|es)?\s+(?:les\s+|la\s+|le\s+)?|les\s+|la\s+|le\s+)?"
         r"(?:précédent(?:e|s|es)?\s+)?"
@@ -371,7 +448,8 @@ INJECTION_PATTERNS = [
         RiskLevel.CRITICAL,
     ),
     # French — verb-then-noun-then-adjective ("instructions précédentes")
-    (
+    FirewallPattern(
+        "multilang_evasion.fr.2",
         r"(?:ignor(?:ez|e)|oublie[zr]?)\s+"
         r"(?:tout(?:e|es)?\s+(?:les\s+|la\s+|le\s+)?|les\s+|la\s+|le\s+)?"
         r"(?:instructions?|règles|consignes|directives)\s+précédent(?:e|s|es)?",
@@ -379,7 +457,8 @@ INJECTION_PATTERNS = [
         RiskLevel.CRITICAL,
     ),
     # Spanish
-    (
+    FirewallPattern(
+        "multilang_evasion.es.1",
         r"(?:ignor[ae]|olvid[ae]|descart[ae]|anul[ae]|omit[ae]|salt[ae])\s+"
         r"(?:tod[oa]s?\s+(?:las\s+|los\s+|la\s+|el\s+)?|las\s+|los\s+|la\s+|el\s+)?"
         r"(?:anteriores?\s+|previas?\s+)?"
@@ -388,7 +467,8 @@ INJECTION_PATTERNS = [
         RiskLevel.CRITICAL,
     ),
     # Spanish — verb-then-noun-then-adjective ("instrucciones anteriores")
-    (
+    FirewallPattern(
+        "multilang_evasion.es.2",
         r"(?:ignor[ae]|olvid[ae])\s+"
         r"(?:tod[oa]s?\s+(?:las\s+|los\s+)?|las\s+|los\s+)?"
         r"(?:instrucciones|reglas|directivas)\s+anteriores?",
@@ -396,7 +476,8 @@ INJECTION_PATTERNS = [
         RiskLevel.CRITICAL,
     ),
     # German
-    (
+    FirewallPattern(
+        "multilang_evasion.de.1",
         r"(?:ignoriere(?:n)?|vergiss|verges(?:sen|st)|missachte(?:n)?|"
         r"überschreibe(?:n)?|umgehe(?:n)?|überspringe(?:n)?)\s+"
         r"(?:Sie\s+)?"
@@ -406,7 +487,14 @@ INJECTION_PATTERNS = [
         "multilang_evasion",
         RiskLevel.CRITICAL,
     ),
-]
+)
+
+#: The builtin patterns as ``(regex, category, risk_level)`` tuples, in the
+#: order of :data:`BUILTIN_PATTERNS`.
+INJECTION_PATTERNS = [(p.regex, p.category, p.risk_level) for p in BUILTIN_PATTERNS]
+
+#: The ids of :data:`BUILTIN_PATTERNS`, in their order.
+BUILTIN_PATTERN_IDS = tuple(p.id for p in BUILTIN_PATTERNS)
 
 # Imperative verbs used by the heuristic deep-path scanner.
 # Add terms here when new attack patterns emerge that use novel command words.
@@ -477,6 +565,8 @@ class InjectionFirewall:
         self,
         extra_patterns: list[tuple[str, str, "RiskLevel"]] | None = None,
         disabled_categories: list[str] | set[str] | None = None,
+        *,
+        disabled_patterns: Iterable[str] | None = None,
     ) -> None:
         """Build a firewall instance.
 
@@ -485,11 +575,16 @@ class InjectionFirewall:
                 tuples appended to the builtin pattern set. Loaded from
                 ``admina.yaml`` -> ``agent_security.firewall.custom_patterns``
                 so operators can add domain-specific rules without forking.
+                Their ids are ``custom.<n>``, ``n`` counting from 1 in the
+                order of the list.
             disabled_categories: Categories (e.g. ``"jailbreak"``) that must
                 never be flagged. Useful in observe mode while tuning, or
                 when a category produces too many false positives in a
                 specific deployment. Builtin pattern set is preserved; only
                 matches in disabled categories are silently dropped.
+            disabled_patterns: Ids of patterns left out of the pattern set
+                (``agent_security.firewall.disabled_patterns``). An id that
+                names no pattern is logged as a warning and ignored.
         """
         self.total_checked: int = 0
         self.total_blocked: int = 0
@@ -498,20 +593,34 @@ class InjectionFirewall:
 
         # Compile per-instance pattern list. Builtins first, then user
         # extras (so user rules can match what builtins miss).
-        patterns = list(INJECTION_PATTERNS)
-        if extra_patterns:
-            for entry in extra_patterns:
-                if not isinstance(entry, (list, tuple)) or len(entry) != 3:
-                    logger.warning(
-                        "Skipping malformed custom firewall pattern: %r "
-                        "(expected (regex, category, risk_level))",
-                        entry,
-                    )
-                    continue
-                patterns.append(tuple(entry))
+        patterns = list(BUILTIN_PATTERNS)
+        for number, entry in enumerate(extra_patterns or (), start=1):
+            if not isinstance(entry, (list, tuple)) or len(entry) != 3:
+                logger.warning(
+                    "Skipping malformed custom firewall pattern: %r "
+                    "(expected (regex, category, risk_level))",
+                    entry,
+                )
+                continue
+            patterns.append(FirewallPattern(f"custom.{number}", *entry))
+
+        off = set(disabled_patterns or ())
+        unknown = off.difference(p.id for p in patterns)
+        if unknown:
+            logger.warning(
+                "disabled_patterns: no pattern has the id(s) %s (ignored)",
+                ", ".join(sorted(unknown)),
+            )
         self._compiled = [
-            (re.compile(p, re.IGNORECASE | re.DOTALL), name, level) for p, name, level in patterns
+            (re.compile(p.regex, re.IGNORECASE | re.DOTALL), p.category, p.risk_level, p.id)
+            for p in patterns
+            if p.id not in off
         ]
+
+    @property
+    def pattern_ids(self) -> tuple[str, ...]:
+        """The ids of the patterns this firewall applies, in matching order."""
+        return tuple(pattern_id for _, _, _, pattern_id in self._compiled)
 
     def fast_path(self, text: str) -> dict:
         """
@@ -522,7 +631,10 @@ class InjectionFirewall:
         same regex set covers a much wider attack surface without bloating
         the pattern list.
 
-        Returns: {is_injection: bool, patterns: [...], risk_level: str}
+        Returns: {is_injection: bool, patterns: [...], risk_level: str};
+        each entry of ``patterns`` is ``{pattern, id, risk_level}``: the
+        category, the id of the first pattern of that category that
+        matched, and its risk level.
         """
         start = time.perf_counter()
         matches: list[dict] = []
@@ -535,11 +647,11 @@ class InjectionFirewall:
         # matching in both paths counts once.
         candidates = (text,) if normalized == text.lower() else (text, normalized)
         for candidate in candidates:
-            for compiled, name, level in self._compiled:
+            for compiled, name, level, pattern_id in self._compiled:
                 if name in seen or name in self._disabled:
                     continue
                 if compiled.search(candidate):
-                    matches.append({"pattern": name, "risk_level": level})
+                    matches.append({"pattern": name, "id": pattern_id, "risk_level": level})
                     seen.add(name)
                     if self._risk_order(level) > self._risk_order(max_risk):
                         max_risk = level

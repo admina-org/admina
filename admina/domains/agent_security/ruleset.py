@@ -31,6 +31,7 @@ strings and integers only::
       "pattern_packs": ["<name>", ...],
       "custom_patterns": [{"regex": "...", "category": "...", "risk_level": "..."}, ...],
       "disabled_categories": ["<category>", ...],
+      "disabled_patterns": ["<pattern id>", ...],
       "heuristic_threshold_milli": <int>
     }
 
@@ -48,6 +49,9 @@ strings and integers only::
   malformed entries left out.
 - ``disabled_categories``: ``agent_security.firewall.disabled_categories``,
   sorted by code point, without duplicates.
+- ``disabled_patterns``: ``agent_security.firewall.disabled_patterns``,
+  sorted by code point, without duplicates (``builtin`` keeps the patterns
+  they name).
 - ``heuristic_threshold_milli``: ``agent_security.firewall.heuristic_threshold``
   × 1000, rounded to the nearest integer (Python :func:`round`).
 
@@ -117,6 +121,7 @@ def ruleset_object(
             for regex, category, level in _firewall.parse_custom_patterns(fw.custom_patterns)
         ],
         "disabled_categories": sorted(set(disabled)),
+        "disabled_patterns": sorted(set(_names(fw.disabled_patterns, "disabled_patterns"))),
         "heuristic_threshold_milli": _milli(fw.heuristic_threshold),
     }
 

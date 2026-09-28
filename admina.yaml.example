@@ -60,6 +60,13 @@ domains:
       # delimiter_injection, data_exfiltration, tool_abuse, obfuscation,
       # multilang_evasion. Stays empty = all categories active.
       disabled_categories: []
+      # Single patterns you want SILENCED, by id (Python engine). Each
+      # match reports its pattern's id in `patterns[].id` of the firewall
+      # check (and of the forensic record): builtin ids such as
+      # instruction_override.en.1 or multilang_evasion.it.2, and custom.1,
+      # custom.2, ... for custom_patterns in their order. An unknown id is
+      # logged as a warning.
+      disabled_patterns: []
       # Add domain-specific rules here without forking. Each entry:
       #   - regex: a Python regex (case-insensitive)
       #     category: short label shown in dashboards/logs

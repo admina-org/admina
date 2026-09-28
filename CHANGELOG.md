@@ -293,6 +293,22 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `ADMINA_OFFLINE` off, the proxy exports its spans to `OTEL_ENDPOINT`, as
   before; `false` builds no exporter, so nothing is exported and no
   connection is made for telemetry.
+- Stable firewall pattern ids. Every builtin pattern has an id
+  (`firewall.BUILTIN_PATTERNS`, `firewall.BUILTIN_PATTERN_IDS`):
+  `<category>.<language>.<n>` for the categories of 0.12 (`en` for the
+  English patterns, `it`, `fr`, `es` and `de` for `multilang_evasion`, for
+  example `instruction_override.en.1` and `multilang_evasion.it.1`) and
+  `<category>.<n>` for the `it_*` categories. An id never changes and is
+  never reused. `custom_patterns` entries get `custom.<n>`, in their order.
+  Each entry of the fast path's `patterns` carries the `id` of the pattern
+  that matched, so the forensic `checks` do too; `InjectionFirewall.pattern_ids`
+  lists the ids a firewall applies.
+- `agent_security.firewall.disabled_patterns`: ids of patterns the firewall
+  leaves out (Python engine; `disabled_categories` is unchanged). An id that
+  names no pattern is logged as a warning and ignored; a value that is not
+  a list of strings is a configuration error. Like `custom_patterns`, it
+  makes `get_firewall()` use the Python firewall when the Rust engine is
+  selected.
 
 ### Changed
 
@@ -390,6 +406,11 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   IBANs before card numbers, and card numbers before phone numbers.
 - The `presidio` engine checks e-mail domains against the public suffix
   list bundled with `tldextract`, with no download and no cache files.
+- The object `ruleset_sha256()` hashes also has `disabled_patterns`
+  (`agent_security.firewall.disabled_patterns`, sorted without duplicates;
+  `builtin` still leaves out only the patterns of a disabled category), so
+  every ruleset hash of 0.13.0rc1 changes. New test vectors are in
+  `tests/test_ruleset_sha256.py`.
 
 ## [0.13.0rc1] — 2026-09-27
 
