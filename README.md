@@ -423,6 +423,22 @@ line break, or `.`, `!`, `?` followed by an upper-case word, ends a
 sentence). A streamed response from such an engine is then released a whole
 sentence at a time (at most 4096 characters held back).
 
+`ADMINA_PRESIDIO_NLP_MODELS` (or `presidio.nlp_models` in `admina.yaml`) sets
+the spaCy pipeline of each language of the `presidio` engine, for example
+`it:blank,en:en_core_web_sm`: an installed model, or `blank`, a tokenizer with
+no model and no NER (the pattern recognizers, such as e-mail, IBAN, fiscal
+codes and phone numbers, still run). A configured model that is not installed
+stops the proxy at startup: models are never downloaded. Without the setting,
+each of `en_core_web_sm` and `it_core_news_sm` that is installed is used.
+
+The PII engines work without network access: the `presidio` engine checks
+e-mail domains against the public suffix list bundled with `tldextract`,
+without downloading it or writing a cache. `ADMINA_OFFLINE=true` (default
+`false`) also sets `HF_HUB_OFFLINE`, `TRANSFORMERS_OFFLINE` and
+`HF_DATASETS_OFFLINE` to `1` before a PII engine is built and when the proxy
+starts (engines built on Hugging Face libraries then load only local files),
+and starts the proxy without the OpenTelemetry exporter.
+
 Every engine masks text values only, never the keys of a JSON object: the
 gateway redacts the text of each message (`content`, as a string or the
 `text` of each part, reasoning and refusal text, tool call `arguments`) and

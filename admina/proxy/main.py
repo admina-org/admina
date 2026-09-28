@@ -42,6 +42,7 @@ import admina.plugins.builtin.transports.mcp as mcp_transport
 from admina import __version__
 from admina.core.event_bus import GovernanceEvent as BusGovernanceEvent
 from admina.core.event_bus import bus as governance_bus
+from admina.core.offline import apply_offline_environment
 from admina.core.types import EventType, GovernanceAction, RiskLevel
 from admina.domains.agent_security.egress import (
     egress_policy_for,
@@ -242,6 +243,8 @@ def build_coordination_detector(redis: Any, egress_cfg: Any, quarantine: Any) ->
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     logger.info("Admina Proxy starting...")
+    # Before any engine is built: libraries read these variables on import.
+    offline = apply_offline_environment()
 
     # Gateway upstream routes and keys: resolved (key files read) once, here.
     # A misconfiguration raises and the proxy does not start.
@@ -298,8 +301,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         )
 
     # ── OTEL exporter — subscribe to event bus ────────────────
+    # ADMINA_OFFLINE: no exporter (checked at the start of the lifespan).
     otel_endpoint = getattr(settings, "OTEL_ENDPOINT", "http://localhost:4317")
-    state.otel_exporter = OTELGovernanceExporter(endpoint=otel_endpoint)
+    state.otel_exporter = OTELGovernanceExporter(endpoint=otel_endpoint, enabled=not offline)
+    if offline:
+        logger.info("ADMINA_OFFLINE: OpenTelemetry export off")
     if state.otel_exporter.enabled:
 
         async def _otel_subscriber(event: BusGovernanceEvent) -> None:

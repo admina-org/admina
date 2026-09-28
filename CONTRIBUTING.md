@@ -74,6 +74,12 @@ uv run python -c "import admina; print('OK')"
 
 All tests must pass before submitting a PR. Do not skip or disable failing tests.
 
+A test that must run without network access takes the `no_network` fixture
+(`tests/conftest.py`): name lookups and outgoing connections then raise
+`OSError`, and the fixture's value lists every attempt, so the test can
+assert that there was none. A child interpreter installs the same guard with
+`_network_guard.install()` (`tests/_network_guard.py`).
+
 ### Build the Rust Engine (optional)
 
 The Rust engine lives in `core-rust/` and is a PyO3 extension module that accelerates

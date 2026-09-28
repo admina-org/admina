@@ -58,14 +58,17 @@ class OTELGovernanceExporter:
     Args:
         endpoint: OTLP gRPC endpoint (e.g., "http://localhost:4317").
         service_name: Service name for the tracer.
+        enabled: False builds no exporter: every method is a no-op.
     """
 
     def __init__(
         self,
         endpoint: str = "http://localhost:4317",
         service_name: str = "admina-governance",
+        *,
+        enabled: bool = True,
     ) -> None:
-        self._enabled = _OTEL_AVAILABLE
+        self._enabled = _OTEL_AVAILABLE and enabled
         self._tracer = None
         if self._enabled:
             try:

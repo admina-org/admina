@@ -28,3 +28,12 @@ def example_pii_plugin(monkeypatch):
     group. Returns the name of its main engine."""
     monkeypatch.syspath_prepend(str(PII_PLUGIN_DIR))
     return "example-pii"
+
+
+@pytest.fixture
+def no_network(monkeypatch):
+    """Refuse DNS lookups and outgoing connections for one test (see
+    ``_network_guard``); returns the list of the attempts."""
+    from _network_guard import install
+
+    return install(monkeypatch.setattr)

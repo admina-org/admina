@@ -259,6 +259,13 @@ pii_engine: spacy-regex
 # typed (default: [EMAIL], [PERSON], ...) | omissis ([OMISSIS] for every span,
 # the whole sentence for the sentence categories of an engine).
 pii_mask_style: typed
+# spaCy pipeline of each language of the presidio engine: an installed model or
+# blank (a tokenizer with no model and no NER). Unset: en_core_web_sm and
+# it_core_news_sm, those that are installed. ADMINA_PRESIDIO_NLP_MODELS wins.
+# presidio:
+#   nlp_models:
+#     it: blank
+#     en: en_core_web_sm
 alert_channels:
   - type: log
   - type: webhook

@@ -27,6 +27,7 @@ import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol
 
+from admina.core.offline import apply_offline_environment
 from admina.engines.pii_plugins import PIIEngineBridge, load_plugin_engine, plugin_engine_names
 
 if TYPE_CHECKING:
@@ -491,12 +492,14 @@ def get_pii_engine(name: str | None = None) -> PIIBridge:
     ``admina.pii_engines`` group (see :mod:`admina.engines.pii_plugins`),
     whose engine runs through a :class:`PIIEngineBridge` and receives its
     ``plugin_config`` block of admina.yaml. Every engine masks in the style
-    of :func:`pii_mask_style`.
+    of :func:`pii_mask_style`. With ``ADMINA_OFFLINE`` the variables of
+    :data:`admina.core.offline.OFFLINE_ENVIRONMENT` are set first.
 
     Raises:
         ValueError: no engine has that name (the message lists the names
             available).
     """
+    apply_offline_environment()
     mask_style = pii_mask_style()
     config = None
     if name is None:

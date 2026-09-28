@@ -67,3 +67,107 @@ def test_presidio_mask_format_parity_with_spacy_regex():
 def test_presidio_empty_text_returns_full_shape():
     out = _engine_or_skip().redact("")
     assert out == {"redacted_text": "", "entities": [], "categories": [], "count": 0}
+
+
+# ── NLP models ────────────────────────────────────────────────
+
+
+def _presidio():
+    pytest.importorskip("presidio_analyzer")
+    from admina.engines import presidio
+
+    return presidio
+
+
+FISCAL_CODE_TEXT = "Il codice fiscale è SMPPRV90A01Z404G, email prova@example.org"
+
+
+def test_blank_italian_pipeline_needs_no_model():
+    presidio = _presidio()
+    engine = presidio.PresidioPIIEngine(nlp_models={"it": "blank"})
+    assert engine.languages == ["it"]
+    out = engine.redact("Mario Rossi scrive a prova@example.org")
+    assert out["redacted_text"] == "Mario Rossi scrive a [EMAIL]"  # no NER: tokenizer only
+
+
+def test_blank_pipelines_for_every_language():
+    presidio = _presidio()
+    engine = presidio.PresidioPIIEngine(nlp_models={"it": "blank", "en": "blank"})
+    assert engine.languages == ["it", "en"]
+    assert "[EMAIL]" in engine.redact("mail prova@example.org")["redacted_text"]
+
+
+def test_installed_model_is_used_as_configured():
+    presidio = _presidio()
+    import spacy
+
+    if not spacy.util.is_package("en_core_web_sm"):
+        pytest.skip("en_core_web_sm not installed")
+    engine = presidio.PresidioPIIEngine(nlp_models={"en": "en_core_web_sm"})
+    assert engine.languages == ["en"]
+    assert "[PERSON]" in engine.redact("Contact John Smith today")["redacted_text"]
+
+
+def test_unknown_language_is_an_error():
+    presidio = _presidio()
+    with pytest.raises(ValueError, match="xq"):
+        presidio.PresidioPIIEngine(nlp_models={"xq": "blank"})
+
+
+def test_models_from_the_environment(monkeypatch):
+    presidio = _presidio()
+    monkeypatch.setenv("ADMINA_PRESIDIO_NLP_MODELS", "it:blank, en:blank")
+    assert presidio.presidio_nlp_models() == {"it": "blank", "en": "blank"}
+    assert presidio.get_presidio_pii_engine().languages == ["it", "en"]
+
+
+@pytest.mark.parametrize("value", ["it", "it:", ":blank", "it:blank,it:blank"])
+def test_malformed_environment_value_is_an_error(monkeypatch, value):
+    presidio = _presidio()
+    monkeypatch.setenv("ADMINA_PRESIDIO_NLP_MODELS", value)
+    with pytest.raises(ValueError, match="ADMINA_PRESIDIO_NLP_MODELS"):
+        presidio.presidio_nlp_models()
+
+
+def test_models_from_admina_yaml(monkeypatch, tmp_path):
+    presidio = _presidio()
+    path = tmp_path / "admina.yaml"
+    path.write_text("presidio:\n  nlp_models:\n    it: blank\n", encoding="utf-8")
+    monkeypatch.delenv("ADMINA_PRESIDIO_NLP_MODELS", raising=False)
+    monkeypatch.setenv("ADMINA_CONFIG", str(path))
+    assert presidio.presidio_nlp_models() == {"it": "blank"}
+
+
+def test_malformed_admina_yaml_is_an_error(monkeypatch, tmp_path):
+    presidio = _presidio()
+    path = tmp_path / "admina.yaml"
+    path.write_text("presidio:\n  nlp_models: [it]\n", encoding="utf-8")
+    monkeypatch.delenv("ADMINA_PRESIDIO_NLP_MODELS", raising=False)
+    monkeypatch.setenv("ADMINA_CONFIG", str(path))
+    with pytest.raises(ValueError, match="presidio.nlp_models"):
+        presidio.presidio_nlp_models()
+
+
+def test_default_models_are_those_installed(monkeypatch, tmp_path):
+    presidio = _presidio()
+    import spacy
+
+    monkeypatch.delenv("ADMINA_PRESIDIO_NLP_MODELS", raising=False)
+    monkeypatch.delenv("ADMINA_CONFIG", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert presidio.presidio_nlp_models() == {}
+    installed = [
+        lang
+        for lang, model in (("en", "en_core_web_sm"), ("it", "it_core_news_sm"))
+        if spacy.util.is_package(model)
+    ]
+    if not installed:
+        pytest.skip("no default spaCy model installed")
+    assert presidio.get_presidio_pii_engine(mask_style="typed").languages == installed
+
+
+def test_fiscal_code_with_a_blank_pipeline():
+    presidio = _presidio()
+    engine = presidio.PresidioPIIEngine(nlp_models={"it": "blank"})
+    out = engine.redact(FISCAL_CODE_TEXT)["redacted_text"]
+    assert out == "Il codice fiscale è [CF], email [EMAIL]"

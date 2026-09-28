@@ -95,6 +95,17 @@ class PIIConfig:
 
 
 @dataclass
+class PresidioConfig:
+    """``presidio``: the spaCy pipeline of each language of the Presidio PII
+    engine (``nlp_models``: language code → installed model or ``blank``;
+    empty = the default models that are installed). ``errors`` lists what
+    is malformed; the engine refuses to start with them."""
+
+    nlp_models: dict[str, str] = field(default_factory=dict)
+    errors: list[str] = field(default_factory=list)
+
+
+@dataclass
 class ResidencyConfig:
     """Data residency settings."""
 
@@ -310,6 +321,7 @@ class AdminaConfig:
     auth_provider: str = "apikey"
     pii_engine: str = "spacy-regex"
     pii_mask_style: str = "typed"
+    presidio: PresidioConfig = field(default_factory=PresidioConfig)
     alert_channels: list[AlertChannelConfig] = field(default_factory=list)
     plugins: list[str] = field(default_factory=list)
     plugin_config: dict[str, Any] = field(default_factory=dict)
@@ -339,6 +351,25 @@ def _parse_schema_version(data: dict) -> int:
         return int(raw)
     except (TypeError, ValueError):
         return 1
+
+
+def _parse_presidio(raw: Any) -> PresidioConfig:
+    """Parse the ``presidio`` section; shape errors go to ``errors``."""
+    if raw is None:
+        return PresidioConfig()
+    if not isinstance(raw, dict):
+        return PresidioConfig(errors=["presidio must be a mapping"])
+    models = raw.get("nlp_models")
+    if models is None:
+        return PresidioConfig()
+    if not isinstance(models, dict) or not all(
+        isinstance(lang, str) and lang and isinstance(model, str) and model
+        for lang, model in models.items()
+    ):
+        return PresidioConfig(
+            errors=["presidio.nlp_models must map language codes to spaCy model names or blank"]
+        )
+    return PresidioConfig(nlp_models=dict(models))
 
 
 def _parse_gateway(raw: Any) -> GatewayConfig:
@@ -563,6 +594,7 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
         auth_provider=data.get("auth_provider", "apikey"),
         pii_engine=data.get("pii_engine", "spacy-regex"),
         pii_mask_style=str(data.get("pii_mask_style") or "typed"),
+        presidio=_parse_presidio(data.get("presidio")),
         alert_channels=alerts,
         plugins=data.get("plugins", []),
         plugin_config=data.get("plugin_config", {}),
