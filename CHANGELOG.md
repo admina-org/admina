@@ -244,6 +244,13 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 - The chain state also holds `format` (`admina-forensic/1`) and `head_key`
   (the key of the last record). Checking it at startup reads its last
   record and any record written after it, not every record.
+- The proxy of `docker-compose.yml`, and of the `docker-compose.yml` that
+  `admina init` generates, keeps its forensic directory
+  (`FORENSIC_BASE_DIR=/app/.admina/forensic`) on the named volume
+  `forensic-data`, so the records and the chain state outlive the
+  container. Both proxy images create `/app/.admina/forensic` owned by the
+  `admina` user (uid 10001), so a new volume mounted there is writable by
+  the proxy.
 
 ## [0.13.0rc1] — 2026-09-27
 

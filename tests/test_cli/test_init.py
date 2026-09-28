@@ -169,6 +169,33 @@ class TestScaffoldProject:
         assert "clickhouse" not in data["services"]
         assert "proxy" in data["services"]
 
+    @pytest.mark.parametrize(
+        "domains",
+        [list(AVAILABLE_DOMAINS), ["agent_security"], ["agent_security", "compliance"]],
+    )
+    def test_docker_compose_keeps_the_forensic_directory_on_a_volume(
+        self, tmp_project: Path, domains: list[str]
+    ) -> None:
+        tmp_project.mkdir(parents=True)
+        _scaffold_project(tmp_project, domains, "test-project")
+        data = yaml.safe_load((tmp_project / "docker-compose.yml").read_text())
+        proxy = data["services"]["proxy"]
+        env = dict(item.split("=", 1) for item in proxy["environment"])
+        assert env["FORENSIC_BASE_DIR"] == "/app/.admina/forensic"
+        assert "forensic-data:/app/.admina/forensic" in proxy["volumes"]
+        assert "forensic-data" in data["volumes"]
+
+    @pytest.mark.parametrize("domains", [["compliance"], ["data_sovereignty"]])
+    def test_docker_compose_without_the_proxy_has_no_forensic_volume(
+        self, tmp_project: Path, domains: list[str]
+    ) -> None:
+        tmp_project.mkdir(parents=True)
+        _scaffold_project(tmp_project, domains, "test-project")
+        data = yaml.safe_load((tmp_project / "docker-compose.yml").read_text())
+        assert "proxy" not in data["services"]
+        assert isinstance(data["volumes"], dict)
+        assert "forensic-data" not in data["volumes"]
+
     def test_env_file_not_overwritten(self, tmp_project: Path) -> None:
         tmp_project.mkdir(parents=True)
         env_file = tmp_project / ".env"

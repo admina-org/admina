@@ -416,7 +416,9 @@ set (in the environment or `.env`), the proxy reads
 `domains.compliance.forensic.backend` (or its older name `storage`) and
 `base_dir` from `admina.yaml`; without either, the backend is `memory`. A
 value set in both places with different values is logged at startup, and
-the environment's is used.
+the environment's is used. The Docker Compose stack uses `filesystem` with
+`FORENSIC_BASE_DIR=/app/.admina/forensic` on the named volume
+`forensic-data`, which the proxy image creates owned by its user.
 
 `ADMINA_FORENSIC_FAIL_MODE` says what happens when a record cannot be
 written (a full disk, a directory that cannot be written, S3 errors):

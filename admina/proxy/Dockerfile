@@ -62,9 +62,11 @@ ENV PATH="/app/.venv/bin:$PATH"
 COPY admina/proxy/docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
 
-# Run as a non-root, non-login system user. The proxy never writes to
-# the filesystem at runtime, so no chown of writable paths is needed
-# beyond the application directory.
+# Run as a non-root, non-login system user. At runtime the proxy writes
+# only to the directory of the filesystem forensic store
+# (FORENSIC_BACKEND=filesystem). Each image creates /app/.admina/forensic,
+# the FORENSIC_BASE_DIR of the compose files, before /app is given to this
+# user, so a volume mounted there starts owned by the same user.
 RUN groupadd --system --gid 10001 admina && \
     useradd --system --uid 10001 --gid admina --no-create-home --shell /sbin/nologin admina
 
@@ -86,7 +88,7 @@ RUN uv pip install /tmp/wheels/*.whl && rm -rf /tmp/wheels
 
 COPY --from=slim-sources /src/admina/ ./admina/
 
-RUN chown -R admina:admina /app
+RUN mkdir -p /app/.admina/forensic && chown -R admina:admina /app
 USER admina
 
 # Full image (default target)
@@ -99,5 +101,5 @@ RUN uv pip install /tmp/wheels/*.whl && rm -rf /tmp/wheels
 
 COPY admina/ ./admina/
 
-RUN chown -R admina:admina /app
+RUN mkdir -p /app/.admina/forensic && chown -R admina:admina /app
 USER admina
