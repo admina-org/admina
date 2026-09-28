@@ -689,7 +689,17 @@ does not start when they are enabled without it.
 
 **Logs.** `ADMINA_LOG_FORMAT=json` writes one JSON object per line
 (`timestamp`, `level`, `logger`, `message` and `exception` when there is
-one), uvicorn's own lines included; `text` is the default.
+one), uvicorn's own lines included; `text` is the default. An exception
+raised while a request or a response is governed (by a governance guard,
+the PII engine, the pipeline or the upstream exchange of the gateway,
+`/mcp` and `/api/v1/validate`) is logged by its class name, and at `DEBUG`
+with the frames of its traceback (`admina.core.exception_log`), never with
+its message, which can quote the governed text; the `error` of a guard's
+`ERROR` check (`checks["guard_<name>"]` in the forensic records and the
+ClickHouse `details`) is the class name too. An `/mcp` request whose
+governance pipeline raises is answered `500` (JSON-RPC `-32603`,
+`Internal proxy error`), a `POST /api/v1/validate` request `500`
+(`{"detail": "Internal Server Error"}`).
 
 **`/metrics` and the API docs.** Both are public by default.
 `ADMINA_METRICS_REQUIRE_AUTH=true` and `ADMINA_API_DOCS_REQUIRE_AUTH=true`
@@ -912,7 +922,8 @@ since its checks may not have run; the record has `checks.pipeline =
 {"action": "ERROR", "error": "<exception class>"}`. A guard contract error
 (`ValueError`, `RuntimeError`, `OSError` or `TypeError` from a guard) is
 handled inside the pipeline and follows `ADMINA_GUARD_FAIL_MODE`, as on the
-other surfaces.
+other surfaces; its check is `{"action": "ERROR", "error": "<exception
+class>"}`.
 
 With PII redaction on, the redaction of each completion, and of each line of
 a stream, runs in the worker threads within the same time budget. A

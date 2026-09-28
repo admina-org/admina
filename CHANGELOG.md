@@ -98,6 +98,18 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   channels read this metadata.
 - A blocked `/mcp` request sends one alert to each alert channel, built from
   its `governance.decision` event: `details` is the event's metadata.
+- An exception raised while a request or a response is governed on the
+  gateway, `/mcp` or `POST /api/v1/validate` (by a governance guard, the PII
+  engine, the pipeline or the upstream exchange) is logged by its class
+  name, and at `DEBUG` with the frames of its traceback, without its message
+  (`admina.core.exception_log`). The `error` of a guard's `ERROR` check
+  (`checks["guard_<name>"]`, request or response side, in the forensic
+  records and the ClickHouse `details`) is the exception's class name. An
+  `/mcp` request whose governance pipeline raises is answered `500`
+  (JSON-RPC `-32603`, `Internal proxy error`), and so is one that raises
+  after the upstream answered; a `POST /api/v1/validate` request whose
+  pipeline raises is answered `500` (`{"detail": "Internal Server
+  Error"}`).
 
 ### Added
 

@@ -42,6 +42,7 @@ import admina.plugins.builtin.transports.mcp as mcp_transport
 from admina import __version__
 from admina.core.event_bus import GovernanceEvent as BusGovernanceEvent
 from admina.core.event_bus import bus as governance_bus
+from admina.core.exception_log import log_frames
 from admina.core.offline import apply_offline_environment
 from admina.core.types import EventType, GovernanceAction, RiskLevel
 from admina.domains.agent_security.egress import (
@@ -1715,7 +1716,9 @@ async def _mcp_exchange(request: Request, path: str, outcome: _McpOutcome) -> JS
     """The response to a governed /mcp request; how it is recorded goes in
     *outcome* (see :func:`mcp_proxy`). A request whose body is not JSON is
     refused (HTTPException) before it is governed; one whose governance
-    pipeline raises is recorded as ``ERROR``, and the exception goes on."""
+    pipeline raises is recorded as ``ERROR`` and answered 500 (JSON-RPC
+    ``-32603``). An exception raised while the request or its response is
+    governed is logged by its class (:mod:`admina.core.exception_log`)."""
     state = _get_state(request)
     # Sanitize header values: strip CRLF (Redis key injection) and cap length
     session_id = re.sub(r"[\r\n]", "", request.headers.get("X-Session-Id", "default"))[:128]
@@ -1828,9 +1831,13 @@ async def _mcp_exchange(request: Request, path: str, outcome: _McpOutcome) -> JS
             egress_policy=egress_policy_for(state.egress_policy, "mcp"),
             egress_mode=resolve_egress_mode(settings.GOVERNANCE_MODE),
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 — answered 500, logged by its class
         outcome.decision = Decision.failed("mcp", event_id)
-        raise
+        logger.error(
+            "MCP governance pipeline failed for event %s: %s", event_id, type(exc).__name__
+        )
+        log_frames(logger, "MCP governance pipeline", exc)
+        return _internal_error_mcp(body, event_id)
 
     redacted_body = pipeline_result.redacted_body
     governance_latency = pipeline_result.latency_ms
@@ -1964,12 +1971,14 @@ async def _mcp_exchange(request: Request, path: str, outcome: _McpOutcome) -> JS
                             }
                         ),
                     )
-                except Exception:
+                except Exception as exc:  # noqa: BLE001 — the bus event still goes out
                     logger.warning(
-                        "Coordination forensic record failed for event %s; bus event still emitted",
+                        "Coordination forensic record failed for event %s (%s); "
+                        "bus event still emitted",
                         event_id,
-                        exc_info=True,
+                        type(exc).__name__,
                     )
+                    log_frames(logger, "Coordination forensic record", exc)
             await governance_bus.emit(
                 BusGovernanceEvent(
                     event_type=EventType.POLICY_VIOLATION,
@@ -2074,12 +2083,12 @@ async def _mcp_exchange(request: Request, path: str, outcome: _McpOutcome) -> JS
                     logger.error(
                         "Guard %r failed its contract on response inspection and was skipped: %s",
                         guard.name,
-                        exc,
-                        exc_info=True,
+                        type(exc).__name__,
                     )
+                    log_frames(logger, f"Guard {guard.name!r} on response inspection", exc)
                     # Response guard errors are not collected into pipeline_result.checks
                     # (that result is already built before this path runs); the ERROR log
-                    # with exc_info is the audit trail for response-side contract failures.
+                    # is the audit trail for response-side contract failures.
                     if settings.GUARD_FAIL_MODE == "closed":
                         # Fail-closed: a crashing response guard blocks the response.
                         # The request-side forensic record was written before the
@@ -2098,7 +2107,7 @@ async def _mcp_exchange(request: Request, path: str, outcome: _McpOutcome) -> JS
                                 "checks": {
                                     f"guard_{guard.name}": {
                                         "action": "ERROR",
-                                        "error": str(exc),
+                                        "error": type(exc).__name__,
                                     }
                                 },
                             }
@@ -2141,20 +2150,30 @@ async def _mcp_exchange(request: Request, path: str, outcome: _McpOutcome) -> JS
                 },
             },
         )
-    except (httpx.HTTPError, OSError, ValueError, RuntimeError) as e:
-        logger.error("Proxy error: %s", e)
-        return JSONResponse(
-            status_code=500,
-            content={
-                "jsonrpc": "2.0",
-                "id": body.get("id"),
-                "error": {
-                    "code": -32603,
-                    "message": "Internal proxy error",
-                    "data": {"event_id": event_id},
-                },
+    except Exception as e:  # noqa: BLE001 — answered 500, logged by its class
+        # Raised by the upstream exchange, the response's PII redaction or a
+        # response guard outside its contract: the class only, as its message
+        # can quote the text of the response.
+        logger.error("Proxy error for event %s: %s", event_id, type(e).__name__)
+        log_frames(logger, "MCP proxy", e)
+        return _internal_error_mcp(body, event_id)
+
+
+def _internal_error_mcp(body: Any, event_id: str) -> JSONResponse:
+    """500 (JSON-RPC ``-32603``, ``Internal proxy error``) for an /mcp
+    request that failed in the proxy."""
+    return JSONResponse(
+        status_code=500,
+        content={
+            "jsonrpc": "2.0",
+            "id": body.get("id") if isinstance(body, dict) else None,
+            "error": {
+                "code": -32603,
+                "message": "Internal proxy error",
+                "data": {"event_id": event_id},
             },
-        )
+        },
+    )
 
 
 _mount("mcp", _mcp_router)

@@ -135,6 +135,7 @@ from starlette.background import BackgroundTask
 from starlette.types import Receive, Scope, Send
 
 from admina import __version__
+from admina.core.exception_log import log_frames
 from admina.core.trace_context import TraceContext
 from admina.core.types import EventType, GovernanceAction
 from admina.domains.agent_security.egress import egress_policy_for, resolve_egress_mode
@@ -278,7 +279,7 @@ async def _govern(
         }
     except Exception as exc:  # noqa: BLE001 — any failure is a governance decision
         logger.error("Gateway governance pipeline failed: %s: blocked", type(exc).__name__)
-        logger.debug("Gateway governance pipeline failure", exc_info=True)
+        log_frames(logger, "Gateway governance pipeline", exc)
         check = {"action": "ERROR", "error": type(exc).__name__}
     return unfinished_pipeline_result(
         check,
@@ -299,7 +300,7 @@ async def _redacted(state: Any, cfg: Any, job: Callable[[], Any]) -> Any:
         logger.warning("Gateway completion redaction exceeded its time budget (%g s)", budget)
     except Exception as exc:  # noqa: BLE001 — the unredacted text is not sent
         logger.error("Gateway completion redaction failed: %s", type(exc).__name__)
-        logger.debug("Gateway completion redaction failure", exc_info=True)
+        log_frames(logger, "Gateway completion redaction", exc)
     return None
 
 
@@ -1089,7 +1090,7 @@ def _unexpected_failure(call: GatewayCall, exc: Exception, body: dict) -> JSONRe
         logger.warning("Gateway request body has no JSON encoding: %s", type(exc).__name__)
         return _error_response(400, _BODY_NOT_ENCODABLE)
     logger.error("Gateway chat completion failed: %s", type(exc).__name__)
-    logger.debug("Gateway chat completion failure", exc_info=True)
+    log_frames(logger, "Gateway chat completion", exc)
     return _error_response(500, _GATEWAY_FAILED)
 
 

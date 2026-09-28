@@ -49,6 +49,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from admina.core.exception_log import log_frames
 from admina.domains.compliance.forensic import ForensicWriteError
 from admina.proxy.decisions import Decision, text_sha256
 
@@ -79,13 +80,12 @@ class _DefaultSettings:
 
 
 def _scrub_check_errors(checks: dict[str, Any]) -> dict[str, Any]:
-    """Replace guard exception text with a generic reason for external callers.
+    """Replace the ``error`` of each check with a generic reason for external
+    callers.
 
-    A guard that breaks its contract records the raw exception text under
-    ``checks["guard_<name>"]["error"]``. That detail is valuable in the
-    forensic record — which keeps it — but it can carry internal information
-    (file paths, hostnames, credentials embedded in a connection URL), so it
-    is not returned over the REST API. The check name and its ``ERROR``
+    A guard that breaks its contract records the class of its exception
+    under ``checks["guard_<name>"]["error"]``; the forensic record keeps it,
+    the REST API returns ``"Guard error"``. The check name and its ``ERROR``
     action still tell a caller which guard failed.
     """
     scrubbed: dict[str, Any] = {}
@@ -172,7 +172,9 @@ def create_integration_endpoints(
 
         Returns ``action`` (ALLOW / BLOCK / REDACT), ``risk_level``,
         and per-domain ``checks``. With a closed-mode forensic store that
-        does not accept records (its last write failed), 503.
+        does not accept records (its last write failed), 503. When the
+        pipeline raises, 500 ``{"detail": "Internal Server Error"}``, and the
+        exception is logged by its class (:mod:`admina.core.exception_log`).
         """
         from admina.domains.agent_security.egress import egress_policy_for, resolve_egress_mode
         from admina.domains.governance import run_pipeline
@@ -210,9 +212,11 @@ def create_integration_endpoints(
                 egress_policy=egress_policy_for(get_egress_policy(), "integration"),
                 egress_mode=resolve_egress_mode(mode),
             )
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 — answered 500, logged by its class
             decided(Decision.failed("integration", event_id), started)
-            raise
+            logger.error("Validate governance pipeline failed: %s", type(exc).__name__)
+            log_frames(logger, "Validate governance pipeline", exc)
+            raise HTTPException(status_code=500, detail="Internal Server Error") from None
         decided(
             Decision.of(
                 "integration",

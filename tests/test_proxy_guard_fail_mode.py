@@ -201,5 +201,7 @@ class TestResponseSideFailMode:
         assert resp.status_code == 403
         resp_records = [r for r in fbox.records if r["event_type"] == EventType.MCP_RESPONSE]
         assert len(resp_records) == 1
-        assert resp_records[0]["checks"]["guard_resp-raiser"]["action"] == "ERROR"
-        assert "response guard boom" in resp_records[0]["checks"]["guard_resp-raiser"]["error"]
+        assert resp_records[0]["checks"]["guard_resp-raiser"] == {
+            "action": "ERROR",
+            "error": "RuntimeError",
+        }

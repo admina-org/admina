@@ -19,8 +19,9 @@ pluggable guards) in sequence and returns a GovernanceResult.
 
 This is the authoritative home of the governance pipeline. It is pure logic:
 engines and guards are injected by the caller; there is no HTTP, no storage,
-no I/O here. Imports only from :mod:`admina.core.types` — no dependency on
-:mod:`admina.proxy` or any surface adapter.
+no I/O here. Imports only from :mod:`admina.core.types` and
+:mod:`admina.core.exception_log` — no dependency on :mod:`admina.proxy` or
+any surface adapter.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from admina.core.exception_log import log_frames
 from admina.core.types import GovernanceAction, RiskLevel
 from admina.core.types import GovernanceResponse as GovResponse
 
@@ -215,15 +217,17 @@ async def run_pipeline(
                     result.risk_level = guard_result.get("risk_level", RiskLevel.HIGH)
                     break
             except (ValueError, RuntimeError, OSError, TypeError) as exc:
+                # The class of the exception only: its message can quote
+                # the governed text (admina.core.exception_log).
                 logger.error(
                     "Guard %r failed its contract and was skipped: %s",
                     guard.name,
-                    exc,
-                    exc_info=True,
+                    type(exc).__name__,
                 )
+                log_frames(logger, f"Guard {guard.name!r}", exc)
                 result.checks[f"guard_{guard.name}"] = {
                     "action": "ERROR",
-                    "error": str(exc),
+                    "error": type(exc).__name__,
                 }
                 if guard_fail_mode == "closed":
                     # Fail-closed: a guard that breaks its contract blocks the
