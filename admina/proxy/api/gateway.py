@@ -67,8 +67,9 @@ The governance pipeline runs in the worker threads of
 :mod:`admina.proxy.pipeline_executor`, within the time budget
 ``ADMINA_GATEWAY_PIPELINE_TIMEOUT``: a request whose decision takes longer,
 or whose pipeline raises, is blocked in every governance mode and recorded
-with ``checks["pipeline"]``. A guard contract error is handled inside the
-pipeline, as ``ADMINA_GUARD_FAIL_MODE`` says.
+with ``checks["pipeline"]``; so is a request whose PII redaction masked text
+but returned no list of messages. A guard contract error is handled inside
+the pipeline, as ``ADMINA_GUARD_FAIL_MODE`` says.
 
 PII redaction of the completions (see below) runs in the same worker threads
 and time budget. A non-streaming completion whose redaction does not finish
@@ -1188,20 +1189,32 @@ async def _chat_completion(
     return response, call
 
 
-def _forwarded_messages(pre: GovernanceResult, messages: list) -> list:
+def _forwarded_messages(pre: GovernanceResult, messages: list) -> list | None:
     """The messages to forward: those of the PII redaction when it masked
-    something, else *messages* as received. A redacted body without a list
-    of messages is logged as an error and *messages* are forwarded."""
+    something, else *messages* as received; None when the PII redaction
+    masked something but its body has no list of messages."""
     if not pre.checks.get("pii_redaction", {}).get("count", 0):
         return messages
-    params = (pre.redacted_body or {}).get("params")
+    body = pre.redacted_body if isinstance(pre.redacted_body, dict) else {}
+    params = body.get("params")
     redacted = params.get("messages") if isinstance(params, dict) else None
-    if not isinstance(redacted, list):
-        logger.error(
-            "Gateway PII redaction returned no list of messages: forwarding them as received"
-        )
-        return messages
-    return redacted
+    return redacted if isinstance(redacted, list) else None
+
+
+def _without_redacted_messages(pre: GovernanceResult, request_id: str) -> GovernanceResult:
+    """The result of a request whose PII redaction masked something but
+    returned no list of messages: blocked in every governance mode, with
+    the checks of *pre* and ``checks["pipeline"]``."""
+    logger.error("Gateway PII redaction returned no list of messages: blocked")
+    result = unfinished_pipeline_result(
+        {"action": "ERROR", "error": "redacted_messages_missing"},
+        block=True,
+        mode="enforce",
+        request_id=request_id,
+        latency_ms=pre.latency_ms,
+    )
+    result.checks = {**pre.checks, **result.checks}
+    return result
 
 
 async def _governed_call(
@@ -1255,13 +1268,16 @@ async def _governed_call(
         )
 
     pre = await _govern(state, cfg, pipeline, event_id)
+    fwd_messages = _forwarded_messages(pre, messages)
+    if fwd_messages is None:
+        pre = _without_redacted_messages(pre, event_id)
+        fwd_messages = messages
     call.action = pre.gov_response.action  # uppercase: ALLOW/BLOCK/CIRCUIT_BREAK
     call.risk_level = pre.gov_response.risk_level
     call.categories = firewall_categories(pre.checks.get("firewall"))
     if pre.would_action is not None:
         call.would_action = str(safe_serialize(pre.would_action)).upper()
 
-    fwd_messages = _forwarded_messages(pre, messages)
     call.record_hash = await _record_forensic(
         state.forensic_box,
         call,

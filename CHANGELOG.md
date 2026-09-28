@@ -75,8 +75,12 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `redact_params` argument of `run_pipeline`): `content`, as a string or as
   the `text` of each part, reasoning and refusal text, and tool call
   `arguments`; roles, names, tool call ids, image and audio parts are
-  forwarded as received. A pipeline result without a list of messages is
-  logged as an error and the messages are forwarded as received.
+  forwarded as received. A request whose PII redaction masked text but
+  returned no list of messages is blocked in every governance mode,
+  answered as `ADMINA_GATEWAY_BLOCK_STATUS` says with
+  `X-Admina-Action: BLOCK`, recorded with `checks["pipeline"]`
+  (`{"action": "ERROR", "error": "redacted_messages_missing"}`) and logged
+  as an error.
 - A placeholder already in the text (an upper-case name in square brackets,
   such as `[IBAN]` or `[OMISSIS]`) is not masked again: the NER step of the
   `spacy-regex` engine, the `presidio` engine and `PIIEngineBridge` mask a

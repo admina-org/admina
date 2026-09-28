@@ -22,8 +22,8 @@
   tool call ``arguments``. Keys and the other fields (``role``, ``name``,
   ``tool_call_id``, ids, image parts, …) are forwarded as received.
 - A placeholder already in the text (``[IBAN]``, ``[OMISSIS]``) stays as it is.
-- A pipeline result without ``messages`` makes the gateway forward the
-  messages as received, with an error in the log.
+- A pipeline result that reports masked text without a list of messages
+  blocks the request in every governance mode, with an error in the log.
 """
 
 from __future__ import annotations
@@ -249,25 +249,76 @@ def test_gateway_forwards_an_instruction_the_engine_does_not_flag():
     ]
 
 
-def test_gateway_forwards_the_messages_as_received_when_the_result_has_none(monkeypatch, caplog):
+class _Recorder:
+    """A forensic store that keeps the request records."""
+
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    def record(self, event: dict) -> dict:
+        if event["event_type"] != "gateway_response":
+            self.events.append(event)
+        return {"record_hash": "0" * 64}
+
+
+def _pipeline_without_messages(monkeypatch, redacted_body: object) -> None:
+    """The pipeline reports masked text, with *redacted_body* as its result."""
     from admina.proxy.api import gateway
 
-    async def pipeline_without_messages(**kwargs):
+    async def pipeline(**kwargs):
         return GovernanceResult(
             checks={"pii_redaction": {"count": 1, "entities": []}},
-            redacted_body={"params": {}},
+            redacted_body=redacted_body,
             gov_response=type("R", (), {"action": "ALLOW", "risk_level": "LOW"})(),
         )
 
-    monkeypatch.setattr(gateway, "run_pipeline", pipeline_without_messages)
+    monkeypatch.setattr(gateway, "run_pipeline", pipeline)
+
+
+@pytest.mark.parametrize(
+    "redacted_body",
+    [{"params": {}}, {"params": {"messages": "hello"}}, {"params": None}, None, ["hello"]],
+    ids=["no-messages", "messages-not-a-list", "params-not-an-object", "no-body", "body-a-list"],
+)
+@pytest.mark.parametrize("mode", ["enforce", "observe"])
+@pytest.mark.parametrize("stream", [False, True])
+def test_gateway_blocks_when_the_redaction_result_has_no_messages(
+    monkeypatch, caplog, stream, mode, redacted_body
+):
+    _pipeline_without_messages(monkeypatch, redacted_body)
     upstream = _json_upstream()
-    messages = [{"role": "user", "content": "hello"}]
-    cfg = settings(PII_REDACTION_ENABLED=True)
+    recorder = _Recorder()
+    body = {"model": "example-model", "messages": [{"role": "user", "content": "hello"}]}
+    cfg = settings(PII_REDACTION_ENABLED=True, ADMINA_GOVERNANCE_MODE=mode)
     with caplog.at_level(logging.ERROR, logger="admina.proxy"):
-        resp = through(upstream, {"model": "example-model", "messages": messages}, cfg)
+        resp = through(upstream, {**body, "stream": stream}, cfg, state={"forensic_box": recorder})
+    assert upstream.requests == []
     assert resp.status_code == 200
-    assert _forwarded(upstream)["messages"] == messages
+    assert resp.headers["x-admina-action"] == "BLOCK"
+    if stream:
+        assert '"finish_reason":"content_filter"' in resp.text
+    else:
+        assert resp.json()["choices"][0]["finish_reason"] == "content_filter"
+    (event,) = recorder.events
+    assert event["action"] == "BLOCK"
+    assert event["risk_level"] == "HIGH"
+    assert event["checks"]["pipeline"] == {"action": "ERROR", "error": "redacted_messages_missing"}
+    assert event["checks"]["pii_redaction"]["count"] == 1
+    assert "would_action" not in event
     assert any("messages" in r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR)
+
+
+def test_gateway_answers_403_when_the_redaction_result_has_no_messages(monkeypatch):
+    _pipeline_without_messages(monkeypatch, {"params": {}})
+    upstream = _json_upstream()
+    body = {"model": "example-model", "messages": [{"role": "user", "content": "hello"}]}
+    cfg = settings(PII_REDACTION_ENABLED=True, ADMINA_GATEWAY_BLOCK_STATUS=403)
+    resp = through(upstream, body, cfg)
+    assert upstream.requests == []
+    assert resp.status_code == 403
+    assert resp.headers["x-admina-action"] == "BLOCK"
+    assert resp.json()["error"]["code"] == "governance_blocked"
+    assert resp.json()["error"]["categories"] == []
 
 
 # ── Placeholders stay as they are ─────────────────────────────
