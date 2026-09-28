@@ -442,6 +442,31 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `applicable` criteria of each pillar, and exports as JSON (`to_json()`,
   read back by `from_dict()`) and Markdown (`to_markdown()`, a table per
   pillar). `compute_oisg_score()` is unchanged.
+- `run_suite()` of `admina.redteam` takes `corpora_dir`, `baseline` and
+  `config`; without them the scorecard is unchanged.
+  - `corpora_dir`: a directory of external corpora, `<name>.jsonl` files
+    whose rows have the format of the packaged corpus of their detector
+    (rows with `messages`: loop breaker; with `expected_types`: PII;
+    otherwise the firewall, `label` `attack` or `benign`), each listed in the
+    directory's `SHA256SUMS`, which is verified before the run
+    (`load_external_corpora()`). They run after the packaged corpora, under
+    their names (the name of a packaged corpus is refused), and `corpora=`
+    selects them by name; an unknown name in `corpora=` raises `ValueError`.
+    The scorecard's `external_corpora` holds `dir` and the detector of each.
+  - `baseline`: a baseline file (or its mapping) compared with the run by
+    `compare()`, limited to the selected corpora and engines; the
+    scorecard's `gate` holds `baseline`, `failures` and `notes`.
+    `BASELINE_PATH` is the packaged baseline.
+  - `config`: an admina.yaml whose `agent_security.firewall` settings
+    (custom patterns, pattern packs and their directories, disabled
+    categories and patterns, heuristic threshold, allowed tags) build the
+    Python injection firewall as the proxy does; the Rust engine runs on the
+    injection corpora only when the file sets none of
+    `PYTHON_ONLY_FIREWALL_KEYS`. The PII and loop detectors keep their
+    defaults. The scorecard's `config` holds `path` and `python_only_keys`.
+  The Markdown scorecard names the external corpora and the configuration.
+  `InjectionAdapter(config)` and `all_detectors(firewall_config)` take the
+  `FirewallConfig`, and the adapter builds the firewall of each engine once.
 
 ### Changed
 
