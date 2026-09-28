@@ -90,11 +90,21 @@ def test_fields(monkeypatch):
 
 
 def test_engine_fields_are_unchanged(monkeypatch):
+    # The fields of 0.12, plus the engines of the objects the proxy built
+    # (none in this state: firewall, loop breaker and PII engine are None).
     engine = _health(monkeypatch)["engine"]
     assert engine == engine_status()
-    assert {"engine", "rust_available", "rust_version", "selection", "active", "pii_active"} == set(
-        engine
-    )
+    assert {
+        "engine",
+        "rust_available",
+        "rust_version",
+        "selection",
+        "active",
+        "pii_active",
+        "firewall",
+        "loop_breaker",
+        "pii",
+    } == set(engine)
 
 
 @pytest.mark.parametrize("mode", ["enforce", "observe", "dry-run"])

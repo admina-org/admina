@@ -72,6 +72,7 @@ from admina.proxy.api.integration import create_integration_endpoints
 from admina.proxy.body_limit import BodyLimitMiddleware
 from admina.proxy.config import GovernanceEvent, settings
 from admina.proxy.decisions import Decision, text_sha256
+from admina.proxy.engine_report import engine_banner, engine_info_lines
 from admina.proxy.env_check import UnknownVariablesError, plugin_prefixes, unknown_variables
 from admina.proxy.forensic_backend import build_forensic_store
 from admina.proxy.gateway_scan import (
@@ -410,13 +411,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     logger.info("=" * 60)
     logger.info("  Admina Governance Proxy — READY  v%s", __version__)
-    _eng = engine_status()
-    _eng_label = (
-        "%s v%s" % (_eng["engine"].upper(), _eng["rust_version"])
-        if _eng["rust_available"]
-        else "%s (install admina-core for Rust speed)" % _eng["engine"].upper()
+    engine_lines = engine_banner(
+        _engine_status(state),
+        firewall_on=settings.INJECTION_FAST_PATH_ENABLED,
+        pii_on=settings.PII_REDACTION_ENABLED,
     )
-    logger.info("  Engine: %s", _eng_label)
+    logger.info(engine_lines[0])
     logger.info("  Surfaces: %s", ", ".join(surfaces))
     if "mcp" in surfaces:
         logger.info("  Upstream MCP: %s", settings.UPSTREAM_MCP_URL)
@@ -451,10 +451,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     )
     if state.router.is_multi_upstream:
         logger.info("  OpenClaw mode: routing %d MCP servers", len(state.router.routes))
-    logger.info(
-        "  Firewall: ON | PII Redaction: ON | Loop Breaker: %s",
-        "ON" if state.loop_breaker is not None else "OFF",
-    )
+    logger.info(engine_lines[1])
     logger.info("=" * 60)
 
     yield
@@ -527,6 +524,16 @@ def _check_configuration() -> None:
         "ADMINA_* variables not read by Admina: %s (ADMINA_CONFIG_STRICT=true makes them an "
         "error; ADMINA_ENV_ALLOW_PREFIXES lists the prefixes of other components)",
         ", ".join(unknown),
+    )
+
+
+def _engine_status(state: Any) -> dict[str, Any]:
+    """:func:`engine_status` with the firewall, loop breaker and PII engine
+    that *state* holds, the ones the proxy built."""
+    return engine_status(
+        firewall=getattr(state, "firewall", None),
+        loop_breaker=getattr(state, "loop_breaker", None),
+        pii_engine=getattr(state, "pii_redactor", None),
     )
 
 
@@ -663,7 +670,7 @@ _dashboard_router = create_dashboard_endpoints(
     get_clickhouse=lambda: app.state.proxy.clickhouse,
     get_settings=lambda: settings,
     get_redis=lambda: app.state.proxy.redis,
-    get_engine_status=lambda: engine_status(),
+    get_engine_status=lambda: _engine_status(app.state.proxy),
     get_http_client=lambda: app.state.proxy.http_client,
     get_firewall=lambda: app.state.proxy.firewall,
     get_pii_redactor=lambda: app.state.proxy.pii_redactor,
@@ -1137,7 +1144,7 @@ async def health(request: Request) -> dict[str, Any]:
         "ruleset_sha256": scan_config_of(state).ruleset_sha256,
         "forensic_writable": forensic_writable,
         "forensic_chain": getattr(getattr(state, "forensic_box", None), "chain_status", None),
-        "engine": engine_status(),
+        "engine": _engine_status(state),
         "timestamp": datetime.now(UTC).isoformat(),
     }
 
@@ -1176,7 +1183,6 @@ async def prometheus_metrics(request: Request) -> Response:
     lb_stats = state.loop_breaker.get_stats() if state.loop_breaker else {}
     pii_stats = state.pii_redactor.get_stats() if state.pii_redactor else {}
     fbox_stats = state.forensic_box.get_stats() if state.forensic_box else {}
-    eng = engine_status()
 
     lines: list[str] = []
     _emitted_metadata: set[str] = set()
@@ -1284,14 +1290,11 @@ async def prometheus_metrics(request: Request) -> Response:
 
     lines.extend(state.loop_lag.exposition())
 
-    # Engine info as a labelled gauge with constant value 1
-    engine_name = eng.get("engine", "unknown")
-    rust_avail = "yes" if eng.get("rust_available") else "no"
-    lines.append("# HELP admina_engine_info Static info about the running engine")
-    lines.append("# TYPE admina_engine_info gauge")
-    lines.append(
-        f'admina_engine_info{{engine="{engine_name}",rust_available="{rust_avail}",'
-        f'version="{__version__}"}} 1'
+    # The engines the proxy runs, as a labelled gauge with constant value 1.
+    lines.extend(
+        engine_info_lines(
+            _engine_status(state), pii_on=settings.PII_REDACTION_ENABLED, version=__version__
+        )
     )
 
     body = "\n".join(lines) + "\n"
@@ -1307,7 +1310,7 @@ async def get_stats(request: Request) -> dict[str, Any]:
     state = _get_state(request)
     return {
         "proxy": state.metrics,
-        "engine": engine_status(),
+        "engine": _engine_status(state),
         "firewall": state.firewall.get_stats(),
         "loop_breaker": state.loop_breaker.get_stats() if state.loop_breaker else {},
         "pii_redactor": state.pii_redactor.get_stats(),
@@ -1526,7 +1529,7 @@ async def consolidated_compliance_report(
     snapshot: dict[str, Any] = {
         "generated_at": datetime.now(UTC).isoformat(),
         "admina_version": __version__,
-        "engine": engine_status(),
+        "engine": _engine_status(state),
         "proxy_metrics": state.metrics,
         "eu_ai_act": {
             "stats": state.compliance.get_stats(),

@@ -384,6 +384,16 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   istruzioni precedenti" (`analizza` has the form of the third person).
   Every pattern is timed with the builtin patterns
   (`tests/test_firewall_pattern_timing.py`).
+- `GET /health` and `GET /api/stats` report, under `engine`, the engines of
+  the components the proxy built: `firewall` (`rust` or `python`),
+  `loop_breaker` (`null` when no enabled surface needs one) and `pii`
+  (`python`, `rust`, `presidio` or the name of a plugin engine), next to
+  the fields of 0.12 (`selection`, `active`, `pii_active`,
+  `rust_available`, `rust_version`, `engine`), which are unchanged. With an
+  admina.yaml that makes the firewall Python under `ADMINA_ENGINE=auto`,
+  `engine.firewall` is `python` while `engine.active` is `rust`.
+  `engine_status()` takes the built objects (`firewall=`, `loop_breaker=`,
+  `pii_engine=`); without them the three fields are `null`.
 - admina.yaml is checked against its schema (`schema_version: 1`,
   `admina.core.config_schema`). `check_config(path=None, *, strict=False)`
   and `config_path()` of `admina.core.config` return the file checked and
@@ -403,9 +413,35 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 - `ADMINA_CONFIG_STRICT` (default `false`): `true` makes unknown admina.yaml
   keys (`ConfigSchemaError`) and unknown `ADMINA_*` variables
   (`UnknownVariablesError`, a `ValueError`) stop the proxy at startup.
+- `admina.engines.PYTHON_ONLY_FIREWALL_KEYS` (`custom_patterns`,
+  `disabled_categories`, `disabled_patterns`, `pattern_packs`) and
+  `admina.engines.EngineSelectionError` (a `ValueError`).
+- The loop breaker and PII bridges name their engine (`engine` attribute),
+  as the firewall bridges do.
 
 ### Changed
 
+- `ADMINA_ENGINE=rust` without `admina-core` installed is an error: the
+  engine factories (`get_firewall()`, `get_loop_breaker()`,
+  `get_pii_engine()`, the SDK included) and `engine_status()` raise
+  `EngineSelectionError` ("ADMINA_ENGINE=rust, but admina-core is not
+  installed: install admina-framework[rust], or set ADMINA_ENGINE=python
+  (or auto) to run the Python engines") and the proxy does not start (it
+  ran the Python engines, with a warning). Migration: install the `[rust]`
+  extra, or set `ADMINA_ENGINE=auto` (Rust when installed) or `python`.
+- `ADMINA_ENGINE=rust` with a non-empty
+  `agent_security.firewall.custom_patterns`, `disabled_categories`,
+  `disabled_patterns` or `pattern_packs` in admina.yaml is an error:
+  `get_firewall()` raises `EngineSelectionError` naming the keys
+  ("ADMINA_ENGINE=rust, but admina.yaml sets
+  agent_security.firewall.custom_patterns, which only the Python firewall
+  applies: remove them, or set ADMINA_ENGINE=python (or auto) to run the
+  Python firewall") and the proxy does not start (it ran the Python
+  firewall, with a warning). Migration: remove these keys from the file
+  used with `ADMINA_ENGINE=rust`, or set `auto` (the Python firewall runs
+  with them, as before) or `python`. `pattern_pack_dirs`,
+  `strict_pack_timing`, `heuristic_threshold` and `allowed_tags` do not
+  select an engine. Under `auto` the warning names the keys that are set.
 - A value of the wrong type in admina.yaml is an error naming the key:
   `load_config()` raises `ConfigSchemaError` (a `ValueError`; a file named
   by `ADMINA_CONFIG` gives a `ConfigFileError`, as for other invalid files),
@@ -416,6 +452,18 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   free-form blocks (`plugin_config`, `integrations`,
   `agent_security.domains`, the entries of `custom_patterns`) are not
   checked. Migration: fix the value the error names.
+- The startup banner reports the engine selection and the engines that run,
+  and the settings that switch the firewall and PII redaction on the
+  gateway and `/mcp`: "Engine selection: ADMINA_ENGINE=auto (admina-core
+  <version>)" and "Firewall: ON (rust engine) | PII Redaction: OFF (gateway
+  and /mcp) | Loop Breaker: ON (rust engine)" (they were "Engine: RUST
+  v<version>" and "Firewall: ON | PII Redaction: ON | Loop Breaker: ON",
+  whatever the engines and settings).
+- `admina_engine_info` has the labels `engine` and `firewall` (the
+  firewall's engine; `engine` was `rust` whenever `admina-core` was
+  installed), `loop_breaker` (`none` when none is built), `pii`,
+  `pii_redaction` (`on`, `off`), `rust_available`, `rust_version`,
+  `selection` and `version`.
 
 - `admina_requests_total` has the labels `surface` (`gateway`, `mcp`,
   `integration`) and `action` (`ALLOW`, `BLOCK`, `REDACT`, `CIRCUIT_BREAK`,

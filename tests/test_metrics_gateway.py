@@ -356,8 +356,15 @@ def test_labels_never_carry_request_data(proxy):
                 "le",
                 "status",
                 "category",
+                # admina_engine_info: engine names and settings only.
                 "engine",
+                "firewall",
+                "loop_breaker",
+                "pii",
+                "pii_redaction",
                 "rust_available",
+                "rust_version",
+                "selection",
                 "version",
             }, line
 

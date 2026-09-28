@@ -52,6 +52,11 @@ domains:
       upstream: "http://localhost:9000"
     firewall:
       enabled: true
+      # The firewall is a heuristic signal, not a guarantee. custom_patterns,
+      # disabled_categories, disabled_patterns and pattern_packs (below)
+      # apply to the Python firewall only: set to a non-empty list, any of
+      # them makes ADMINA_ENGINE=auto run the Python firewall, and stops the
+      # proxy under ADMINA_ENGINE=rust.
       # Deep-path (heuristic) score from which a text is flagged, 0.5 by
       # default (Python engine). INJECTION_DEEP_PATH_ENABLED=false turns the
       # deep path off.

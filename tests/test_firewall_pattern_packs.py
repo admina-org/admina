@@ -488,8 +488,12 @@ def test_packs_select_the_python_firewall(tmp_path, monkeypatch):
     from admina import engines
 
     monkeypatch.setenv("ADMINA_CONFIG", str(_pack_config(tmp_path, "[example-pack]")))
-    monkeypatch.setenv("ADMINA_ENGINE", "rust")
+    monkeypatch.setenv("ADMINA_ENGINE", "auto")
     assert engines.get_firewall().engine == "python"
+    # An explicit rust selection cannot apply them: an error, not Python.
+    monkeypatch.setenv("ADMINA_ENGINE", "rust")
+    with pytest.raises(engines.EngineSelectionError, match="pattern_packs"):
+        engines.get_firewall()
 
 
 def test_disabled_pack_pattern_from_admina_yaml(tmp_path, monkeypatch):

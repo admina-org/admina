@@ -266,20 +266,23 @@ def test_get_pii_scanner_alias(monkeypatch):
     assert scanner.get_stats()["engine"] == "python"
 
 
-# ── Rust requested but unavailable → fallback ────────────────────────────────
+# ── Rust requested but unavailable → error ───────────────────────────────────
 
 
-def test_rust_requested_but_unavailable_falls_back(monkeypatch, caplog):
-    import logging
-
+def test_rust_requested_but_unavailable_is_an_error(monkeypatch):
     monkeypatch.setenv("ADMINA_ENGINE", "rust")
     _reload_engines()
     from admina import engines
 
     monkeypatch.setattr(engines, "_rust_available", False)
-    with caplog.at_level(logging.WARNING, logger="admina.engines"):
-        assert engines.engine_status()["active"] == "python"
-    assert any("falling back" in r.message for r in caplog.records)
+    for call in (
+        engines.engine_status,
+        engines.get_firewall,
+        engines.get_loop_breaker,
+        engines.get_pii_engine,
+    ):
+        with pytest.raises(engines.EngineSelectionError, match="admina-core is not installed"):
+            call()
 
 
 # ── Rust PII stats value semantics ───────────────────────────────────────────

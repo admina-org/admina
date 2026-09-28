@@ -17,6 +17,17 @@
 Single point where every surface (proxy, SDK, integrations) obtains the
 governance engines: Rust auto-detection, ``ADMINA_ENGINE=auto|python|rust``
 override, admina.yaml firewall overrides, ``pii_engine`` selection.
+
+``ADMINA_ENGINE``:
+
+- ``auto`` (default): the Rust firewall and loop breaker when ``admina-core``
+  is installed, else the Python ones; the Python firewall whenever
+  admina.yaml sets a key of :data:`PYTHON_ONLY_FIREWALL_KEYS` (a warning is
+  logged); the PII engine stays Python.
+- ``python``: the Python engines.
+- ``rust``: the Rust engines. A factory raises :class:`EngineSelectionError`
+  when ``admina-core`` is not installed or when admina.yaml sets a key of
+  :data:`PYTHON_ONLY_FIREWALL_KEYS`, so the proxy does not start.
 """
 
 from __future__ import annotations
@@ -63,6 +74,37 @@ except ImportError:
 # ── Engine selector ─────────────────────────────────────────────────────────
 
 
+class EngineSelectionError(ValueError):
+    """``ADMINA_ENGINE=rust`` cannot be honoured: ``admina-core`` is not
+    installed, or admina.yaml sets a firewall key that only the Python
+    firewall applies. The engines are not built and the proxy does not
+    start."""
+
+
+#: Keys of ``agent_security.firewall`` that only the Python firewall
+#: applies. Under ``ADMINA_ENGINE=auto`` any of them makes the firewall
+#: Python; under ``ADMINA_ENGINE=rust`` it is an :class:`EngineSelectionError`.
+PYTHON_ONLY_FIREWALL_KEYS = (
+    "custom_patterns",
+    "disabled_categories",
+    "disabled_patterns",
+    "pattern_packs",
+)
+
+
+def _engine_mode() -> str:
+    """``ADMINA_ENGINE`` in lower case: ``auto`` (also when unset),
+    ``python`` or ``rust``.
+
+    Raises:
+        ValueError: any other value.
+    """
+    mode = os.environ.get("ADMINA_ENGINE", "auto").lower()
+    if mode not in ("auto", "python", "rust"):
+        raise ValueError(f"ADMINA_ENGINE must be auto|python|rust, got {mode!r}")
+    return mode
+
+
 def _resolve_engine() -> str:
     """Return the effective engine name based on ADMINA_ENGINE env override.
 
@@ -70,19 +112,26 @@ def _resolve_engine() -> str:
 
     Raises:
         ValueError: if ``ADMINA_ENGINE`` is set to an unrecognised value.
+        EngineSelectionError: ``ADMINA_ENGINE=rust`` and ``admina-core`` is
+            not installed.
     """
-    mode = os.environ.get("ADMINA_ENGINE", "auto").lower()
-    if mode not in ("auto", "python", "rust"):
-        raise ValueError(f"ADMINA_ENGINE must be auto|python|rust, got {mode!r}")
-    if mode == "rust" and not _rust_available:
-        logger.warning(
-            "ADMINA_ENGINE=rust but admina-core is not installed — "
-            "falling back to python (pip install 'admina-framework[rust]')"
-        )
-        return "python"
+    mode = _engine_mode()
+    if mode == "rust":
+        _require_rust()
     if mode == "auto":
         return "rust" if _rust_available else "python"
     return mode
+
+
+def _require_rust() -> None:
+    """Raise :class:`EngineSelectionError` when ``admina-core`` is not
+    installed (``ADMINA_ENGINE=rust``)."""
+    if not _rust_available:
+        raise EngineSelectionError(
+            "ADMINA_ENGINE=rust, but admina-core is not installed: install "
+            "admina-framework[rust], or set ADMINA_ENGINE=python (or auto) to run "
+            "the Python engines"
+        )
 
 
 def _resolve_pii_engine() -> str:
@@ -95,17 +144,15 @@ def _resolve_pii_engine() -> str:
     under 'auto' (the default) the PII path stays on Python for full
     recall. Firewall and loop breaker are unaffected — they use
     _resolve_engine() and keep Rust acceleration under 'auto'.
+
+    Raises:
+        ValueError: if ``ADMINA_ENGINE`` is set to an unrecognised value.
+        EngineSelectionError: ``ADMINA_ENGINE=rust`` and ``admina-core`` is
+            not installed.
     """
-    mode = os.environ.get("ADMINA_ENGINE", "auto").lower()
-    if mode not in ("auto", "python", "rust"):
-        raise ValueError(f"ADMINA_ENGINE must be auto|python|rust, got {mode!r}")
+    mode = _engine_mode()
     if mode == "rust":
-        if not _rust_available:
-            logger.warning(
-                "ADMINA_ENGINE=rust but admina-core is not installed — "
-                "PII falls back to python (pip install 'admina-framework[rust]')"
-            )
-            return "python"
+        _require_rust()
         return "rust"
     if mode == "auto" and _rust_available:
         logger.debug(
@@ -174,10 +221,13 @@ class _FirewallSettings:
         return bool(self.extras or self.disabled_categories or self.disabled_patterns or self.packs)
 
 
-def _firewall_settings() -> _FirewallSettings:
-    """The :class:`_FirewallSettings` of admina.yaml (none when the file
-    cannot be read, as :func:`_firewall_config`), with its pattern packs
-    loaded and timed.
+_NO_CONFIG: Any = object()
+
+
+def _firewall_settings(fw_cfg: FirewallConfig | None = _NO_CONFIG) -> _FirewallSettings:
+    """The :class:`_FirewallSettings` of *fw_cfg* (by default the
+    ``agent_security.firewall`` of admina.yaml, as :func:`_firewall_config`;
+    none when it cannot be read), with its pattern packs loaded and timed.
 
     Raises:
         PatternPackError: a pattern pack cannot be loaded, or is too slow
@@ -185,7 +235,8 @@ def _firewall_settings() -> _FirewallSettings:
     """
     from admina.domains.agent_security.pattern_packs import configured_packs
 
-    fw_cfg = _firewall_config()
+    if fw_cfg is _NO_CONFIG:
+        fw_cfg = _firewall_config()
     if fw_cfg is None:
         return _FirewallSettings()
     return _FirewallSettings(
@@ -196,6 +247,14 @@ def _firewall_settings() -> _FirewallSettings:
         heuristic_threshold=fw_cfg.heuristic_threshold,
         allowed_tags=list(fw_cfg.allowed_tags),
     )
+
+
+def _python_only_keys(fw_cfg: FirewallConfig | None) -> list[str]:
+    """The keys of :data:`PYTHON_ONLY_FIREWALL_KEYS` that *fw_cfg* sets (a
+    non-empty value), in that order."""
+    if fw_cfg is None:
+        return []
+    return [key for key in PYTHON_ONLY_FIREWALL_KEYS if getattr(fw_cfg, key, None)]
 
 
 #: Environment variable that turns the firewall's deep path off.
@@ -319,6 +378,8 @@ class _RustFirewallBridge:
 class _PythonPiiBridge:
     """Wraps the Python PIIRedactor."""
 
+    engine = "python"
+
     def __init__(self, mask_style: str = "typed"):
         from admina.domains.data_sovereignty.pii import PIIRedactor
 
@@ -341,6 +402,8 @@ class _RustPiiBridge:
     ``omissis`` mask style the scanner's masks (``[EMAIL_REDACTED]``, …)
     become ``[OMISSIS]``.
     """
+
+    engine = "rust"
 
     def __init__(self, mask_style: str = "typed"):
         from admina.domains.data_sovereignty.masking import normalize_mask_style
@@ -385,6 +448,8 @@ _RUST_PII_MASK_RX = re.compile(r"\[(?:EMAIL|CC|SSN|PHONE|IBAN|IP)_REDACTED\]")
 class _PythonLoopBridge:
     """Wraps the Python LoopBreaker."""
 
+    engine = "python"
+
     def __init__(self, **kwargs):
         from admina.domains.agent_security.loop_breaker import LoopBreaker
 
@@ -406,6 +471,8 @@ class _RustLoopBridge:
     similarity_threshold, total_checks) beyond the Python key set;
     mapped to the Python key set only.
     """
+
+    engine = "rust"
 
     def __init__(self, window_size=10, similarity_threshold=0.85, max_consecutive=3, **kwargs):
         self._impl = admina_core.RustLoopBreaker(
@@ -433,10 +500,13 @@ class _RustLoopBridge:
 def get_firewall(*, deep_path_enabled: bool | None = None) -> FirewallBridge:
     """Get the configured firewall engine.
 
-    If YAML overrides (custom_patterns, disabled_categories,
-    disabled_patterns or pattern_packs) are present, the Python bridge is
-    used even when Rust is available — Rust cannot receive operator-defined
-    patterns, so using it would silently ignore them.
+    ``ADMINA_ENGINE=auto``: the Rust firewall when ``admina-core`` is
+    installed, unless admina.yaml sets a key of
+    :data:`PYTHON_ONLY_FIREWALL_KEYS` (``custom_patterns``,
+    ``disabled_categories``, ``disabled_patterns``, ``pattern_packs``): the
+    Rust engine cannot apply them, so the Python firewall is used and a
+    warning is logged. ``python``: the Python firewall. ``rust``: the Rust
+    firewall, or :class:`EngineSelectionError`.
 
     *deep_path_enabled* switches the deep path (heuristic scoring) of either
     engine; ``None`` reads ``INJECTION_DEEP_PATH_ENABLED`` (default on).
@@ -444,27 +514,37 @@ def get_firewall(*, deep_path_enabled: bool | None = None) -> FirewallBridge:
     firewall; the Rust engine scores with signals and a threshold of its own.
 
     Raises:
-        ValueError: ``heuristic_threshold`` is not a finite number greater
-            than 0; a pattern pack cannot be loaded, or is too slow with
+        EngineSelectionError: ``ADMINA_ENGINE=rust`` and ``admina-core`` is
+            not installed, or admina.yaml sets a key of
+            :data:`PYTHON_ONLY_FIREWALL_KEYS` (the message names them).
+        ValueError: ``ADMINA_ENGINE`` has another value;
+            ``heuristic_threshold`` is not a finite number greater than 0; a
+            pattern pack cannot be loaded, or is too slow with
             ``strict_pack_timing``
             (:class:`~admina.domains.agent_security.pattern_packs.PatternPackError`).
     """
     if deep_path_enabled is None:
         deep_path_enabled = _deep_path_from_env()
-    settings = _firewall_settings()
-    if settings.python_only:
-        resolved = _resolve_engine()
-        if resolved == "rust":
-            logger.warning(
-                "YAML firewall overrides (custom_patterns/disabled_categories/"
-                "disabled_patterns/pattern_packs) are set but the Rust engine cannot apply them — "
-                "falling back to the Python bridge so operator rules are enforced. "
-                "Remove overrides to use Rust acceleration."
+    resolved = _resolve_engine()
+    fw_cfg = _firewall_config()
+    python_only = _python_only_keys(fw_cfg)
+    if resolved == "rust" and python_only:
+        if _engine_mode() == "rust":
+            keys = ", ".join(f"agent_security.firewall.{key}" for key in python_only)
+            raise EngineSelectionError(
+                f"ADMINA_ENGINE=rust, but admina.yaml sets {keys}, which only the Python "
+                "firewall applies: remove them, or set ADMINA_ENGINE=python (or auto) to "
+                "run the Python firewall"
             )
-        return _PythonFirewallBridge(settings, deep_path_enabled=deep_path_enabled)
-    if _resolve_engine() == "rust":
+        logger.warning(
+            "YAML firewall overrides (%s) are set but the Rust engine cannot apply them — "
+            "falling back to the Python bridge so operator rules are enforced. "
+            "Remove overrides to use Rust acceleration.",
+            ", ".join(python_only),
+        )
+    if resolved == "rust" and not python_only:
         return _RustFirewallBridge(deep_path_enabled=deep_path_enabled)
-    return _PythonFirewallBridge(settings, deep_path_enabled=deep_path_enabled)
+    return _PythonFirewallBridge(_firewall_settings(fw_cfg), deep_path_enabled=deep_path_enabled)
 
 
 def get_loop_breaker(**kwargs: Any) -> LoopBreakerBridge:
@@ -620,8 +700,33 @@ def get_pii_scanner() -> PIIBridge:
 # ── Status / diagnostics ────────────────────────────────────────────────────
 
 
-def engine_status() -> dict[str, Any]:
-    """Get engine status for diagnostics."""
+def engine_status(
+    *,
+    firewall: Any = None,
+    loop_breaker: Any = None,
+    pii_engine: Any = None,
+) -> dict[str, Any]:
+    """Get engine status for diagnostics.
+
+    ``engine``: ``rust`` when ``admina-core`` is installed, else ``python``;
+    ``rust_available`` and ``rust_version`` (``admina_core.version()``, or
+    None); ``selection``: ``ADMINA_ENGINE`` as set (``auto`` when unset);
+    ``active``: the engine that selection resolves to for the firewall and
+    the loop breaker, and ``pii_active`` for the ``spacy-regex`` PII engine.
+
+    ``firewall``, ``loop_breaker`` and ``pii``: the engine of the objects
+    given, the ones actually built (the proxy passes its own): ``rust`` or
+    ``python`` for the firewall (``python`` for a firewall that names no
+    engine) and the loop breaker; ``rust``, ``python``, ``presidio`` or the
+    name of a plugin engine for the PII engine; None for an object not
+    given. With admina.yaml overrides, ``firewall`` is ``python`` while
+    ``active`` is ``rust``.
+
+    Raises:
+        ValueError: ``ADMINA_ENGINE`` has an unknown value.
+        EngineSelectionError: ``ADMINA_ENGINE=rust`` and ``admina-core`` is
+            not installed.
+    """
     return {
         "engine": ENGINE,
         "rust_available": _rust_available,
@@ -629,11 +734,30 @@ def engine_status() -> dict[str, Any]:
         "selection": os.environ.get("ADMINA_ENGINE", "auto"),
         "active": _resolve_engine(),
         "pii_active": _resolve_pii_engine(),
+        "firewall": None if firewall is None else getattr(firewall, "engine", "python"),
+        "loop_breaker": _engine_of(loop_breaker),
+        "pii": _engine_of(pii_engine),
     }
+
+
+def _engine_of(component: Any) -> str | None:
+    """The engine of a built loop breaker or PII engine: its ``engine``
+    name, else the ``engine`` of its statistics (a Presidio or plugin PII
+    engine), else ``python``; None for None."""
+    if component is None:
+        return None
+    name = getattr(component, "engine", None)
+    if isinstance(name, str):
+        return name
+    get_stats = getattr(component, "get_stats", None)
+    stats_engine = get_stats().get("engine") if callable(get_stats) else None
+    return str(stats_engine) if stats_engine else "python"
 
 
 __all__ = [
     "ENGINE",
+    "PYTHON_ONLY_FIREWALL_KEYS",
+    "EngineSelectionError",
     "FirewallBridge",
     "LoopBreakerBridge",
     "PIIBridge",
