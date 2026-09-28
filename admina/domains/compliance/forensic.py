@@ -58,9 +58,13 @@ from admina.domains.compliance.forensic_files import (
 )
 from admina.domains.compliance.forensic_integrity import (
     GENESIS,
+    RECORD_SIG_ALG,
+    RECORD_UNSIGNED,
     STORE_UNAVAILABLE,
     RecordEntry,
     compute_record_hash,
+    record_signing_key,
+    sign_record_hash,
     verify_entries,
 )
 from admina.plugins.base import BaseForensicStore
@@ -140,6 +144,12 @@ class ForensicBlackBox(BaseForensicStore):
         # Result of the last record write (None before the first one).
         self._last_write_ok: bool | None = None
         self._state_signing_key = state_signing_key or secret_from_env("ADMINA_FORENSIC_STATE_KEY")
+        # Key of the record signatures, derived from the state key.
+        self._signing_key = (
+            record_signing_key(self._state_signing_key) if self._state_signing_key else None
+        )
+        # First sequence number that must carry a signature (None: no key).
+        self._signed_from: int | None = 1 if self._signing_key is not None else None
         if self.filesystem_dir is not None:
             ensure_directory(self.filesystem_dir)
         self._ensure_bucket()
@@ -310,6 +320,8 @@ class ForensicBlackBox(BaseForensicStore):
         self.record_count = last.get("sequence_number", record_seq(key) or 0)
         self.chain_head = last.get("record_hash", GENESIS)
         self._head_key = key
+        if self._signing_key is not None:
+            self._signed_from = self.record_count + 1
         logger.warning(
             "Forensic chain state reconstructed from the stored records "
             "(state file missing or corrupt): seq=%d, head=%s...",
@@ -331,6 +343,13 @@ class ForensicBlackBox(BaseForensicStore):
         self.record_count = state.get("record_count", 0)
         head_key = state.get("head_key")
         self._head_key = head_key if isinstance(head_key, str) and record_seq(head_key) else None
+        if self._signing_key is not None:
+            signed_from = state.get("signed_from")
+            # A state written before records were signed: the records from
+            # the next one on are.
+            self._signed_from = (
+                signed_from if isinstance(signed_from, int) else self.record_count + 1
+            )
 
     def _restore_chain_state(self):
         """Restore chain_head and record_count from the configured backend."""
@@ -386,6 +405,7 @@ class ForensicBlackBox(BaseForensicStore):
                 "updated_at": datetime.now(UTC).isoformat(),
                 "format": FORMAT,
                 "head_key": self._head_key,
+                "signed_from": self._signed_from,
             }
         ).encode("utf-8")
         sig = self._sign_state_payload(payload)
@@ -461,6 +481,11 @@ class ForensicBlackBox(BaseForensicStore):
             }
             record_hash = compute_record_hash(forensic_record)
             forensic_record["record_hash"] = record_hash
+            if self._signing_key is not None:
+                forensic_record["record_sig"] = sign_record_hash(self._signing_key, record_hash)
+                forensic_record["record_sig_alg"] = RECORD_SIG_ALG
+            else:
+                forensic_record["record_sig_alg"] = RECORD_UNSIGNED
 
             if not self._durable:
                 self.record_count, self.chain_head = seq, record_hash
@@ -582,10 +607,12 @@ class ForensicBlackBox(BaseForensicStore):
         Returns:
             ``valid``, ``records`` (checked), ``last_hash`` (the chain
             head), ``reason`` and ``sequence_number`` (the first failure,
-            see :mod:`~admina.domains.compliance.forensic_integrity`) and
+            see :mod:`~admina.domains.compliance.forensic_integrity`),
             ``checkpoint`` (``{"sequence_number", "record_hash"}`` to resume
-            from, None when invalid). The in-memory store has no stored
-            chain: valid, 0 records.
+            from, None when invalid), ``signed``, ``unsigned`` and
+            ``signatures_verified`` (signatures are checked with the key
+            the store signs with). The in-memory store has no stored chain:
+            valid, 0 records.
         """
         if checkpoint is not None and from_seq is not None:
             raise ValueError("pass from_seq or checkpoint, not both")
@@ -596,13 +623,16 @@ class ForensicBlackBox(BaseForensicStore):
         if from_seq is not None and from_seq < 1:
             raise ValueError("from_seq must be at least 1")
         with self._write_lock:
-            count, head = self.record_count, self.chain_head
+            count, head, signed_from = self.record_count, self.chain_head, self._signed_from
         result: dict[str, Any] = {
             "valid": True,
             "records": 0,
             "reason": None,
             "sequence_number": None,
             "checkpoint": None,
+            "signed": 0,
+            "unsigned": 0,
+            "signatures_verified": self._signing_key is not None,
         }
         if self._durable:
             if checkpoint is not None:
@@ -618,6 +648,8 @@ class ForensicBlackBox(BaseForensicStore):
                 from_seq=start,
                 checkpoint=checkpoint,
                 state=(count, head),
+                signing_key=self._signing_key,
+                signed_from=signed_from,
             )
             result = report.as_dict()
         return {**result, "last_hash": head}
@@ -710,8 +742,9 @@ class UnavailableForensicStore(ForensicBlackBox):
         }
 
 
-def _state_of(payload: bytes | None) -> tuple[int, str] | None:
-    """``(record_count, chain_head)`` of a chain-state payload, or None."""
+def _state_of(payload: bytes | None) -> dict[str, Any] | None:
+    """The chain-state payload as an object with an integer
+    ``record_count`` and a string ``chain_head``, or None."""
     if payload is None:
         return None
     try:
@@ -720,15 +753,17 @@ def _state_of(payload: bytes | None) -> tuple[int, str] | None:
         return None
     if not isinstance(state, dict):
         return None
-    count, head = state.get("record_count", 0), state.get("chain_head", GENESIS)
-    if not isinstance(count, int) or not isinstance(head, str):
+    if not isinstance(state.get("record_count", 0), int):
         return None
-    return count, head
+    if not isinstance(state.get("chain_head", GENESIS), str):
+        return None
+    return state
 
 
 def verify_directory(
     base_dir: str | Path,
     *,
+    state_key: str | None = None,
     from_seq: int | None = None,
     checkpoint: tuple[int, str] | None = None,
 ) -> dict:
@@ -736,8 +771,9 @@ def verify_directory(
     reading one record at a time and writing nothing.
 
     As :meth:`ForensicBlackBox.verify`, against the chain state stored in
-    the directory. ``last_hash`` is the state's head (or, without a state,
-    the hash of the last record checked).
+    the directory; with *state_key* (the chain-state key) the record
+    signatures are checked. ``last_hash`` is the state's head (or, without a
+    state, the hash of the last record checked).
     """
     if checkpoint is not None and from_seq is not None:
         raise ValueError("pass from_seq or checkpoint, not both")
@@ -747,16 +783,22 @@ def verify_directory(
     except FileNotFoundError:
         payload = None
     state = _state_of(payload)
+    signing_key = record_signing_key(state_key) if state_key else None
+    signed_from = state.get("signed_from") if state is not None else None
     start = checkpoint[0] if checkpoint is not None else (from_seq or 1)
     report = verify_entries(
         ((seq, path.read_bytes) for seq, path in iter_record_files(base, start)),
         from_seq=start,
         checkpoint=checkpoint,
-        state=state,
+        state=None
+        if state is None
+        else (state.get("record_count", 0), state.get("chain_head", GENESIS)),
+        signing_key=signing_key,
+        signed_from=signed_from if isinstance(signed_from, int) else None,
     )
     result = report.as_dict()
     if state is not None:
-        last_hash = state[1]
+        last_hash = state.get("chain_head", GENESIS)
     else:
         last_hash = report.checkpoint[1] if report.checkpoint is not None else GENESIS
     return {**result, "last_hash": last_hash}

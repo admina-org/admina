@@ -126,7 +126,12 @@ class TestVerifyChain:
         # Re-point the second record's previous_hash and re-seal its own hash
         # so the per-record hash check passes but the chain link is broken.
         records[1]["previous_hash"] = "0" * 64
-        resealed = {k: v for k, v in records[1].items() if k != "record_hash"}
+        # record_hash covers the record without itself and its signature.
+        resealed = {
+            k: v
+            for k, v in records[1].items()
+            if k not in ("record_hash", "record_sig", "record_sig_alg")
+        }
         records[1]["record_hash"] = box._compute_hash(
             json.dumps(resealed, sort_keys=True, default=str)
         )

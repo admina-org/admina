@@ -17,10 +17,20 @@
 A record is a JSON object with ``sequence_number`` (from 1),
 ``timestamp_utc``, ``timestamp_unix_ms``, ``previous_hash`` (``GENESIS`` for
 the first record, else the ``record_hash`` of the record before) and
-``event``, plus ``record_hash``: the SHA-256, as 64 lowercase hex characters,
-of :func:`canonical_record` — the record without
-:data:`HASH_EXCLUDED_FIELDS`, as ``json.dumps(..., sort_keys=True,
-default=str)`` with the default separators, encoded as UTF-8.
+``event``, plus:
+
+- ``record_hash``: the SHA-256, as 64 lowercase hex characters, of
+  :func:`canonical_record` — the record without :data:`HASH_EXCLUDED_FIELDS`
+  (``record_hash``, ``record_sig``, ``record_sig_alg``), as
+  ``json.dumps(..., sort_keys=True, default=str)`` with the default
+  separators, encoded as UTF-8;
+- ``record_sig``: the HMAC-SHA256, as 64 lowercase hex characters, of the
+  ASCII characters of ``record_hash``, under the record signing key
+  (:func:`record_signing_key`: HMAC-SHA256 of
+  ``b"admina-forensic/1 record signature"`` under the chain-state key,
+  ``ADMINA_FORENSIC_STATE_KEY``), with ``record_sig_alg: "hmac-sha256"``;
+  a record written without a key has ``record_sig_alg: "none"`` and no
+  ``record_sig``.
 
 :func:`verify_entries` checks records one at a time, in sequence order, and
 reports the first failure as a reason code and the sequence number of the
@@ -35,7 +45,15 @@ record concerned:
 - ``state_mismatch``: the records do not reach the chain state's count, or
   the record at that count is not the state's head;
 - ``checkpoint_mismatch``: the record at the checkpoint's sequence number
-  has another ``record_hash``.
+  has another ``record_hash``;
+- ``signature_invalid``: its ``record_sig`` is not the signature of its
+  ``record_hash`` under the key (or ``record_sig_alg`` is unknown);
+- ``unsigned``: it has no signature, and the key requires one (from the
+  chain state's ``signed_from`` on).
+
+Without the key, signatures are not checked: records with one are counted
+as ``signed``, those without as ``unsigned``, and ``signatures_verified`` is
+false.
 
 ``store_unavailable`` is the reason given by a store whose backend could not
 be opened (:class:`~admina.domains.compliance.forensic.UnavailableForensicStore`).
@@ -44,6 +62,7 @@ be opened (:class:`~admina.domains.compliance.forensic.UnavailableForensicStore`
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import re
 from collections.abc import Callable, Iterable
@@ -58,10 +77,17 @@ __all__ = [
     "LINK_BROKEN",
     "MISSING_RECORD",
     "STATE_MISMATCH",
+    "RECORD_SIG_ALG",
+    "RECORD_SIG_LABEL",
+    "RECORD_UNSIGNED",
+    "SIGNATURE_INVALID",
     "STORE_UNAVAILABLE",
+    "UNSIGNED",
     "ChainReport",
     "canonical_record",
     "compute_record_hash",
+    "record_signing_key",
+    "sign_record_hash",
     "verify_entries",
 ]
 
@@ -69,7 +95,11 @@ __all__ = [
 GENESIS = "GENESIS"
 
 #: Fields left out of the hashed form of a record.
-HASH_EXCLUDED_FIELDS: tuple[str, ...] = ("record_hash",)
+HASH_EXCLUDED_FIELDS: tuple[str, ...] = ("record_hash", "record_sig", "record_sig_alg")
+
+#: ``record_sig_alg`` of a signed record, and of a record written without a key.
+RECORD_SIG_ALG = "hmac-sha256"
+RECORD_UNSIGNED = "none"
 
 # Reason codes of a failed verification.
 HASH_MISMATCH = "hash_mismatch"
@@ -78,11 +108,29 @@ MISSING_RECORD = "missing_record"
 STATE_MISMATCH = "state_mismatch"
 CHECKPOINT_MISMATCH = "checkpoint_mismatch"
 STORE_UNAVAILABLE = "store_unavailable"
+SIGNATURE_INVALID = "signature_invalid"
+UNSIGNED = "unsigned"
 
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
 #: A record to verify: its sequence number and a callable returning its bytes.
 RecordEntry = tuple[int, Callable[[], bytes]]
+
+
+#: Label of the derivation of the record signing key from the state key.
+RECORD_SIG_LABEL = b"admina-forensic/1 record signature"
+
+
+def record_signing_key(state_key: str) -> bytes:
+    """The key of the record signatures: HMAC-SHA256 of
+    :data:`RECORD_SIG_LABEL` under *state_key* (UTF-8)."""
+    return hmac.new(state_key.encode("utf-8"), RECORD_SIG_LABEL, hashlib.sha256).digest()
+
+
+def sign_record_hash(signing_key: bytes, record_hash: str) -> str:
+    """``record_sig``: HMAC-SHA256 of *record_hash* (its ASCII hex
+    characters) under *signing_key*, 64 lowercase hex characters."""
+    return hmac.new(signing_key, record_hash.encode("ascii"), hashlib.sha256).hexdigest()
 
 
 def canonical_record(record: dict[str, Any]) -> str:
@@ -107,7 +155,10 @@ class ChainReport:
     counted); ``reason`` and ``sequence_number``: the first failure;
     ``checkpoint``: ``(sequence_number, record_hash)`` of the last record
     checked (or the checkpoint given, when none follows it), to resume from
-    — None when the verification failed or found no record.
+    — None when the verification failed or found no record. ``signed`` and
+    ``unsigned``: the records checked with and without a signature;
+    ``signatures_verified``: whether the signatures were checked (a key was
+    given).
     """
 
     valid: bool = True
@@ -115,6 +166,9 @@ class ChainReport:
     reason: str | None = None
     sequence_number: int | None = None
     checkpoint: tuple[int, str] | None = None
+    signed: int = 0
+    unsigned: int = 0
+    signatures_verified: bool = False
 
     def fail(self, reason: str, sequence_number: int | None) -> ChainReport:
         self.valid = False
@@ -136,6 +190,9 @@ class ChainReport:
             "reason": self.reason,
             "sequence_number": self.sequence_number,
             "checkpoint": checkpoint,
+            "signed": self.signed,
+            "unsigned": self.unsigned,
+            "signatures_verified": self.signatures_verified,
         }
 
 
@@ -159,12 +216,32 @@ def _hash_ok(record: dict[str, Any]) -> bool:
     )
 
 
+def _signature_error(
+    record: dict[str, Any], seq: int, signing_key: bytes | None, signed_from: int | None
+) -> str | None:
+    """The reason code of *record*'s signature, or None when it is fine."""
+    sig = record.get("record_sig")
+    alg = record.get("record_sig_alg")
+    if sig is None and alg in (None, RECORD_UNSIGNED):
+        required = signing_key is not None and signed_from is not None and seq >= signed_from
+        return UNSIGNED if required else None
+    if alg != RECORD_SIG_ALG or not isinstance(sig, str):
+        return SIGNATURE_INVALID
+    if signing_key is not None and not hmac.compare_digest(
+        sig, sign_record_hash(signing_key, record["record_hash"])
+    ):
+        return SIGNATURE_INVALID
+    return None
+
+
 def verify_entries(
     entries: Iterable[RecordEntry],
     *,
     from_seq: int = 1,
     checkpoint: tuple[int, str] | None = None,
     state: tuple[int, str] | None = None,
+    signing_key: bytes | None = None,
+    signed_from: int | None = None,
 ) -> ChainReport:
     """Verify the records of *entries*, in order, one at a time.
 
@@ -179,8 +256,11 @@ def verify_entries(
     must reach its count, and the record at that count must be its head,
     whenever that record is in the range checked. Records after it are
     checked like any other.
+
+    *signing_key* (:func:`record_signing_key`): check the signatures; the
+    records from *signed_from* on must have one.
     """
-    report = ChainReport()
+    report = ChainReport(signatures_verified=signing_key is not None)
     iterator = iter(entries)
     at_count: str | None = None
     count, head = state if state is not None else (0, "")
@@ -212,6 +292,13 @@ def verify_entries(
             return report.fail(HASH_MISMATCH, seq)
         if previous is not None and record.get("previous_hash") != previous:
             return report.fail(LINK_BROKEN, seq)
+        error = _signature_error(record, seq, signing_key, signed_from)
+        if error is not None:
+            return report.fail(error, seq)
+        if record.get("record_sig") is None:
+            report.unsigned += 1
+        else:
+            report.signed += 1
         previous = record["record_hash"]
         report.records += 1
         report.checkpoint = (seq, previous)

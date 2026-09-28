@@ -93,3 +93,13 @@ def flip_byte(path: Path, marker: bytes) -> None:
     at = data.index(marker)
     data[at] = data[at] + 1
     path.write_bytes(bytes(data))
+
+
+def sign_state(base: Path, key: str) -> None:
+    """Write the HMAC-SHA256 sidecar of the chain state with *key*."""
+    import hashlib
+    import hmac
+
+    payload = (base / STATE).read_bytes()
+    digest = hmac.new(key.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+    (base / STATE_SIG).write_text(digest, encoding="utf-8")

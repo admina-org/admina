@@ -24,7 +24,8 @@ Both commands only read the store directory (``--dir``, default
 - ``admina forensic verify [--from-seq N | --checkpoint SEQ:HASH]``: the
   result of the verification as JSON (see
   :mod:`admina.domains.compliance.forensic_integrity`); exit status 0 when
-  the chain is valid, 1 when it is not.
+  the chain is valid, 1 when it is not. With ``ADMINA_FORENSIC_STATE_KEY``
+  (or ``_FILE``) set, the record signatures are checked.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ from typing import BinaryIO
 
 import click
 
+from admina.core.secretfile import secret_from_env
 from admina.domains.compliance.forensic import verify_directory
 from admina.domains.compliance.forensic_files import iter_record_files
 
@@ -158,6 +160,11 @@ def verify(directory: str | None, from_seq: int | None, checkpoint: str | None) 
     if parsed is not None and from_seq is not None:
         raise click.UsageError("--from-seq and --checkpoint cannot be used together")
     base = _store_dir(directory)
-    result = verify_directory(base, from_seq=from_seq, checkpoint=parsed)
+    result = verify_directory(
+        base,
+        state_key=secret_from_env("ADMINA_FORENSIC_STATE_KEY"),
+        from_seq=from_seq,
+        checkpoint=parsed,
+    )
     click.echo(json.dumps(result, indent=2))
     sys.exit(0 if result["valid"] else 1)

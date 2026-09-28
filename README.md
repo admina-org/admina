@@ -431,6 +431,49 @@ sequence number. Each record, `_chain_state.json` and its signature are
 written atomically (a temporary file in the same directory, fsynced and
 renamed, then the directory fsynced).
 
+**Forensic records** (format `admina-forensic/1`). Each record is one JSON
+object on one line, at `YYYY/MM/DD/HH/NNNNNNNN.json` under the store
+directory (UTC hour of the write, sequence number on eight digits), with
+`sequence_number` (from 1, contiguous), `timestamp_utc`,
+`timestamp_unix_ms`, `previous_hash` (`GENESIS` for record 1, else the
+`record_hash` of the record before), `event`, and:
+
+- `record_hash`: SHA-256 (64 lowercase hex characters) of
+  `json.dumps(record, sort_keys=True, default=str)` (default separators,
+  UTF-8) of the record **without `record_hash`, `record_sig` and
+  `record_sig_alg`**;
+- `record_sig`: HMAC-SHA256 (64 lowercase hex characters) of the 64 ASCII
+  characters of `record_hash`, under the record key = HMAC-SHA256 of
+  `admina-forensic/1 record signature` under the chain-state key
+  (`ADMINA_FORENSIC_STATE_KEY` or `ADMINA_FORENSIC_STATE_KEY_FILE`, kept
+  outside the forensic directory); `record_sig_alg`: `hmac-sha256`. Without
+  a key a record has `record_sig_alg: "none"` and no `record_sig`.
+
+The chain state (`_chain_state.json`, with its HMAC-SHA256 in
+`_chain_state.json.sig` when a key is set) holds `record_count`,
+`chain_head`, `head_key` and `signed_from`: the first sequence number whose
+record must be signed (records written before a key was set stay readable
+and are reported as unsigned).
+
+Verification (`GET /api/v1/forensic/verify`, `admina forensic verify`,
+`verify_chain()`) reads one record at a time in sequence order and returns
+`valid`, `records`, `last_hash`, `checkpoint` (`{"sequence_number",
+"record_hash"}` of the last record checked: pass it back to check only the
+records after it), `signed`, `unsigned`, `signatures_verified` (false
+without the key) and, for the first failure, `sequence_number` and
+`reason`:
+
+| `reason` | The record at `sequence_number` |
+|---|---|
+| `hash_mismatch` | is not a JSON object, or its `record_hash` is not the hash of its content |
+| `signature_invalid` | has a `record_sig` that does not verify with the key, or an unknown `record_sig_alg` |
+| `unsigned` | has no signature, though records from `signed_from` on must have one |
+| `link_broken` | has a `previous_hash` that is not the `record_hash` of the record before it |
+| `missing_record` | cannot be found |
+| `state_mismatch` | is the chain state's last record and has another hash, or the records end before it |
+| `checkpoint_mismatch` | is the checkpoint's and has another hash |
+| `store_unavailable` | — the backend could not be opened |
+
 **Surfaces.** `ADMINA_ENABLED_SURFACES` lists the surfaces the proxy serves,
 comma-separated (empty = all of them):
 

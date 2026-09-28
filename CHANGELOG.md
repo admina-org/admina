@@ -13,6 +13,26 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+### Security
+
+- Each forensic record is signed: `record_sig` is the HMAC-SHA256 (64
+  lowercase hex characters) of the ASCII characters of its `record_hash`,
+  under a key derived from the chain-state key (`ADMINA_FORENSIC_STATE_KEY`
+  or `_FILE`): HMAC-SHA256 of `admina-forensic/1 record signature` under that
+  key; `record_sig_alg` is `hmac-sha256`. A record written without a key has
+  `record_sig_alg: "none"` and no `record_sig`. `record_hash` is the SHA-256
+  of `json.dumps(record, sort_keys=True, default=str)` of the record without
+  `record_hash`, `record_sig` and `record_sig_alg`
+  (`forensic_integrity.HASH_EXCLUDED_FIELDS`); for a record without the two
+  signature fields it is computed as before. Verification with the key
+  (the store's own, or `state_key` of `verify_directory()`, or the key in
+  the environment of `admina forensic verify`) checks every signature
+  (reason `signature_invalid`) and requires one from the chain state's new
+  `signed_from` on (reason `unsigned`); it reports `signed`, `unsigned` and
+  `signatures_verified`. Records written before a key was set are reported
+  as unsigned. `record_signing_key()` and `sign_record_hash()` are in
+  `admina.domains.compliance.forensic_integrity`.
+
 ### Added
 
 - Governance outcome headers on the responses of `POST /v1/chat/completions`

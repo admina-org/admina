@@ -490,7 +490,12 @@ def test_chain_stays_valid_and_hashes_recompute(tmp_path):
         records[-1]["record_hash"],
     )
     for record in records:
-        without = {k: v for k, v in record.items() if k != "record_hash"}
+        # record_hash covers the record without itself and its signature.
+        without = {
+            k: v
+            for k, v in record.items()
+            if k not in ("record_hash", "record_sig", "record_sig_alg")
+        }
         digest = hashlib.sha256(
             json.dumps(without, sort_keys=True, default=str).encode()
         ).hexdigest()
