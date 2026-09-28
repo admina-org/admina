@@ -160,6 +160,51 @@ def test_us_phone_numbers_are_still_masked(regex_only, number):
     assert "[PHONE]" in _masked(regex_only, f"call {number} now")
 
 
+# ── Card numbers and phone numbers ────────────────────────────
+
+
+def luhn_card(prefix: str) -> str:
+    """The 16-digit number of the 15 digits *prefix* and a Luhn check digit."""
+    total = 0
+    for position, char in enumerate(reversed(prefix)):
+        digit = int(char) * (2 if position % 2 == 0 else 1)
+        total += digit - 9 if digit > 9 else digit
+    return prefix + str(-total % 10)
+
+
+def card_layouts(card: str) -> dict[str, str]:
+    groups = [card[i : i + 4] for i in range(0, 16, 4)]
+    return {"spaced": " ".join(groups), "hyphenated": "-".join(groups), "compact": card}
+
+
+# The second group of each starts like an Italian area code (0 and 1-9).
+_CARD_PREFIXES = ["400005665566555", "452601815908301", "510506123456789", "601102055512345"]
+
+
+@pytest.mark.parametrize("layout", ["spaced", "hyphenated", "compact"])
+@pytest.mark.parametrize("prefix", _CARD_PREFIXES)
+def test_card_numbers_are_masked_whole(regex_only, prefix, layout):
+    card = card_layouts(luhn_card(prefix))[layout]
+    assert _masked(regex_only, f"carta {card} ok") == "carta [CREDIT_CARD] ok"
+
+
+def test_card_numbers_of_any_digits_are_masked_whole(regex_only):
+    import random
+
+    rng = random.Random(20260928)
+    for _ in range(2000):
+        card = luhn_card("".join(rng.choice("0123456789") for _ in range(15)))
+        for layout, value in card_layouts(card).items():
+            masked = _masked(regex_only, f"carta {value} ok")
+            assert masked == "carta [CREDIT_CARD] ok", f"{layout} {value}: {masked}"
+
+
+def test_card_and_phone_numbers_in_one_text(regex_only):
+    card = card_layouts(luhn_card(_CARD_PREFIXES[0]))["spaced"]
+    text = f"carta {card}, tel. 055 123456 o 333 1234567"
+    assert _masked(regex_only, text) == "carta [CREDIT_CARD], tel. [PHONE] o [PHONE]"
+
+
 # ── Matching time on long inputs ──────────────────────────────
 
 

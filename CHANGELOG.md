@@ -315,8 +315,8 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   the proxy.
 - The IBAN category of the `spacy-regex` engine no longer masks an
   IBAN-shaped string with a wrong checksum, a length other than its
-  country's, or an unknown country code; IBANs are matched before phone
-  and card numbers.
+  country's, or an unknown country code. The `spacy-regex` engine matches
+  IBANs before card numbers, and card numbers before phone numbers.
 - The `presidio` engine checks e-mail domains against the public suffix
   list bundled with `tldextract`, with no download and no cache files.
 

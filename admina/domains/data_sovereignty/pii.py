@@ -99,13 +99,16 @@ _IT_PHONE = (
 )
 
 # Regex patterns for PII not covered by spaCy NER, applied in this order.
+# Card numbers (with a valid Luhn checksum) are matched before phone
+# numbers: a group of a card number written in groups of four digits can
+# read as an Italian area code followed by the next groups.
 REGEX_PII_PATTERNS = {
     "EMAIL": EMAIL_RX,  # matched with iter_email_matches (see email_matching)
     # Where an IBAN may start; each IBAN is matched with iter_iban_matches
     # (length of its country, optional spaces, mod-97 checksum; see iban).
     "IBAN": IBAN_RX,
-    "PHONE": re.compile(f"{_US_PHONE}|{_IT_PHONE}"),
     "CREDIT_CARD": re.compile(r"\b(?:\d{4}[-\s]?){3}\d{4}\b"),
+    "PHONE": re.compile(f"{_US_PHONE}|{_IT_PHONE}"),
     "SSN": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
     # IPv4 with proper octet validation (each octet 0-255). Avoids matching
     # version strings like 1.2.3.999 or build numbers > 255.
