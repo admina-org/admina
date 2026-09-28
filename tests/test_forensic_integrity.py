@@ -36,6 +36,7 @@ from _forensic_chain import (
     STATE_SIG,
     flip_byte,
     load,
+    no_such_key,
     record_file,
     record_files,
     rewrite,
@@ -337,6 +338,8 @@ class _Bucket:
     def get_object(self, **kw):
         import io
 
+        if kw["Key"] not in self.objects:
+            raise no_such_key()
         return {"Body": io.BytesIO(self.objects[kw["Key"]])}
 
     def list_objects_v2(self, **kw):

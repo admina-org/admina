@@ -225,6 +225,14 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `forensic_writable: false`) and logs an error; in `closed` mode it does not
   start. A directory that exists but cannot be written is logged at startup
   (and stops the proxy in `closed` mode).
+- The S3 forensic store reads its chain state and records with the retries
+  of its writes (`FORENSIC_S3_MAX_RETRIES`, `FORENSIC_S3_BASE_DELAY_S`), and
+  an object is missing only when S3 answers that it does not exist
+  (`NoSuchKey`). Any other error still there after the retries is a read
+  error, as for a file of the filesystem store: a chain state that cannot
+  be read is not used, and a record that cannot be read at startup keeps
+  the backend from opening (as above). `verify_bucket()` raises such an
+  error instead of reporting the chain state missing.
 - `POST /api/v1/audit` answers `{"recorded": false, "error": ...}` when the
   record could not be written; `/mcp` sends no `X-Admina-Forensic-Hash` then.
 - The `admina init` template leaves the forensic backend to

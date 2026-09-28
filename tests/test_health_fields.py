@@ -28,6 +28,7 @@ import pytest
 
 pytest.importorskip("fastapi")
 
+from _forensic_chain import no_such_key
 from _proxy_app import API_KEY, CHAT, isolate, serve, with_key
 from pydantic import SecretStr
 
@@ -195,7 +196,7 @@ class _FakeS3:
         return {}
 
     def get_object(self, **kw):
-        raise KeyError(kw["Key"])
+        raise no_such_key()
 
     def list_objects_v2(self, **_kw):
         return {"Contents": []}

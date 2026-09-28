@@ -425,7 +425,7 @@ written (a full disk, a directory that cannot be written, S3 errors):
 |---|---|---|
 | Record not written | logged; the request is served without it | `503` and not forwarded: gateway `{"error": {..., "type": "server_error", "code": "forensic_unavailable"}}`, `/mcp` a JSON-RPC error (`-32603`), `/api/v1/audit` `503` |
 | `/api/v1/validate` after a failed write | served | `503` until a record is written again |
-| Backend that cannot be opened at startup (`filesystem` without a directory, or one that cannot be created or written; `s3` without boto3 or not reachable) | an error is logged; nothing is recorded, not even in memory, and `/health` reports `forensic_writable: false` | the proxy does not start |
+| Backend that cannot be opened at startup (`filesystem` without a directory, or one that cannot be created or written; `s3` without boto3 or not reachable; a record that cannot be read) | an error is logged; nothing is recorded, not even in memory, and `/health` reports `forensic_writable: false` | the proxy does not start |
 
 A record that is not written is never counted: the next one takes its
 sequence number. Each record, `_chain_state.json` and its signature are
@@ -480,33 +480,40 @@ the key) and, for the first failure, `sequence_number` and `reason`:
 | `store_unavailable` | — the backend could not be opened |
 
 **Chain state at startup.** The store reads the chain state and, with a
-key, checks its HMAC:
+key, checks its HMAC. An S3 read is retried (`FORENSIC_S3_MAX_RETRIES`
+times, backoff from `FORENSIC_S3_BASE_DELAY_S`); an object is missing only
+when S3 answers that it does not exist (`NoSuchKey`), and any other error
+still there after the retries is a read error, as for a file:
 
 - a valid state is used; the record at its count must be its head, and a
   record written after it (the process stopped between the record and the
   state) is counted when it verifies and links to it;
-- a missing state (with records) or one that does not verify is rebuilt
-  **only** from records that all verify with the key, from record 1 on
-  (sequence, hashes, links, signatures). The rebuild is logged at `CRITICAL`
-  (`Forensic chain state rebuilt from verified records`) and recorded as a
-  signed record with `event.event_type: "chain_state_rebuilt"`, `cause`
-  (`state_missing` or `state_invalid`), `records_verified` and `head_hash`.
+- a missing state (with records), or one that cannot be read or does not
+  verify, is rebuilt **only** from records that all verify with the key,
+  from record 1 on (sequence, hashes, links, signatures). The rebuild is
+  logged at `CRITICAL` (`Forensic chain state rebuilt from verified
+  records`) and recorded as a signed record with `event.event_type:
+  "chain_state_rebuilt"`, `cause` (`state_missing` or `state_invalid`),
+  `records_verified` and `head_hash`.
   An external copy of the head (for example the `checkpoint` of the last
   export) shows whether records after it are missing;
 - otherwise (no key, a record that does not verify, a missing last record)
   the chain is **invalid**: a `CRITICAL` log names the reason and the
   record, `/health` reports `forensic_chain: "invalid"` and `status:
   "degraded"`, no record is written, verification is never valid, and with
-  `ADMINA_FORENSIC_FAIL_MODE=closed` governed requests are answered `503`.
+  `ADMINA_FORENSIC_FAIL_MODE=closed` governed requests are answered `503`;
+- a record that cannot be read keeps the backend from opening (see the
+  table above).
 
 To recover from an invalid chain: run `admina forensic verify` (or `admina
 doctor` for S3), with the key in the environment, to see the reason and the
 record; stop the proxy; restore the forensic directory or bucket (records,
 `_chain_state.json`, `_chain_state.json.sig`) from a backup, or move it
-aside, keeping it, and start with an empty one; start the proxy. A last
-record that could not be read because the storage was briefly unavailable
-needs only a restart. A store written without a key, or before a key was
-set, cannot be rebuilt: keep its chain state, or move it aside when a key is
+aside, keeping it, and start with an empty one; start the proxy. A chain
+state that could not be read because the storage was unavailable (logged as
+`Cannot read the forensic chain state`) needs only a restart once it can be
+read again. A store written without a key, or before a key was set, cannot
+be rebuilt: keep its chain state, or move it aside when a key is
 introduced.
 
 **Audit records.** `POST /api/v1/audit` records the event it receives with

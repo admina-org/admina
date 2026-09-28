@@ -22,7 +22,8 @@ different values is logged at startup; the environment's is used.
 
 A ``filesystem`` or ``s3`` backend that cannot be opened (no directory, a
 directory that cannot be created or written, boto3 missing, S3 not
-reachable) is never replaced by the in-memory store. With
+reachable, a bucket whose chain state or records cannot be read at startup)
+is never replaced by the in-memory store. With
 ``ADMINA_FORENSIC_FAIL_MODE=closed`` the proxy does not start
 (:class:`ForensicBackendError`); with ``open`` an error is logged and the
 proxy starts with an
@@ -38,6 +39,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from admina.core.secretfile import SecretFileError
 from admina.domains.compliance.forensic import (
     ForensicBlackBox,
     ForensicWriteError,
@@ -179,16 +181,26 @@ def _s3_store(settings: Any, fail_mode: str) -> ForensicBlackBox:
         "S3 forensic backend connected (endpoint=%s)",
         settings.FORENSIC_S3_ENDPOINT or "default AWS",
     )
-    box = ForensicBlackBox(
-        boto3_client=client,
-        bucket=settings.FORENSIC_S3_BUCKET,
-        s3_object_lock=settings.FORENSIC_S3_LOCK,
-        s3_lock_days=settings.FORENSIC_S3_LOCK_DAYS,
-        s3_auto_create_locked_bucket=settings.FORENSIC_S3_LOCK_AUTO_BUCKET,
-        s3_max_retries=settings.FORENSIC_S3_MAX_RETRIES,
-        s3_base_delay_s=settings.FORENSIC_S3_BASE_DELAY_S,
-        fail_mode=fail_mode,
-    )
+    bucket = settings.FORENSIC_S3_BUCKET
+    try:
+        box = ForensicBlackBox(
+            boto3_client=client,
+            bucket=bucket,
+            s3_object_lock=settings.FORENSIC_S3_LOCK,
+            s3_lock_days=settings.FORENSIC_S3_LOCK_DAYS,
+            s3_auto_create_locked_bucket=settings.FORENSIC_S3_LOCK_AUTO_BUCKET,
+            s3_max_retries=settings.FORENSIC_S3_MAX_RETRIES,
+            s3_base_delay_s=settings.FORENSIC_S3_BASE_DELAY_S,
+            fail_mode=fail_mode,
+        )
+    except SecretFileError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — any read or write error at startup
+        return _unavailable(
+            "s3",
+            f"the forensic bucket {bucket} cannot be used ({type(exc).__name__}: {exc})",
+            fail_mode,
+        )
     if settings.FORENSIC_S3_LOCK:
         logger.info(
             "Forensic Object Lock ENABLED: every record locked for %d days "

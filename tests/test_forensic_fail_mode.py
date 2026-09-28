@@ -33,9 +33,10 @@ import asyncio
 import errno
 import logging
 import os
+import secrets
 
 import pytest
-from _forensic_chain import record_files
+from _forensic_chain import STATE, MemoryBucket, S3Error, record_files
 
 from admina.domains.compliance.forensic import ForensicBlackBox, ForensicWriteError
 
@@ -426,6 +427,63 @@ def test_s3_without_boto3_stops_the_proxy_in_closed_mode(proxy_deps, monkeypatch
 
     monkeypatch.setitem(sys.modules, "boto3", None)
     assert "boto3" in _start_fails(monkeypatch, "s3")
+
+
+def _bucket_with_an_unreadable_record(monkeypatch, case: str) -> MemoryBucket:
+    """A bucket with two records, one of which cannot be read: the last one
+    of a valid chain state (``head``), or the first one when the chain state
+    is missing and the key would rebuild it (``rebuild``)."""
+    from admina.proxy import main as proxy_main
+
+    monkeypatch.setattr(proxy_main.settings, "FORENSIC_S3_MAX_RETRIES", 1)
+    monkeypatch.setattr(proxy_main.settings, "FORENSIC_S3_BASE_DELAY_S", 0.0)
+    for name in ("ADMINA_FORENSIC_STATE_KEY", "ADMINA_FORENSIC_STATE_KEY_FILE"):
+        monkeypatch.delenv(name, raising=False)
+    key = None
+    if case == "rebuild":
+        key = "canary-" + secrets.token_hex(16)
+        monkeypatch.setenv("ADMINA_FORENSIC_STATE_KEY", key)
+    bucket = MemoryBucket()
+    box = ForensicBlackBox(boto3_client=bucket, bucket="b", state_signing_key=key)
+    box.record({"event_id": "e1"})
+    box.record({"event_id": "e2"})
+    if case == "rebuild":
+        del bucket.objects[STATE]
+        bucket.fail("/00000001.json", 100)
+    else:
+        bucket.fail("/00000002.json", 100)
+    return bucket
+
+
+@pytest.mark.parametrize("case", ["head", "rebuild"])
+def test_an_s3_record_that_cannot_be_read_stops_the_proxy_in_closed_mode(
+    proxy_deps, monkeypatch, case
+):
+    _fake_boto3(monkeypatch, _bucket_with_an_unreadable_record(monkeypatch, case))
+    assert "cannot be used" in _start_fails(monkeypatch, "s3")
+
+
+@pytest.mark.parametrize("case", ["head", "rebuild"])
+def test_an_s3_record_that_cannot_be_read_in_open_mode(proxy_deps, monkeypatch, caplog, case):
+    _fake_boto3(monkeypatch, _bucket_with_an_unreadable_record(monkeypatch, case))
+    with caplog.at_level(logging.ERROR):
+        state, health, chat = _start(monkeypatch, "open", "s3")
+    _assert_unavailable(state, health, chat)
+    assert any("cannot be used" in r.getMessage() for r in caplog.records)
+
+
+def test_an_s3_chain_state_that_cannot_be_written_at_startup_stops_the_proxy_in_closed_mode(
+    proxy_deps, monkeypatch
+):
+    bucket = _bucket_with_an_unreadable_record(monkeypatch, "rebuild")
+    bucket.fail("/00000001.json", 0)
+
+    def put_object(**_kw):
+        raise S3Error("SlowDown", 503)
+
+    bucket.put_object = put_object
+    _fake_boto3(monkeypatch, bucket)
+    assert "cannot be used" in _start_fails(monkeypatch, "s3")
 
 
 def test_a_working_directory_in_closed_mode(proxy_deps, tmp_path, monkeypatch):

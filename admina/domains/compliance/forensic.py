@@ -188,8 +188,15 @@ class ForensicBlackBox(BaseForensicStore):
         return self.boto3_client is not None or self.filesystem_dir is not None
 
     # ── Retry / backoff helper for transient S3 failures ────────
-    def _s3_call(self, fn, *args, **kwargs):
-        """Run *fn(*args, **kwargs)* with exponential backoff retries.
+    def _s3_call(
+        self,
+        fn,
+        *args,
+        final: Callable[[Exception], bool] | None = None,
+        **kwargs,
+    ):
+        """Run *fn(*args, **kwargs)* with exponential backoff retries; an
+        error for which *final(error)* is true is raised at once.
 
         Used only by the boto3 backend; the filesystem path keeps its
         original behaviour.
@@ -202,7 +209,7 @@ class ForensicBlackBox(BaseForensicStore):
                 return fn(*args, **kwargs)
             except Exception as exc:  # noqa: BLE001
                 attempt += 1
-                if attempt > self.s3_max_retries:
+                if attempt > self.s3_max_retries or (final is not None and final(exc)):
                     raise
                 delay = self.s3_base_delay_s * (2 ** (attempt - 1))
                 logger.warning(
@@ -272,22 +279,33 @@ class ForensicBlackBox(BaseForensicStore):
 
     def _read_object(self, key: str) -> bytes | None:
         """The bytes at *key*, or None when there is no such file or object.
-        A filesystem read error other than a missing file raises OSError."""
+
+        Any other read error raises OSError: for S3, an error other than
+        "no such key" (:func:`_s3_missing`) that is still there after the
+        retries."""
         if self.boto3_client is not None:
             try:
-                obj = self.boto3_client.get_object(Bucket=self.bucket, Key=key)
-                return obj["Body"].read()
-            except Exception:  # noqa: BLE001 — NoSuchKey or similar
-                return None
+                return self._s3_get(key, final=_s3_missing)
+            except Exception as exc:  # noqa: BLE001 — any client or connection error
+                if _s3_missing(exc):
+                    return None
+                raise OSError(
+                    f"S3 object {key} cannot be read ({type(exc).__name__}: {exc})"
+                ) from exc
         assert self.filesystem_dir is not None
         try:
             return (self.filesystem_dir / key).read_bytes()
         except FileNotFoundError:
             return None
 
-    def _s3_get(self, key: str) -> bytes:
-        obj = self._s3_call(self.boto3_client.get_object, Bucket=self.bucket, Key=key)
-        return obj["Body"].read()
+    def _s3_get(self, key: str, *, final: Callable[[Exception], bool] | None = None) -> bytes:
+        """The bytes of the S3 object *key*, read with the retries of
+        :meth:`_s3_call` (the object's body included)."""
+
+        def get_object() -> bytes:
+            return self.boto3_client.get_object(Bucket=self.bucket, Key=key)["Body"].read()
+
+        return self._s3_call(get_object, final=final)
 
     def _s3_keys(self, start_after: str | None = None) -> Iterator[str]:
         """The keys of the bucket (after *start_after* when given), in the
@@ -349,7 +367,8 @@ class ForensicBlackBox(BaseForensicStore):
         """The HMAC sidecar of the chain state, or None."""
         try:
             data = self._read_object(_CHAIN_STATE_SIG_KEY)
-        except OSError:
+        except OSError as exc:
+            logger.error("Cannot read the forensic chain-state signature: %s", exc)
             return None
         return data.decode("utf-8", errors="replace").strip() if data is not None else None
 
@@ -374,8 +393,8 @@ class ForensicBlackBox(BaseForensicStore):
         where = "S3" if self.boto3_client is not None else "filesystem"
         try:
             payload = self._read_object(_CHAIN_STATE_KEY)
-        except OSError:
-            logger.error("Cannot read the forensic chain state (%s)", where)
+        except OSError as exc:
+            logger.error("Cannot read the forensic chain state (%s): %s", where, exc)
             self._rebuild(STATE_INVALID)
             return
         if payload is None:
@@ -897,6 +916,23 @@ def _refuse_key_file_inside(directory: Path | None) -> None:
         )
 
 
+#: S3 error codes meaning that the object read does not exist.
+_S3_MISSING_CODES = frozenset({"NoSuchKey", "NotFound", "404"})
+
+
+def _s3_missing(exc: BaseException) -> bool:
+    """True when *exc* is the answer of S3 that the object read does not
+    exist: a boto3 ``ClientError`` whose error code is ``NoSuchKey`` (or
+    ``NotFound`` or ``404``, the codes of a response without a body). Any
+    other error (throttling, access denied, a missing bucket, a connection
+    error) is not."""
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return False
+    error = response.get("Error")
+    return isinstance(error, dict) and str(error.get("Code", "")) in _S3_MISSING_CODES
+
+
 def _state_of(payload: bytes | None) -> dict[str, Any] | None:
     """The chain-state payload as an object with an integer
     ``record_count`` and a string ``chain_head``, or None."""
@@ -1022,7 +1058,8 @@ def verify_bucket(
 ) -> dict:
     """Verify the chain stored in the S3 *bucket* through the boto3
     *client*, reading one record at a time and writing nothing (see
-    :func:`verify_stored_chain`)."""
+    :func:`verify_stored_chain`). The chain state is missing only when S3
+    answers that it does not exist; any other read error is raised."""
 
     def get(key: str) -> bytes:
         return client.get_object(Bucket=bucket, Key=key)["Body"].read()
@@ -1030,8 +1067,10 @@ def verify_bucket(
     def read(key: str) -> bytes | None:
         try:
             return get(key)
-        except Exception:  # noqa: BLE001 — NoSuchKey or similar
-            return None
+        except Exception as exc:  # noqa: BLE001 — any client or connection error
+            if _s3_missing(exc):
+                return None
+            raise
 
     def keys() -> Iterator[str]:
         token: str | None = None

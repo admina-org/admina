@@ -17,11 +17,14 @@
 :func:`write_chain` writes a chain of records straight into a store
 directory, in the layout and with the hashes the filesystem store uses, much
 faster than :meth:`ForensicBlackBox.record` (no fsync): for the tests that
-need tens of thousands of records.
+need tens of thousands of records. :class:`MemoryBucket` is an S3 bucket
+in memory; :class:`S3Error` and :func:`no_such_key` are errors of the S3
+API as boto3 raises them.
 """
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 
@@ -93,6 +96,72 @@ def flip_byte(path: Path, marker: bytes) -> None:
     at = data.index(marker)
     data[at] = data[at] + 1
     path.write_bytes(bytes(data))
+
+
+class S3Error(Exception):
+    """An S3 API error as boto3 raises it (botocore's ``ClientError``): the
+    error code in ``response["Error"]["Code"]`` and the HTTP status in
+    ``response["ResponseMetadata"]["HTTPStatusCode"]``."""
+
+    def __init__(self, code: str, status: int) -> None:
+        super().__init__(f"An error occurred ({code}) when calling the S3 API")
+        self.response = {
+            "Error": {"Code": code, "Message": code},
+            "ResponseMetadata": {"HTTPStatusCode": status},
+        }
+
+
+def no_such_key() -> S3Error:
+    """What S3 answers to a read of an object that does not exist."""
+    return S3Error("NoSuchKey", 404)
+
+
+class MemoryBucket:
+    """The S3 calls of the forensic store, in memory, answered as S3 does (a
+    missing object is ``NoSuchKey``). :meth:`fail` makes reads fail."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.puts = 0
+        self.reads: list[str] = []
+        self._failures: dict[str, list] = {}
+
+    def list_buckets(self):
+        return {"Buckets": []}
+
+    def head_bucket(self, **_kw):
+        return {}
+
+    def put_object(self, **kw):
+        self.puts += 1
+        self.objects[kw["Key"]] = kw["Body"]
+        return {}
+
+    def get_object(self, **kw):
+        key = kw["Key"]
+        self.reads.append(key)
+        for suffix, failure in self._failures.items():
+            if key.endswith(suffix) and failure[0] > 0:
+                failure[0] -= 1
+                raise failure[1]
+        if key not in self.objects:
+            raise no_such_key()
+        return {"Body": io.BytesIO(self.objects[key])}
+
+    def list_objects_v2(self, **kw):
+        after = kw.get("StartAfter", "")
+        keys = [k for k in sorted(self.objects) if k > after]
+        return {"Contents": [{"Key": k} for k in keys], "IsTruncated": False}
+
+    def fail(self, suffix: str, times: int, error: Exception | None = None) -> None:
+        """The next *times* reads of the keys ending with *suffix* raise
+        *error* (by default ``SlowDown``, 503)."""
+        self._failures[suffix] = [times, error if error is not None else S3Error("SlowDown", 503)]
+
+    def record(self, seq: int) -> dict:
+        """The stored record *seq*."""
+        (key,) = [k for k in self.objects if k.endswith(f"/{seq:08d}.json")]
+        return json.loads(self.objects[key])
 
 
 def sign_state(base: Path, key: str) -> None:

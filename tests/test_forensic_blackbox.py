@@ -40,6 +40,8 @@ import asyncio
 import json
 from pathlib import Path
 
+from _forensic_chain import no_such_key
+
 from admina.domains.compliance.forensic import ForensicBlackBox
 from admina.plugins.base import BaseForensicStore
 
@@ -181,7 +183,7 @@ class TestS3ObjectLock:
             return {}
 
         def get_object(self, **kwargs):
-            raise RuntimeError("no existing state")  # forces a fresh chain
+            raise no_such_key()  # no existing state: a fresh chain
 
         def list_objects_v2(self, **kwargs):
             # No records exist yet → reconstruction finds nothing → stays GENESIS/0.
@@ -300,7 +302,7 @@ class TestS3ChainStateReconstruction:
         def get_object(self, **kwargs):
             key = kwargs["Key"]
             if key not in self._store:
-                raise KeyError(f"no object: {key}")
+                raise no_such_key()
             import io
 
             return {"Body": io.BytesIO(self._store[key])}
@@ -556,7 +558,7 @@ class TestSignedChainStateS3:
         def get_object(self, **kwargs):
             key = kwargs["Key"]
             if key not in self._store:
-                raise KeyError(f"no object: {key}")
+                raise no_such_key()
             import io
 
             return {"Body": io.BytesIO(self._store[key])}
