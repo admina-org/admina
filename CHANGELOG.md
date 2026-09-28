@@ -66,6 +66,24 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   accepted by this route only, besides the API key; every other route
   refuses it. Unset (the default), the route needs the API key.
 
+- PII redaction reads text values and keeps the structure around them.
+  `_deep_redact` (MCP tool parameters and results, `GovernedAgent`) passes
+  the values of a dict to the PII engine and keeps its keys;
+  `redact_keys=True`, and `GovernedAgent(redact_keys=True)`, redacts the
+  keys too. The gateway redacts the text of each chat message
+  (`redact_chat_params` of `admina.domains.governance`, the new
+  `redact_params` argument of `run_pipeline`): `content`, as a string or as
+  the `text` of each part, reasoning and refusal text, and tool call
+  `arguments`; roles, names, tool call ids, image and audio parts are
+  forwarded as received. A pipeline result without a list of messages is
+  logged as an error and the messages are forwarded as received.
+- A placeholder already in the text (an upper-case name in square brackets,
+  such as `[IBAN]` or `[OMISSIS]`) is not masked again: the NER step of the
+  `spacy-regex` engine, the `presidio` engine and `PIIEngineBridge` mask a
+  detected span only outside the placeholders.
+- The `presidio` engine masks overlapping detections as one span, their
+  union, with the category and mask of the first.
+
 ### Added
 
 - Governance outcome headers on the responses of `POST /v1/chat/completions`
@@ -183,6 +201,50 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   written (`forensic_writable` false, or the last record or chain-state
   write failed); `healthy` otherwise.
 
+- PII engines of other packages: `get_pii_engine` (`ADMINA_PII_ENGINE`,
+  `pii_engine` in `admina.yaml`) looks a name up among the built-in engines,
+  then among the entry points of the `admina.pii_engines` group, each naming
+  a `BasePIIEngine` subclass or a callable that returns one (a `config`
+  parameter receives the engine's `plugin_config` block). An unknown name
+  raises `ValueError` listing the built-in and the registered engines, and
+  the proxy does not start. `admina.engines.PIIEngineBridge` is the
+  synchronous `PIIBridge` of a `BasePIIEngine`: it runs `detect` and
+  `redact` on an event loop of the engine's own, from any thread, and
+  returns `redacted_text`, `entities` (type, offsets, length, engine name;
+  never the text), `categories` and `count`. `BasePIIEngine` gains
+  `special_categories`, `sentence_categories` and `sentences(text)`.
+- `ADMINA_PII_MASK_STYLE` (`pii_mask_style` in `admina.yaml`): `typed` (the
+  default, each span replaced by the mask of its type) or `omissis` (each
+  span replaced by `[OMISSIS]`, in every engine, in requests, responses and
+  streamed responses). In `omissis`, the `sentence_categories` of an engine
+  have their whole sentence replaced (the engine's `sentences`, by default
+  `sentence_spans` of `admina.domains.data_sovereignty.masking`), and
+  `StreamRedactor` releases a stream from such an engine a whole sentence at
+  a time, holding at most `max_hold_chars` (default 4096). Any other value
+  raises `ValueError`.
+- `DataClassifier` classifies the special categories of personal data of
+  GDPR art. 9 and 10 (`SPECIAL_CATEGORIES`) and those passed as
+  `special_categories` (such as an engine's) as `restricted`; category
+  names are compared case-insensitively.
+- `ADMINA_PRESIDIO_NLP_MODELS` (`it:blank,en:en_core_web_sm`) and
+  `presidio.nlp_models` in `admina.yaml`: the spaCy pipeline of each
+  language of the `presidio` engine, an installed model or `blank` (a
+  tokenizer with no model and no NER). Unset, `en_core_web_sm` and
+  `it_core_news_sm` are used when installed. A configured model that is not
+  installed, or a malformed setting, stops the engine; models are never
+  downloaded. `get_presidio_pii_engine()` keeps one engine per mask style
+  and pipelines.
+- `ADMINA_OFFLINE` (default `false`): `true` sets `HF_HUB_OFFLINE`,
+  `TRANSFORMERS_OFFLINE` and `HF_DATASETS_OFFLINE` to `1` before a PII engine
+  is built and when the proxy starts, and the proxy starts without the
+  OpenTelemetry exporter (`OTELGovernanceExporter(enabled=False)`). Values
+  other than true/false (`1`/`0`, `yes`/`no`, `on`/`off`) raise `ValueError`.
+- The IBAN category of the `spacy-regex` engine covers the IBAN registry:
+  an IBAN is masked when it has the length of its country (Italy: 27
+  characters), compact or with single spaces, and a valid mod-97 checksum
+  (`admina.domains.data_sovereignty.iban`). The PHONE category also covers
+  Italian mobile and landline numbers, with `+39`, `0039` or without.
+
 ### Changed
 
 - Each gateway chat completion writes two forensic records,
@@ -251,6 +313,12 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   container. Both proxy images create `/app/.admina/forensic` owned by the
   `admina` user (uid 10001), so a new volume mounted there is writable by
   the proxy.
+- The IBAN category of the `spacy-regex` engine no longer masks an
+  IBAN-shaped string with a wrong checksum, a length other than its
+  country's, or an unknown country code; IBANs are matched before phone
+  and card numbers.
+- The `presidio` engine checks e-mail domains against the public suffix
+  list bundled with `tldextract`, with no download and no cache files.
 
 ## [0.13.0rc1] — 2026-09-27
 
