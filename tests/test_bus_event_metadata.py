@@ -14,8 +14,10 @@
 
 """The governance events of the event bus carry names, counts and hashes.
 
-The live feed, the OpenTelemetry exporter and the alert channels all read
-these events. Their metadata is ``surface``, ``event_id``, ``domain`` (the
+Every governed request of the ``mcp``, ``gateway`` and ``integration``
+(``/api/v1/validate``) surfaces emits one ``governance.decision`` event. The
+live feed, the OpenTelemetry exporter and the alert channels all read these
+events. Their metadata is ``surface``, ``event_id``, ``domain`` (the
 part of the pipeline that decided), ``latency_us``, ``categories`` (firewall
 category names), ``pii_count``, ``request_sha256`` and, in ``observe`` and
 ``dry-run`` mode, ``would_action``: no ``content`` key and no text of the
@@ -66,12 +68,22 @@ def _mcp(text: str, session: str) -> dict:
     )
 
 
+def _chat(text: str, *, stream: bool = False) -> dict:
+    body = {"model": "m1", "messages": [{"role": "user", "content": text}], "stream": stream}
+    return with_key({"method": "POST", "url": "/v1/chat/completions", "json": body})
+
+
+def _validate(text: str) -> dict:
+    return with_key({"method": "POST", "url": "/api/v1/validate", "json": {"content": text}})
+
+
 @pytest.fixture
-def events(monkeypatch):
-    """The governance decisions emitted on the proxy's event bus."""
+def events(monkeypatch, tmp_path):
+    """The governance decisions emitted on the proxy's event bus; forensic
+    records are written to ``tmp_path``."""
     from admina.proxy import main as proxy_main
 
-    isolate(monkeypatch)
+    isolate(monkeypatch, forensic_backend="filesystem", forensic_dir=str(tmp_path))
     monkeypatch.setattr(proxy_main.settings, "ADMINA_API_KEY", API_KEY)
     monkeypatch.setattr(proxy_main.settings, "PII_REDACTION_ENABLED", True)
     captured: list = []
@@ -187,6 +199,87 @@ def test_the_live_feed_serialises_the_same_metadata(events):
     assert json.loads(message)["metadata"] == json.loads(json.dumps(event.metadata))
 
 
+# ── The gateway and /api/v1/validate ─────────────────────────
+
+
+def _records(directory) -> list[dict]:
+    return [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(directory.rglob("*.json"))
+        if not path.name.startswith("_")
+    ]
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["json", "stream"])
+def test_gateway_allowed_request(events, tmp_path, stream):
+    responses, _ = serve([_chat(ALLOWED, stream=stream)])
+    assert responses[0].status_code == 200
+    (event,) = _decisions(events)
+    assert event.action == "ALLOW"
+    _assert_no_text(event, ALLOWED, CANARY)
+    assert set(event.metadata) == METADATA_KEYS
+    assert event.metadata["surface"] == "gateway"
+    assert event.metadata["event_id"] == responses[0].headers["x-admina-event-id"]
+    (request,) = [
+        r["event"] for r in _records(tmp_path) if r["event"]["event_type"] == "gateway_request"
+    ]
+    assert event.metadata["request_sha256"] == request["request_sha256"]
+    assert HEX64.fullmatch(event.metadata["request_sha256"])
+
+
+def test_gateway_blocked_request(events):
+    responses, _ = serve([_chat(BLOCKED)])
+    assert responses[0].headers["x-admina-action"] == "BLOCK"
+    (event,) = _decisions(events)
+    assert event.action == "BLOCK"
+    _assert_no_text(event, BLOCKED, CANARY)
+    assert event.metadata["categories"] == ["instruction_override"]
+    assert event.metadata["domain"] == "firewall"
+    assert HEX64.fullmatch(event.metadata["request_sha256"])
+
+
+def test_gateway_redacted_request(events):
+    responses, _ = serve([_chat(WITH_EMAIL)])
+    assert responses[0].status_code == 200
+    (event,) = _decisions(events)
+    _assert_no_text(event, WITH_EMAIL, CANARY, "mario.rossi@example.org", "[EMAIL]")
+    assert event.metadata["pii_count"] >= 1
+
+
+def test_gateway_request_that_fails_before_its_decision_emits_no_event(events, monkeypatch):
+    from admina.proxy.api import gateway
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("scan scope failed")
+
+    monkeypatch.setattr(gateway, "_scan_scope", fail)
+    responses, _ = serve([_chat(ALLOWED)])
+    assert responses[0].status_code == 500
+    assert _decisions(events) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "action"), [(ALLOWED, "ALLOW"), (BLOCKED, "BLOCK")], ids=["allowed", "blocked"]
+)
+def test_validate_request(events, text, action):
+    responses, _ = serve([_validate(text)])
+    # REDACT: the PII engine may take the random canary for a name.
+    assert responses[0].json()["action"] in {action, "REDACT" if action == "ALLOW" else action}
+    (event,) = _decisions(events)
+    assert event.action == action
+    _assert_no_text(event, text, CANARY)
+    assert event.metadata["surface"] == "integration"
+    assert event.metadata["request_sha256"] == hashlib.sha256(text.encode()).hexdigest()
+
+
+def test_validate_bounds_the_session_id_it_reports(events):
+    request = _validate(ALLOWED)
+    request["json"]["session_id"] = "s" * 300 + "\r\nX-Injected: 1"
+    serve([request])
+    (event,) = _decisions(events)
+    assert event.session_id == "s" * 128
+
+
 # ── Alerts ────────────────────────────────────────────────────
 
 
@@ -201,25 +294,30 @@ class _Channel:
         return True
 
 
-def test_a_blocked_mcp_request_fires_one_alert_from_its_event(events, monkeypatch):
+@pytest.mark.parametrize(
+    "request_",
+    [_chat(BLOCKED), _mcp(BLOCKED, "s-alert"), _validate(BLOCKED)],
+    ids=["gateway", "mcp", "integration"],
+)
+def test_a_blocked_request_fires_one_alert_from_its_event(events, monkeypatch, request_):
     from admina.proxy import main as proxy_main
 
     channel = _Channel()
     monkeypatch.setattr(proxy_main, "instantiate_plugins", _only_alerts(channel))
-    serve([_mcp(BLOCKED, "s-alert")])
+    serve([request_])
     (event,) = _decisions(events)
     (alert,) = channel.alerts
     assert alert["details"] == event.metadata
     assert CANARY not in json.dumps(alert, default=str)
 
 
-def test_an_allowed_mcp_request_fires_no_alert(events, monkeypatch):
+def test_an_allowed_request_fires_no_alert(events, monkeypatch):
     from admina.proxy import main as proxy_main
 
     channel = _Channel()
     monkeypatch.setattr(proxy_main, "instantiate_plugins", _only_alerts(channel))
-    serve([_mcp(ALLOWED, "s-quiet")])
-    assert len(_decisions(events)) == 1
+    serve([_chat(ALLOWED), _mcp(ALLOWED, "s-quiet"), _validate(ALLOWED)])
+    assert len(_decisions(events)) == 3
     assert channel.alerts == []
 
 

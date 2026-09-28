@@ -36,6 +36,7 @@ from admina.proxy.gateway_upstreams import GatewayUpstreams
 from admina.proxy.loop_lag import EventLoopLagMonitor
 from admina.proxy.multi_upstream import MultiUpstreamRouter
 from admina.proxy.pipeline_executor import PipelineExecutor
+from admina.proxy.request_metrics import RequestMetrics
 
 if TYPE_CHECKING:
     # Only for the annotation: redis is imported when REDIS_URL is set.
@@ -119,15 +120,44 @@ class ProxyState:
         }
     )
     _metrics_lock: threading.Lock = field(default_factory=threading.Lock)
+    # Samples averaged in avg_latency_ms.
+    _latency_samples: int = 0
+    # admina_requests_total{surface,action} and the duration histograms of
+    # the governed surfaces (the enabled ones are set at startup).
+    request_metrics: RequestMetrics = field(default_factory=RequestMetrics)
 
     def inc_metric(self, key: str, value: int = 1) -> None:
         with self._metrics_lock:
             self.metrics[key] += value
 
-    def update_avg_latency(self, latency_ms: float) -> None:
+    def count_request(self, surface: str, action: str) -> None:
+        """Count one governed request of *surface* with *action* (see
+        :mod:`admina.proxy.request_metrics`), in the labelled counter and in
+        the counters of every surface: ``requests_total``,
+        ``requests_blocked`` (BLOCK, CIRCUIT_BREAK), ``requests_allowed``
+        (ALLOW, REDACT) and ``requests_redacted`` (REDACT)."""
+        self.request_metrics.count(surface, action)
         with self._metrics_lock:
-            n = self.metrics["requests_total"]
-            if n <= 1:
+            self.metrics["requests_total"] += 1
+            if action in ("BLOCK", "CIRCUIT_BREAK"):
+                self.metrics["requests_blocked"] += 1
+            elif action in ("ALLOW", "REDACT"):
+                self.metrics["requests_allowed"] += 1
+            if action == "REDACT":
+                self.metrics["requests_redacted"] += 1
+
+    def observe_request_duration(self, surface: str, seconds: float) -> None:
+        """Record the duration of one governed request of *surface*, in its
+        histogram and in ``avg_latency_ms``."""
+        self.request_metrics.observe_request(surface, seconds)
+        self.update_avg_latency(seconds * 1000)
+
+    def update_avg_latency(self, latency_ms: float) -> None:
+        """Add *latency_ms* to the running average ``avg_latency_ms``."""
+        with self._metrics_lock:
+            self._latency_samples += 1
+            n = self._latency_samples
+            if n == 1:
                 self.metrics["avg_latency_ms"] = latency_ms
             else:
                 self.metrics["avg_latency_ms"] = round(

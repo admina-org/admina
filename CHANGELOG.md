@@ -259,9 +259,40 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   characters), compact or with single spaces, and a valid mod-97 checksum
   (`admina.domains.data_sovereignty.iban`). The PHONE category also covers
   Italian mobile and landline numbers, with `+39`, `0039` or without.
+- The gateway and `POST /api/v1/validate` record their governance decisions
+  as `/mcp` does (`admina.proxy.main.record_decision`): each governed
+  request emits one `governance.decision` event (live feed, OpenTelemetry,
+  one alert per `BLOCK` or `CIRCUIT_BREAK`) and, with ClickHouse
+  configured, stores one `governance_events` row (`gateway_request`, or
+  `validate_request`, the new `EventType.VALIDATE_REQUEST`). A gateway
+  request is recorded once its response has ended: its row has
+  `response_hash` (the SHA-256 of the response sent), and a completion
+  answered with the block message after the upstream answered is a `BLOCK`
+  of `domain` `response_firewall` or `response_pii`. The event of a
+  `/api/v1/validate` request has a new `event_id`, and the body's
+  `session_id` without CR/LF, cut to 128 characters.
+- `/metrics` serves, for the gateway, `/mcp` and `/api/v1/validate`
+  (surfaces `gateway`, `mcp`, `integration`):
+  `admina_request_duration_seconds{surface}`, a histogram of the time from
+  the arrival of a request to the end of its response, and
+  `admina_governance_duration_seconds{surface}`, a histogram of the time
+  the governance pipeline took (`admina.proxy.request_metrics`).
 
 ### Changed
 
+- `admina_requests_total` has the labels `surface` (`gateway`, `mcp`,
+  `integration`) and `action` (`ALLOW`, `BLOCK`, `REDACT`, `CIRCUIT_BREAK`,
+  `ERROR`), with a sample for each enabled surface and action from startup;
+  `sum(admina_requests_total)` counts what the unlabelled counter counted,
+  plus the gateway and `/api/v1/validate`, less the `/mcp` requests whose
+  body is not JSON (answered `400` before they are governed).
+  `admina_requests_blocked_total`, `admina_requests_allowed_total`,
+  `admina_requests_redacted_total`, `admina_avg_latency_ms` (now the mean
+  duration of the counted requests) and the `requests_*` counters of
+  `/api/stats` count every governed surface, so the dashboard score counts
+  gateway blocks too.
+- The ClickHouse `request_hash` of an `/mcp` row is the whole SHA-256 (64
+  hexadecimal characters), the `request_sha256` of its event.
 - Each gateway chat completion writes two forensic records,
   `gateway_request` and then `gateway_response`; count `gateway_request`
   records to count requests.

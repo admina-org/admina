@@ -697,6 +697,53 @@ put `/metrics` and `/docs`, `/redoc`, `/openapi.json` behind the API key
 (`X-API-Key` or `Authorization: Bearer`); a browser opening `/docs` then
 cannot load the schema. `ADMINA_API_DOCS_ENABLED=false` removes the docs.
 
+**Governed requests.** Each request the proxy governs on the gateway
+(`POST /v1/chat/completions`), on `/mcp` and on `POST /api/v1/validate`
+(the `integration` surface) is counted on `/metrics` and emits one
+`governance.decision` event on the event bus, which the dashboard live feed,
+the OpenTelemetry exporter and the alert channels read (one alert per
+`BLOCK` or `CIRCUIT_BREAK`). With ClickHouse configured it is also a row of
+`governance_events`: `event_type` `gateway_request`, `mcp_request` or
+`validate_request`, `request_hash` the event's `request_sha256`, and for
+the gateway `response_hash` the SHA-256 of the response sent. A gateway
+request is recorded once its response has ended.
+
+- `admina_requests_total{surface,action}`: counter per surface (`gateway`,
+  `mcp`, `integration`; the enabled ones have samples from startup) and
+  action: `ALLOW`, `BLOCK`, `REDACT` (allowed, with PII masked in the
+  request), `CIRCUIT_BREAK`, or `ERROR` (the request failed in the proxy
+  before the governance pipeline decided). A gateway completion answered
+  with the block message after the upstream answered (flagged by the
+  response scan, or whose PII redaction did not finish) is a `BLOCK`, and
+  so are `/mcp` requests over the rate limits or `MAX_REQUEST_TOKENS`.
+  Requests refused before they are governed are not counted: gateway
+  requests answered before they have an event id (unknown route, a body
+  that is not a JSON object, a model outside the allowlist, a refused
+  value, a prompt over `ADMINA_GATEWAY_MAX_PROMPT_CHARS`), and
+  `/api/v1/validate` requests answered `400` or `503`.
+- `admina_request_duration_seconds{surface}`: histogram of the time from
+  the arrival of a request to the end of its response, the upstream's time
+  included (buckets from 5 ms to 300 s).
+- `admina_governance_duration_seconds{surface}`: histogram of the time the
+  governance pipeline took to decide (buckets from 0.5 ms to 5 s).
+- `admina_requests_blocked_total` (`BLOCK`, `CIRCUIT_BREAK`),
+  `admina_requests_allowed_total` (`ALLOW`, `REDACT`),
+  `admina_requests_redacted_total` (`REDACT`) and `admina_avg_latency_ms`
+  (the mean request duration) count every governed surface, as do the
+  `requests_*` counters of `/api/stats`.
+
+Label values come from these fixed sets only, never from a request. The
+metadata of a `governance.decision` event is `surface`, `event_id` (of the
+request's forensic records; a new id for `/api/v1/validate`), `domain` (the
+part of the pipeline that decided: `firewall`, `pii`, `loop_breaker`, a
+guard's name, `pipeline`, `response_firewall`, `response_pii` or `none`),
+`latency_us` (the pipeline's time), `categories` (firewall category names),
+`pii_count`, `request_sha256` and, in `observe` and `dry-run` mode,
+`would_action`: names, counts and hashes, never text of a request or of a
+response. `request_sha256` is, for the gateway, the `request_sha256` of the
+request record; for `/mcp`, the SHA-256 of the JSON-RPC request as the
+proxy serialises it; for `/api/v1/validate`, the SHA-256 of `content`.
+
 **Container entrypoint.** `admina/proxy/docker-entrypoint.sh` accepts
 `ADMINA_API_KEY` or `ADMINA_API_KEY_FILE` and prints only whether the key
 is set, never any part of it.

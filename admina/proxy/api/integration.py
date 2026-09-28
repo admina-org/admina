@@ -23,21 +23,53 @@ always ``api_v1_audit`` (a ``source`` sent by the caller is kept as
 ``client_source``) and ``submitted_by`` is the credential the request was
 admitted with: ``api_key``, ``append_key`` (``ADMINA_AUDIT_APPEND_KEY``),
 ``user:<id>`` for an auth provider's user, or ``unauthenticated``.
+
+Each ``/api/v1/validate`` request that reaches the governance pipeline is
+passed to the ``on_decision`` callable of
+:func:`create_integration_endpoints` as an
+:class:`admina.proxy.decisions.Decision` of the ``integration`` surface
+(``ERROR`` when the pipeline raised), with its duration: the proxy counts it
+on ``/metrics`` and emits its ``governance.decision`` event (see
+``admina.proxy.main.record_decision``). The decision reports ``session_id``
+and ``agent_id`` of the body when they are strings or integers, without
+CR/LF and cut to 128 characters; its ``request_sha256`` is the SHA-256 of
+``content`` (of its JSON form when it is not a string).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from admina.domains.compliance.forensic import ForensicWriteError
+from admina.proxy.decisions import Decision, text_sha256
 
 logger = logging.getLogger("admina.api.integration")
+
+# Longest session_id / agent_id reported, as for the X-Session-Id header.
+_REPORTED_ID_MAX = 128
+
+
+def _reported_id(value: Any) -> str | None:
+    """*value* as a decision reports it (see the module docstring), or None."""
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return None
+    return re.sub(r"[\r\n]", "", str(value))[:_REPORTED_ID_MAX]
+
+
+def _content_sha256(content: Any) -> str:
+    """SHA-256 of *content*, or of its JSON form when it is not a string."""
+    if isinstance(content, str):
+        return text_sha256(content)
+    return text_sha256(json.dumps(content, default=str))
 
 
 # Sentinel default settings object used when no get_settings callable is
@@ -104,6 +136,7 @@ def create_integration_endpoints(
     get_forensic_box: Any,
     get_settings: Any = lambda: _DefaultSettings(),
     get_egress_policy: Any = lambda: None,
+    on_decision: Callable[..., None] | None = None,
 ) -> APIRouter:
     """Create a new APIRouter with integration endpoints.
 
@@ -117,11 +150,18 @@ def create_integration_endpoints(
         get_settings: Callable returning the settings object (optional).
         get_egress_policy: Callable returning the EgressPolicy, or None when
             egress control is disabled (optional; defaults to ``None``).
+        on_decision: ``on_decision(decision, *, duration_s)``, called with
+            the decision of each ``/api/v1/validate`` request (see the
+            module docstring); optional.
 
     Returns:
         The configured APIRouter.
     """
     router = APIRouter(prefix="/api/v1", tags=["integration"])
+
+    def decided(decision: Decision, started: float) -> None:
+        if on_decision is not None:
+            on_decision(decision, duration_s=time.perf_counter() - started)
 
     @router.post("/validate")
     async def validate_action(body: dict) -> dict[str, Any]:
@@ -137,6 +177,7 @@ def create_integration_endpoints(
         from admina.domains.agent_security.egress import egress_policy_for, resolve_egress_mode
         from admina.domains.governance import run_pipeline
 
+        started = time.perf_counter()
         content = body.get("content", "")
         if not content:
             raise HTTPException(status_code=400, detail="'content' field is required")
@@ -149,23 +190,40 @@ def create_integration_endpoints(
         settings = get_settings()
         mode = getattr(settings, "GOVERNANCE_MODE", "enforce")
 
+        event_id = uuid.uuid4().hex
         pipeline_body = {"params": {"content": content}}
-        result = await run_pipeline(
-            body=pipeline_body,
-            content_str=content,
-            session_id=session_id,
-            agent_id=agent_id,
-            request_id=request_id,
-            params={"content": content},
-            firewall=get_firewall(),
-            pii_redactor=get_pii_scanner(),
-            loop_breaker=get_loop_breaker(),
-            governance_guards=[],
-            injection_enabled=True,
-            pii_enabled=True,
-            mode=mode,
-            egress_policy=egress_policy_for(get_egress_policy(), "integration"),
-            egress_mode=resolve_egress_mode(mode),
+        try:
+            result = await run_pipeline(
+                body=pipeline_body,
+                content_str=content,
+                session_id=session_id,
+                agent_id=agent_id,
+                request_id=request_id,
+                params={"content": content},
+                firewall=get_firewall(),
+                pii_redactor=get_pii_scanner(),
+                loop_breaker=get_loop_breaker(),
+                governance_guards=[],
+                injection_enabled=True,
+                pii_enabled=True,
+                mode=mode,
+                egress_policy=egress_policy_for(get_egress_policy(), "integration"),
+                egress_mode=resolve_egress_mode(mode),
+            )
+        except Exception:
+            decided(Decision.failed("integration", event_id), started)
+            raise
+        decided(
+            Decision.of(
+                "integration",
+                event_id,
+                result,
+                request_sha256=_content_sha256(content),
+                session_id=_reported_id(session_id),
+                agent_id=_reported_id(agent_id),
+                method="validate",
+            ),
+            started,
         )
 
         gov = result.gov_response  # action/risk_level are already UPPERCASE

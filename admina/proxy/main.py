@@ -51,7 +51,6 @@ from admina.domains.agent_security.egress import (
 from admina.domains.compliance.forensic import ForensicWriteError
 from admina.domains.compliance.otel import OTELGovernanceExporter
 from admina.domains.governance import (
-    build_governance_details,
     redact_response_result,
     run_pipeline,
     safe_serialize,
@@ -81,6 +80,7 @@ from admina.proxy.gateway_upstreams import build_gateway_upstreams
 from admina.proxy.log_format import configure_logging
 from admina.proxy.multi_upstream import MultiUpstreamRouter
 from admina.proxy.pipeline_executor import PipelineExecutor
+from admina.proxy.request_metrics import RequestMetrics
 from admina.proxy.state import ProxyState
 from admina.proxy.surfaces import parse_surfaces, surface_of
 
@@ -263,6 +263,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         ),
         egress_policy=get_egress_policy(),
         router=MultiUpstreamRouter(default_upstream=settings.UPSTREAM_MCP_URL),
+        request_metrics=RequestMetrics(surfaces),
     )
     # The ruleset of the firewall just built: its engine, admina.yaml rules.
     state.gateway_scan = build_gateway_scan_config(state.firewall, _admina_config)
@@ -636,12 +637,14 @@ _integration_router = create_integration_endpoints(
     get_forensic_box=lambda: app.state.proxy.forensic_box,
     get_settings=lambda: settings,
     get_egress_policy=lambda: app.state.proxy.egress_policy,
+    on_decision=lambda decision, **kw: record_decision(app.state.proxy, decision, **kw),
 )
 _mount("integration", _integration_router)
 
 _gateway_router = create_gateway_endpoints(
     get_state=lambda: app.state.proxy,
     get_settings=lambda: settings,
+    on_decision=lambda decision, **kw: record_decision(app.state.proxy, decision, **kw),
 )
 _mount("gateway", _gateway_router)
 
@@ -1143,7 +1146,8 @@ async def prometheus_metrics(request: Request) -> Response:
         suffix = f"{{{labels}}}" if labels else ""
         lines.append(f"admina_{name}{suffix} {value}")
 
-    _metric("requests_total", m.get("requests_total", 0), "Total governance requests processed")
+    # admina_requests_total{surface,action} and the duration histograms.
+    lines.extend(state.request_metrics.exposition())
     _metric(
         "requests_blocked_total", m.get("requests_blocked", 0), "Total governance requests blocked"
     )
@@ -1643,14 +1647,24 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
     """
     Main MCP proxy endpoint.
     All agent traffic flows through here for governance inspection.
+    Each request answered is counted on /metrics with its duration.
     """
+    started = time.perf_counter()
+    response = await _mcp_exchange(request, path, started)
+    _get_state(request).observe_request_duration("mcp", time.perf_counter() - started)
+    return response
+
+
+async def _mcp_exchange(request: Request, path: str, started: float) -> JSONResponse:
+    """The response to a governed /mcp request that arrived at *started*
+    (``time.perf_counter()``; see :func:`mcp_proxy`). A request whose body
+    is not JSON is refused (HTTPException) before it is governed or counted;
+    one whose governance pipeline raises is counted as ``ERROR``, with its
+    duration, and the exception goes on."""
     state = _get_state(request)
-    start_time = time.perf_counter()
     # Sanitize header values: strip CRLF (Redis key injection) and cap length
     session_id = re.sub(r"[\r\n]", "", request.headers.get("X-Session-Id", "default"))[:128]
     agent_id = re.sub(r"[\r\n]", "", request.headers.get("X-Agent-Id", "unknown"))[:128]
-
-    state.inc_metric("requests_total")
 
     # ─── Rate Limiting (Redis) ─────────────────────────────
     if state.redis and settings.RATE_LIMIT_MAX_REQUESTS > 0:
@@ -1661,7 +1675,7 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
             if count == 1:
                 await state.redis.expire(rl_key, settings.RATE_LIMIT_WINDOW_SECONDS)
             if count > settings.RATE_LIMIT_MAX_REQUESTS:
-                state.inc_metric("requests_blocked")
+                state.count_request("mcp", "BLOCK")
                 return JSONResponse(
                     status_code=429,
                     content={
@@ -1689,7 +1703,7 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
             if ip_count == 1:
                 await state.redis.expire(rl_ip_key, settings.RATE_LIMIT_WINDOW_SECONDS)
             if ip_count > settings.RATE_LIMIT_MAX_REQUESTS * settings.RATE_LIMIT_IP_MULTIPLIER:
-                state.inc_metric("requests_blocked")
+                state.count_request("mcp", "BLOCK")
                 return JSONResponse(
                     status_code=429,
                     content={
@@ -1722,7 +1736,7 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
 
     # ─── Token size guard ─────────────────────────────────────
     if settings.MAX_REQUEST_TOKENS > 0 and len(content_str) > settings.MAX_REQUEST_TOKENS:
-        state.inc_metric("requests_blocked")
+        state.count_request("mcp", "BLOCK")
         return JSONResponse(
             status_code=413,
             content={
@@ -1740,40 +1754,52 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
         )
 
     # ─── Governance Pipeline ─────────────────────────────────
-    pipeline_result = await run_pipeline(
-        body=body,
-        content_str=content_str,
-        session_id=session_id,
-        agent_id=agent_id,
-        request_id=event_id,
-        params=params,
-        firewall=state.firewall,
-        pii_redactor=state.pii_redactor,
-        loop_breaker=state.loop_breaker,
-        governance_guards=state.governance_guards,
-        injection_enabled=settings.INJECTION_FAST_PATH_ENABLED,
-        pii_enabled=settings.PII_REDACTION_ENABLED,
-        mode=settings.GOVERNANCE_MODE,
-        guard_fail_mode=settings.GUARD_FAIL_MODE,
-        egress_policy=egress_policy_for(state.egress_policy, "mcp"),
-        egress_mode=resolve_egress_mode(settings.GOVERNANCE_MODE),
-    )
+    try:
+        pipeline_result = await run_pipeline(
+            body=body,
+            content_str=content_str,
+            session_id=session_id,
+            agent_id=agent_id,
+            request_id=event_id,
+            params=params,
+            firewall=state.firewall,
+            pii_redactor=state.pii_redactor,
+            loop_breaker=state.loop_breaker,
+            governance_guards=state.governance_guards,
+            injection_enabled=settings.INJECTION_FAST_PATH_ENABLED,
+            pii_enabled=settings.PII_REDACTION_ENABLED,
+            mode=settings.GOVERNANCE_MODE,
+            guard_fail_mode=settings.GUARD_FAIL_MODE,
+            egress_policy=egress_policy_for(state.egress_policy, "mcp"),
+            egress_mode=resolve_egress_mode(settings.GOVERNANCE_MODE),
+        )
+    except Exception:
+        record_decision(
+            state, Decision.failed("mcp", event_id), duration_s=time.perf_counter() - started
+        )
+        raise
 
-    persisted_details = build_governance_details(pipeline_result)
     redacted_body = pipeline_result.redacted_body
     governance_latency = pipeline_result.latency_ms
     gov_response = pipeline_result.gov_response
     action = pipeline_result.action
     risk_level = pipeline_result.risk_level
 
-    if pipeline_result.checks.get("pii_redaction", {}).get("count", 0) > 0:
-        state.inc_metric("requests_redacted")
-    request_sha256 = text_sha256(content_str)
-    decision = Decision.of(
-        "mcp", event_id, pipeline_result, request_sha256=request_sha256, session_id=session_id
+    # Metrics, the bus event (alerts on BLOCK / CIRCUIT_BREAK) and the
+    # ClickHouse row; the forensic record is written below.
+    record_decision(
+        state,
+        Decision.of(
+            "mcp",
+            event_id,
+            pipeline_result,
+            request_sha256=text_sha256(content_str),
+            session_id=session_id,
+            agent_id=agent_id,
+            method=method,
+            tool_name=params.get("name", "") if isinstance(params, dict) else "",
+        ),
     )
-    # The alert channels read the event (BLOCK and CIRCUIT_BREAK): see lifespan.
-    _spawn(governance_bus.emit(decision.event()))
 
     # ─── Forensic Black Box (non-blocking) ─────────────────────
     # With ADMINA_FORENSIC_FAIL_MODE=closed a record that is not written
@@ -1805,27 +1831,6 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
             )
         except ForensicWriteError:
             return _forensic_unavailable_mcp(body, event_id)
-
-    # ─── Store to ClickHouse (fire-and-forget) ─────────────────
-    _spawn(
-        _store_event_async(
-            state.clickhouse,
-            GovernanceEvent(
-                event_id=event_id,
-                timestamp=datetime.now(UTC).isoformat(),
-                event_type=EventType.MCP_REQUEST,
-                agent_id=agent_id,
-                session_id=session_id,
-                method=method,
-                tool_name=params.get("name", "") if isinstance(params, dict) else "",
-                action=action,
-                risk_level=risk_level,
-                details=persisted_details,
-                latency_ms=governance_latency,
-                request_hash=request_sha256[:32],
-            ),
-        )
-    )
 
     # ─── Coordination detector (fire-and-forget) ───────────────
     # Never blocks: a confirmed verdict arms EgressPolicy's quarantine set,
@@ -1929,7 +1934,6 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
 
     # ─── Respond based on governance decision ─────────────────
     if action == GovernanceAction.BLOCK:
-        state.inc_metric("requests_blocked")
         if state.router.is_multi_upstream and path.startswith("route/"):
             state.router.record_block(path.removeprefix("route/").split("/")[0])
         logger.warning(
@@ -1944,7 +1948,6 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
         )
 
     if action == GovernanceAction.CIRCUIT_BREAK:
-        state.inc_metric("requests_blocked")
         if state.router.is_multi_upstream and path.startswith("route/"):
             state.router.record_block(path.removeprefix("route/").split("/")[0])
         logger.warning("CIRCUIT BREAK for session %s: reasoning loop detected", session_id)
@@ -1954,7 +1957,6 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
         )
 
     # ─── Forward to upstream MCP server ───────────────────────
-    state.inc_metric("requests_allowed")
     try:
         server_name = None
         if path.startswith("route/"):
@@ -2066,9 +2068,6 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                             content=mcp_transport.format_block_response(gov_response, body),
                         )
 
-        total_latency = (time.perf_counter() - start_time) * 1000
-        state.update_avg_latency(total_latency)
-
         record_hash = (forensic_record or {}).get("record_hash")
         headers = mcp_transport.format_allow_headers(
             gov_response,
@@ -2111,6 +2110,58 @@ _mount("mcp", _mcp_router)
 
 
 # ── Helpers ──────────────────────────────────────────────────
+
+# ClickHouse event type of the rows of each governed surface.
+_ANALYTICS_EVENT_TYPES = {
+    "gateway": EventType.GATEWAY_REQUEST,
+    "mcp": EventType.MCP_REQUEST,
+    "integration": EventType.VALIDATE_REQUEST,
+}
+
+
+def record_decision(
+    state: ProxyState, decision: Decision, *, duration_s: float | None = None
+) -> None:
+    """Record the governance *decision* of a request of a governed surface
+    (``/mcp``, ``/v1/chat/completions``, ``/api/v1/validate``).
+
+    The request is counted on ``/metrics`` (with its duration, *duration_s*,
+    when given); its ``governance.decision`` event goes on the event bus,
+    which the live feed, the OpenTelemetry exporter and the alert channels
+    (on BLOCK and CIRCUIT_BREAK) read; its row goes to ClickHouse when
+    ClickHouse is configured. A request that failed before its decision
+    (``ERROR``) is only counted. Each surface writes its forensic records
+    itself.
+    """
+    state.count_request(decision.surface, decision.metric_action)
+    if decision.latency_ms is not None:
+        state.request_metrics.observe_governance(decision.surface, decision.latency_ms / 1000)
+    if duration_s is not None:
+        state.observe_request_duration(decision.surface, duration_s)
+    if not decision.decided:
+        return
+    _spawn(governance_bus.emit(decision.event()))
+    if state.clickhouse:
+        _spawn(_store_event_async(state.clickhouse, _analytics_row(decision)))
+
+
+def _analytics_row(decision: Decision) -> GovernanceEvent:
+    """The ClickHouse row (``governance_events``) of *decision*."""
+    return GovernanceEvent(
+        event_id=decision.event_id,
+        timestamp=datetime.now(UTC).isoformat(),
+        event_type=_ANALYTICS_EVENT_TYPES[decision.surface],
+        agent_id=decision.agent_id or "unknown",
+        session_id=decision.session_id or "unknown",
+        method=decision.method,
+        tool_name=decision.tool_name,
+        action=GovernanceAction(decision.action.lower()),
+        risk_level=RiskLevel(decision.risk_level.lower()),
+        details=decision.details,
+        latency_ms=decision.latency_ms or 0.0,
+        request_hash=decision.request_sha256 or "",
+        response_hash=decision.response_sha256 or "",
+    )
 
 
 def _store_event_sync(clickhouse_client, event: GovernanceEvent):

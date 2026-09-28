@@ -63,6 +63,16 @@ RFC 8785 SHA-256 of the ``messages`` forwarded upstream), and
 client, or failed), with the same ``event_id``. With OpenTelemetry on, the
 call has a span of its own, a child of the caller's W3C trace context.
 
+Once its response has ended, a chat completion that has its event id is
+passed to the ``on_decision`` callable of :func:`create_gateway_endpoints`
+as an :class:`admina.proxy.decisions.Decision` (``ERROR`` when it failed
+before the pipeline decided), with its duration from arrival: the proxy
+counts it on ``/metrics`` and emits its ``governance.decision`` event (see
+``admina.proxy.main.record_decision``). A request refused before it has an
+event id (unknown route, a body that is not a JSON object, a model outside
+the allowlist, a refused value, a prompt over the length limit) is not
+counted.
+
 The governance pipeline runs in the worker threads of
 :mod:`admina.proxy.pipeline_executor`, within the time budget
 ``ADMINA_GATEWAY_PIPELINE_TIMEOUT``: a request whose decision takes longer,
@@ -114,6 +124,7 @@ import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterable
+from dataclasses import replace
 from functools import cache, partial
 from typing import Any
 
@@ -143,6 +154,7 @@ from admina.domains.governance import (
     safe_serialize,
     unfinished_pipeline_result,
 )
+from admina.proxy.decisions import Decision
 from admina.proxy.gateway_body import ForwardedValueError, ForwardSettings
 from admina.proxy.gateway_correlation import (
     context_of,
@@ -177,6 +189,10 @@ from admina.proxy.gateway_upstreams import UPSTREAM_HEADER, GatewayUpstream, Gat
 from admina.proxy.pipeline_executor import PipelineExecutor, PipelineTimeout
 
 logger = logging.getLogger("admina.proxy.gateway")
+
+#: ``on_decision(decision, *, duration_s)``: receives the decision of each
+#: chat completion and its duration in seconds (see the module docstring).
+OnDecision = Callable[..., None]
 
 # Longest X-Admina-Upstream value considered, as for X-Session-Id.
 _ROUTE_HEADER_MAX = 128
@@ -773,11 +789,10 @@ async def _record_forensic(
     """Record the gateway request to the forensic log — the fifth surface
     on the canonical pipeline — and return its ``record_hash`` (None
     without a forensic store). Runs off the event loop like /mcp does, the
-    ``request_sha256`` of *messages* (the array forwarded upstream) included.
+    ``request_sha256`` of *messages* (the array forwarded upstream) included;
+    that hash is set on *call* with or without a forensic store.
 
     *prescan* is the scan scope (:meth:`ScanScope.record`)."""
-    if forensic_box is None:
-        return None
     event: dict[str, Any] = {
         "event_id": call.event_id,
         "event_type": EventType.GATEWAY_REQUEST,
@@ -800,7 +815,10 @@ async def _record_forensic(
         event["would_action"] = call.would_action
 
     def write() -> Any:
-        event["request_sha256"] = messages_sha256(messages)
+        call.request_sha256 = messages_sha256(messages)
+        if forensic_box is None:
+            return None
+        event["request_sha256"] = call.request_sha256
         return forensic_box.record(event)
 
     return _record_hash(await asyncio.get_running_loop().run_in_executor(None, write))
@@ -870,23 +888,55 @@ def _end_span(span: Any, record: dict) -> None:
     span.end()
 
 
+def _final_decision(call: GatewayCall, delivery: Delivery) -> Decision:
+    """The decision of *call* once its response has ended: the pipeline's,
+    with the action, risk and categories the response was sent with and the
+    hashes of the request and of the response; ``ERROR`` when the pipeline
+    had not decided."""
+    if call.decision is None:
+        return Decision.failed("gateway", call.event_id)
+    return replace(
+        call.decision,
+        action=call.action,
+        risk_level=call.risk_level,
+        categories=call.categories,
+        request_sha256=call.request_sha256,
+        response_sha256=delivery.sha256,
+    )
+
+
+def _blocked_after_upstream(call: GatewayCall, domain: str) -> None:
+    """*call*, allowed by the pipeline, is answered with the block message
+    after the upstream answered; *domain* says why (``response_firewall`` or
+    ``response_pii``)."""
+    call.action = "BLOCK"
+    call.decision = replace(call.decision, domain=domain)
+
+
 async def _end_call(
     state: Any,
     call: GatewayCall,
     status_code: int,
     delivery: Delivery,
     body: bytes | None,
+    on_decision: OnDecision | None,
     sent: bool,
 ) -> None:
     """End *call*, whose response has *status_code* and, unless streamed,
-    *body*: end its span and write its completion record. *sent* is False
-    when sending the response raised."""
+    *body*: end its span, pass its decision and duration to *on_decision*
+    and write its completion record, also when *on_decision* raises. *sent*
+    is False when sending the response raised."""
     if body is not None:
         delivery.body(body)
     if not sent:
         delivery.completed = False
     record = completion_record(call, status_code, delivery)
     _end_span(call.span, record)
+    if on_decision is not None:
+        try:
+            on_decision(_final_decision(call, delivery), duration_s=record["duration_ms"] / 1000)
+        except Exception as exc:  # noqa: BLE001 — the completion record is still written
+            logger.error("Gateway decision not recorded: %s", type(exc).__name__)
     await _record_completion(state.forensic_box, record)
 
 
@@ -909,7 +959,9 @@ class _Finished(Response):
             await self.end(sent)
 
 
-def _finish(state: Any, call: GatewayCall, response: Response) -> Response:
+def _finish(
+    state: Any, call: GatewayCall, response: Response, on_decision: OnDecision | None = None
+) -> Response:
     """*response* with the outcome headers of *call*, ending the call once
     it has been sent: the bytes of a stream are counted as they go out."""
     response.headers.update(call.headers())
@@ -920,7 +972,8 @@ def _finish(state: Any, call: GatewayCall, response: Response) -> Response:
     else:
         body = bytes(response.body)
     return _Finished(
-        response, partial(_end_call, state, call, response.status_code, delivery, body)
+        response,
+        partial(_end_call, state, call, response.status_code, delivery, body, on_decision),
     )
 
 
@@ -1272,11 +1325,18 @@ async def _governed_call(
     if fwd_messages is None:
         pre = _without_redacted_messages(pre, event_id)
         fwd_messages = messages
-    call.action = pre.gov_response.action  # uppercase: ALLOW/BLOCK/CIRCUIT_BREAK
-    call.risk_level = pre.gov_response.risk_level
-    call.categories = firewall_categories(pre.checks.get("firewall"))
-    if pre.would_action is not None:
-        call.would_action = str(safe_serialize(pre.would_action)).upper()
+    call.decision = Decision.of(
+        "gateway",
+        event_id,
+        pre,
+        session_id=session_id,
+        agent_id=agent_id,
+        method="chat.completions",
+    )
+    call.action = call.decision.action  # uppercase: ALLOW/BLOCK/CIRCUIT_BREAK
+    call.risk_level = call.decision.risk_level
+    call.categories = call.decision.categories
+    call.would_action = call.decision.would_action
 
     call.record_hash = await _record_forensic(
         state.forensic_box,
@@ -1390,7 +1450,7 @@ async def _governed_call(
                 stream=False,
             )
             if checked.action == GovernanceAction.BLOCK:
-                call.action = "BLOCK"
+                _blocked_after_upstream(call, "response_firewall")
                 call.risk_level = str(safe_serialize(checked.risk_level)).upper()
                 call.categories = firewall_categories(checked.checks.get("response_firewall"))
                 return _block_response(cfg, model, False, call.categories)
@@ -1402,7 +1462,7 @@ async def _governed_call(
     redacted = await _redacted(state, cfg, partial(_redacted_completion, data, state.pii_redactor))
     if redacted is None:
         # The completion could not be redacted: the block message instead.
-        call.action = "BLOCK"
+        _blocked_after_upstream(call, "response_pii")
         return _block_response(cfg, model, False, call.categories)
     return JSONResponse(content=redacted, status_code=resp.status_code)
 
@@ -1411,6 +1471,7 @@ def create_gateway_endpoints(
     *,
     get_state: Any,
     get_settings: Any,
+    on_decision: OnDecision | None = None,
 ) -> APIRouter:
     """Create the OpenAI-compatible gateway router (prefix ``/v1``).
 
@@ -1423,6 +1484,8 @@ def create_gateway_endpoints(
             gateway_http_client, gateway_upstreams, gateway_stream_mode,
             gateway_scan).
         get_settings: Callable returning the settings object.
+        on_decision: Called with the decision of each chat completion once
+            its response has ended (see the module docstring); optional.
     """
     router = APIRouter(prefix="/v1", tags=["gateway"])
 
@@ -1457,7 +1520,7 @@ def create_gateway_endpoints(
         response, call = await _chat_completion(request, state, get_settings(), scan)
         response.headers[RULESET_HEADER] = scan.ruleset_sha256
         response.headers[VERSION_HEADER] = __version__
-        return response if call is None else _finish(state, call, response)
+        return response if call is None else _finish(state, call, response, on_decision)
 
     @router.get("/admina/ruleset", summary="Active firewall ruleset")
     async def active_ruleset() -> dict[str, Any]:

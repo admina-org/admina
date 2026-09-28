@@ -241,6 +241,13 @@ class GatewayCall:
     error: str | None = None
     #: The OpenTelemetry span of the call, or None.
     span: Any = None
+    #: The ``request_sha256`` of the request record (see
+    #: :func:`messages_sha256`), once computed.
+    request_sha256: str | None = None
+    #: The governance decision of the request (an
+    #: :class:`admina.proxy.decisions.Decision`), None until the pipeline
+    #: has decided.
+    decision: Any = None
 
     def failed(self, exc: BaseException) -> None:
         """The upstream exchange ended with *exc*."""
