@@ -277,6 +277,10 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   the arrival of a request to the end of its response, and
   `admina_governance_duration_seconds{surface}`, a histogram of the time
   the governance pipeline took (`admina.proxy.request_metrics`).
+- `OTEL_ENABLED` (default `true`): with the `telemetry` extra installed and
+  `ADMINA_OFFLINE` off, the proxy exports its spans to `OTEL_ENDPOINT`, as
+  before; `false` builds no exporter, so nothing is exported and no
+  connection is made for telemetry.
 
 ### Changed
 

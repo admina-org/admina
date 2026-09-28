@@ -110,7 +110,11 @@ class Settings(BaseSettings):
     # memory either, until it is fixed.
     ADMINA_FORENSIC_FAIL_MODE: str = "open"
 
-    # Telemetry
+    # Telemetry. OTEL_ENABLED=true (default): the proxy exports a span per
+    # governance decision to OTEL_ENDPOINT (OTLP gRPC) when the telemetry
+    # extra is installed and ADMINA_OFFLINE is off. false: no exporter is
+    # built and nothing is exported.
+    OTEL_ENABLED: bool = True
     OTEL_ENDPOINT: str = "http://localhost:4317"
 
     # Proxy

@@ -210,6 +210,8 @@ domains:
       # NIS2, GDPR. No configuration — exposed at GET /api/compliance/matrix.
       enabled: true
     otel:
+      # The proxy exports its spans to OTEL_ENDPOINT, and OTEL_ENABLED=false
+      # turns the export off (environment variables; see .env.example).
       endpoint: "http://localhost:4317"
 
 # ── OpenAI-compatible gateway (/v1) ─────────────────────────

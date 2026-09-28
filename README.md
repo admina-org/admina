@@ -744,6 +744,17 @@ response. `request_sha256` is, for the gateway, the `request_sha256` of the
 request record; for `/mcp`, the SHA-256 of the JSON-RPC request as the
 proxy serialises it; for `/api/v1/validate`, the SHA-256 of `content`.
 
+**OpenTelemetry.** With `OTEL_ENABLED=true` (the default), the `telemetry`
+extra installed and `ADMINA_OFFLINE` off, the proxy exports to
+`OTEL_ENDPOINT` (OTLP gRPC, default `http://localhost:4317`; an empty value
+leaves the endpoint to the OpenTelemetry SDK: `OTEL_EXPORTER_OTLP_ENDPOINT`,
+else `http://localhost:4317`) a span per `governance.decision` event, with
+`admina.domain`, `admina.action`, `admina.risk_level`, `admina.latency_us`,
+`admina.session_id` and `admina.meta.<key>` for each key of the event's
+metadata, and the span of each gateway chat completion.
+`OTEL_ENABLED=false` builds no exporter: nothing is exported and no
+connection is made for telemetry.
+
 **Container entrypoint.** `admina/proxy/docker-entrypoint.sh` accepts
 `ADMINA_API_KEY` or `ADMINA_API_KEY_FILE` and prints only whether the key
 is set, never any part of it.

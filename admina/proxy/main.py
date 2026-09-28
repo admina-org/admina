@@ -302,10 +302,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         )
 
     # ── OTEL exporter — subscribe to event bus ────────────────
-    # ADMINA_OFFLINE: no exporter (checked at the start of the lifespan).
+    # OTEL_ENABLED=false or ADMINA_OFFLINE (checked at the start of the
+    # lifespan): no exporter is built.
     otel_endpoint = getattr(settings, "OTEL_ENDPOINT", "http://localhost:4317")
-    state.otel_exporter = OTELGovernanceExporter(endpoint=otel_endpoint, enabled=not offline)
-    if offline:
+    state.otel_exporter = OTELGovernanceExporter(
+        endpoint=otel_endpoint, enabled=settings.OTEL_ENABLED and not offline
+    )
+    if not settings.OTEL_ENABLED:
+        logger.info("OTEL_ENABLED=false: OpenTelemetry export off")
+    elif offline:
         logger.info("ADMINA_OFFLINE: OpenTelemetry export off")
     if state.otel_exporter.enabled:
 
