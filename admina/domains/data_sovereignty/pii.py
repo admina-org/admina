@@ -22,6 +22,7 @@ import os
 import re
 
 from admina.domains.data_sovereignty.email_matching import EMAIL_RX, iter_email_matches
+from admina.domains.data_sovereignty.iban import IBAN_RX, iter_iban_matches
 from admina.domains.data_sovereignty.masking import outside_placeholders, placeholder_spans
 
 # spaCy is part of the [nlp] extra. When absent, PIIRedactor falls back
@@ -77,15 +78,30 @@ PII_CATEGORIES = {
     "DE_PERSONALAUSWEIS": {"enabled": False, "mask": "[AUSWEIS]"},  # off — ambiguous regex
 }
 
-# Regex patterns for PII not covered by spaCy NER
+# Phone numbers: North American format (3-3-4 digits, optional country code),
+# and Italian numbers, with +39 or 0039 or without: mobile numbers (3 and
+# 8 or 9 more digits, compact or in groups) and landline numbers (an area
+# code 02, 06 or 0 followed by 2 or 3 digits, then 5 to 8 digits, or 2 or 3
+# groups of 2 to 4 digits separated by spaces; without +39 a space, "/" or
+# "-" follows the area code).
+_US_PHONE = r"(?<!\d)(\+\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?!\d)"
+_IT_MOBILE = r"3[1-9]\d(?:[ -]?\d{6,7}|[ -]\d{3}[ -]\d{3,4})"
+_IT_AREA = r"0(?:[26]|[1-9]\d{1,2})"
+_IT_SUBSCRIBER = r"(?:\d{5,8}|\d{2,4} \d{2,4}(?: \d{2,4})?)"
+_IT_PHONE = (
+    rf"(?<![\w+])(?:(?:\+|00)39[ .-]?(?:{_IT_MOBILE}|{_IT_AREA}[ ./-]?{_IT_SUBSCRIBER})"
+    rf"|{_IT_MOBILE}|{_IT_AREA}[ /-]{_IT_SUBSCRIBER})(?!\w)"
+)
+
+# Regex patterns for PII not covered by spaCy NER, applied in this order.
 REGEX_PII_PATTERNS = {
     "EMAIL": EMAIL_RX,  # matched with iter_email_matches (see email_matching)
-    "PHONE": re.compile(r"(?<!\d)(\+\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?!\d)"),
+    # Where an IBAN may start; each IBAN is matched with iter_iban_matches
+    # (length of its country, optional spaces, mod-97 checksum; see iban).
+    "IBAN": IBAN_RX,
+    "PHONE": re.compile(f"{_US_PHONE}|{_IT_PHONE}"),
     "CREDIT_CARD": re.compile(r"\b(?:\d{4}[-\s]?){3}\d{4}\b"),
     "SSN": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
-    "IBAN": re.compile(
-        r"\b[A-Z]{2}\d{2}\s?[\dA-Z]{4}\s?[\dA-Z]{4}\s?[\dA-Z]{4}(?:\s?[\dA-Z]{4}){0,4}\b"
-    ),
     # IPv4 with proper octet validation (each octet 0-255). Avoids matching
     # version strings like 1.2.3.999 or build numbers > 255.
     "IP_ADDRESS": re.compile(
@@ -231,6 +247,8 @@ class PIIRedactor:
             # (e.g. "version 1.2.3.4 released") to reduce false positives.
             if pattern is EMAIL_RX:
                 matches = list(iter_email_matches(redacted))
+            elif pattern is IBAN_RX:
+                matches = list(iter_iban_matches(redacted))
             else:
                 matches = list(pattern.finditer(redacted))
             if cat_name == "IP_ADDRESS":

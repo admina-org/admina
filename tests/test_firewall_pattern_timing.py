@@ -34,7 +34,7 @@ import pytest
 
 from admina.domains.agent_security import egress, firewall
 from admina.domains.agent_security import pattern_timing as pt
-from admina.domains.data_sovereignty import pii
+from admina.domains.data_sovereignty import iban, pii
 from admina.domains.data_sovereignty.email_matching import iter_email_matches
 from admina.plugins.builtin.pii import spacy_regex
 
@@ -259,6 +259,7 @@ _RUN_LABELS = list(_run_inputs(SIZE))
 _RUN_MATCHERS = {
     **{name: regex.finditer for name, regex in _OTHER_REGEXES.items()},
     "pii-email": iter_email_matches,
+    "pii-iban-matches": iban.iter_iban_matches,
 }
 
 
