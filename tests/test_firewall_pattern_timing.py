@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import re
+import sys
 import time
 from types import SimpleNamespace
 
@@ -436,6 +437,13 @@ _SENTENCE_FUNCTIONS = {
     "bridge-omissis": lambda text: _omissis_bridge().redact(text),
 }
 
+# Below these times the ratio of two times is noise: the timer and the
+# caches; for the bridge also the hand-off of each text to the engine's
+# event loop in another thread, which waits up to the interpreter's thread
+# switch interval while other threads are running.
+_RATIO_FLOORS_MS = {"bridge-omissis": 1000 * sys.getswitchinterval()}
+_RATIO_FLOOR_MS = 0.05
+
 
 @pytest.mark.parametrize("label", _SENTENCE_RUN_LABELS)
 @pytest.mark.parametrize("function", list(_SENTENCE_FUNCTIONS))
@@ -451,8 +459,7 @@ def test_omissis_sentences_time_grows_linearly(function, label):
     timed = SimpleNamespace(search=_SENTENCE_FUNCTIONS[function])
     small = pt.search_ms(timed, _sentence_inputs(SIZE // 4)[label])
     large = pt.search_ms(timed, _sentence_inputs(SIZE)[label])
-    # Below 0.05 ms the timer and cache noise dominate the ratio.
-    ratio = large / max(small, 0.05)
+    ratio = large / max(small, _RATIO_FLOORS_MS.get(function, _RATIO_FLOOR_MS))
     assert ratio <= 8.0, f"{small:.3f} ms at 16k, {large:.3f} ms at 64k"
 
 
