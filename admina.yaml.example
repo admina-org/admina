@@ -253,6 +253,8 @@ dashboard:
 
 forensic_store: filesystem
 auth_provider: apikey
+# spacy-regex (default) | presidio | an engine of the admina.pii_engines
+# entry-point group (its plugin_config block below is passed to it).
 pii_engine: spacy-regex
 alert_channels:
   - type: log

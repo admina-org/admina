@@ -599,7 +599,17 @@ class BasePIIEngine(ABC):
 
             async def redact(self, text, matches):
                 return text[:10] + "[EMAIL]" + text[25:]
+
+    Other packages make an engine selectable by name (``ADMINA_PII_ENGINE``,
+    ``pii_engine`` in admina.yaml) with an entry point of the group
+    ``admina.pii_engines``; Admina runs it through
+    :class:`admina.engines.PIIEngineBridge`.
     """
+
+    #: Special categories of personal data (GDPR art. 9 and 10) among the
+    #: types this engine detects: ``DataClassifier(special_categories=...)``
+    #: classifies them ``restricted``.
+    special_categories: frozenset[str] = frozenset()
 
     @abstractmethod
     async def detect(

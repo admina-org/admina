@@ -26,7 +26,10 @@ import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol
 
+from admina.engines.pii_plugins import PIIEngineBridge, load_plugin_engine, plugin_engine_names
+
 if TYPE_CHECKING:
+    from admina.core.config import AdminaConfig
     from admina.domains.agent_security.egress import EgressPolicy
 
 logger = logging.getLogger("admina.engines")
@@ -428,6 +431,21 @@ def _presidio_pii() -> PIIBridge:
 _PII_ENGINE_FACTORIES["presidio"] = _presidio_pii
 
 
+def _admina_config() -> AdminaConfig | None:
+    """admina.yaml (or the .env fallback), or None when it cannot be read.
+
+    A file named by ``ADMINA_CONFIG`` that cannot be loaded raises
+    :class:`~admina.core.config.ConfigFileError`.
+    """
+    try:
+        from admina.core.config import load_config
+
+        return load_config()
+    except (ImportError, ValueError, OSError) as exc:
+        logger.debug("admina.yaml unavailable, using the PII engine defaults: %s", exc)
+        return None
+
+
 def get_pii_engine(name: str | None = None) -> PIIBridge:
     """Get the configured PII engine.
 
@@ -435,23 +453,34 @@ def get_pii_engine(name: str | None = None) -> PIIBridge:
     admina.yaml ``pii_engine`` > ``spacy-regex``. An engine selected by name
     takes precedence over Rust auto-detection (Rust accelerates only the
     ``spacy-regex`` path).
+
+    A name is looked up among the built-in engines (``spacy-regex``,
+    ``presidio``) first, then among the entry points of the
+    ``admina.pii_engines`` group (see :mod:`admina.engines.pii_plugins`),
+    whose engine runs through a :class:`PIIEngineBridge` and receives its
+    ``plugin_config`` block of admina.yaml.
+
+    Raises:
+        ValueError: no engine has that name (the message lists the names
+            available).
     """
+    config = None
     if name is None:
         name = os.environ.get("ADMINA_PII_ENGINE") or None
     if name is None:
-        try:
-            from admina.core.config import load_config
-
-            name = load_config().pii_engine
-        except (ImportError, ValueError, OSError) as exc:
-            logger.debug("pii_engine config unavailable, defaulting to spacy-regex: %s", exc)
-            name = "spacy-regex"
+        config = _admina_config()
+        name = config.pii_engine if config is not None else "spacy-regex"
     factory = _PII_ENGINE_FACTORIES.get(name)
-    if factory is None:
-        raise ValueError(
-            f"Unknown pii_engine {name!r}. Available: {sorted(_PII_ENGINE_FACTORIES)}."
-        )
-    return factory()
+    if factory is not None:
+        return factory()
+    if config is None:
+        config = _admina_config()
+    plugin_config = (config.plugin_config or {}) if config is not None else {}
+    bridge = load_plugin_engine(name, config=plugin_config.get(name))
+    if bridge is None:
+        available = sorted({*_PII_ENGINE_FACTORIES, *plugin_engine_names()})
+        raise ValueError(f"Unknown pii_engine {name!r}. Available: {available}.")
+    return bridge
 
 
 def get_pii_scanner() -> PIIBridge:
@@ -479,6 +508,7 @@ __all__ = [
     "FirewallBridge",
     "LoopBreakerBridge",
     "PIIBridge",
+    "PIIEngineBridge",
     "engine_status",
     "get_egress_policy",
     "get_firewall",

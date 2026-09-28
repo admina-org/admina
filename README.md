@@ -265,7 +265,7 @@ from admina import GovernedModel, GovernedData, GovernedAgent, ComplianceKit
 | Transport Adapter | MCP, HTTP REST |
 | Forensic Store | Filesystem, S3-compatible (boto3 — AWS S3, MinIO, R2, …) |
 | Auth Provider | API Key |
-| PII Engine | spaCy + Regex (default), Microsoft Presidio (`pip install admina-framework[presidio]`, `ADMINA_PII_ENGINE=presidio`) |
+| PII Engine | spaCy + Regex (default), Microsoft Presidio (`pip install admina-framework[presidio]`, `ADMINA_PII_ENGINE=presidio`); engines of other packages through the `admina.pii_engines` entry-point group (see [PII engines](#pii-engines)) |
 | Alert Channel | Log, Webhook |
 
 Model adapters lazy-import their provider SDK, so install the ones you
@@ -387,6 +387,38 @@ scanned text. `ADMINA_GATEWAY_MAX_PROMPT_CHARS` (default `0`, no limit) caps
 the message text of `POST /v1/chat/completions`, in characters (the text of
 every message, as scanned); longer requests get 413 (`invalid_request_error`,
 code `prompt_too_long`) before any governance check.
+
+### PII engines
+
+`ADMINA_PII_ENGINE` (or `pii_engine` in `admina.yaml`, default `spacy-regex`)
+selects the engine of PII redaction: a built-in engine (`spacy-regex`,
+`presidio`) or an engine that another package registers in the
+`admina.pii_engines` entry-point group. An unknown name stops the proxy at
+startup with the list of the engines available.
+
+```toml
+[project.entry-points."admina.pii_engines"]
+example-pii = "example_pkg.engine:ExamplePIIEngine"
+```
+
+The entry point names a `BasePIIEngine` subclass (`admina.plugins`), or a
+callable that returns one; a `config` parameter receives the engine's block of
+`plugin_config` in `admina.yaml`. Admina runs the engine through
+`admina.engines.PIIEngineBridge`, which calls its asynchronous `detect` and
+`redact` on an event loop of the engine's own, from any thread, and returns
+`{"redacted_text", "entities", "categories", "count"}`; entities carry the
+type, offsets and length of each span, never its text. `special_categories`
+of the engine lists the special categories of personal data (GDPR art. 9 and
+10) among its types: `DataClassifier(special_categories=...)` classifies them
+`restricted`, like the built-in `SPECIAL_CATEGORIES`.
+
+Every engine masks text values only, never the keys of a JSON object: the
+gateway redacts the text of each message (`content`, as a string or the
+`text` of each part, reasoning and refusal text, tool call `arguments`) and
+forwards roles, names and ids as received. A placeholder already in the text
+(`[EMAIL]`, `[IBAN]`, …) is never masked again. IBANs are masked when they
+have the length of their country (Italy: 27 characters), compact or with
+spaces, and a valid checksum; phone numbers include the Italian formats.
 
 ### Embedded deployment
 

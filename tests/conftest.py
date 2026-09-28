@@ -13,3 +13,18 @@
 # limitations under the License.
 
 """Admina — pytest configuration."""
+
+from pathlib import Path
+
+import pytest
+
+PII_PLUGIN_DIR = Path(__file__).parent / "fixtures" / "pii_plugin"
+
+
+@pytest.fixture
+def example_pii_plugin(monkeypatch):
+    """Put the ``example-pii`` distribution of ``fixtures/pii_plugin`` on
+    ``sys.path``: its engines join the ``admina.pii_engines`` entry-point
+    group. Returns the name of its main engine."""
+    monkeypatch.syspath_prepend(str(PII_PLUGIN_DIR))
+    return "example-pii"

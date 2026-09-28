@@ -1,0 +1,9 @@
+[admina.pii_engines]
+example-pii = example_pii_engine:ExamplePIIEngine
+every-word = example_pii_engine:EveryWordPIIEngine
+factory-pii = example_pii_engine:make_engine
+configured-pii = example_pii_engine:ConfiguredPIIEngine
+spacy-regex = example_pii_engine:ExamplePIIEngine
+not-an-engine = example_pii_engine:NotAnEngine
+bad-span-pii = example_pii_engine:BadSpanPIIEngine
+missing-pii = example_pii_engine_missing:MissingEngine

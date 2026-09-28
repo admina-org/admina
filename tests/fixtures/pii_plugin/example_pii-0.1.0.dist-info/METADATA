@@ -1,0 +1,5 @@
+Metadata-Version: 2.1
+Name: example-pii
+Version: 0.1.0
+Summary: PII engine fixture for the Admina tests
+License: Apache-2.0
