@@ -483,11 +483,12 @@ def test_chain_stays_valid_and_hashes_recompute(tmp_path):
         )
     records = _stored(tmp_path)
     assert len(records) == 2 * len(cases)
-    assert asyncio.run(box.verify_chain()) == {
-        "valid": True,
-        "records": len(records),
-        "last_hash": records[-1]["record_hash"],
-    }
+    result = asyncio.run(box.verify_chain())
+    assert (result["valid"], result["records"], result["last_hash"]) == (
+        True,
+        len(records),
+        records[-1]["record_hash"],
+    )
     for record in records:
         without = {k: v for k, v in record.items() if k != "record_hash"}
         digest = hashlib.sha256(

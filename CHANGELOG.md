@@ -78,6 +78,26 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   upstream call. The firewall scans the request as received; the forwarded
   `messages` and `request_sha256` do not change. `admina.proxy.gateway_body`
   holds `ForwardSettings`.
+- `ForensicBlackBox(fail_mode=...)`: `open` (the default) logs a record, or
+  a chain state after it, that cannot be written and `record()` returns
+  `stored: false` with no sequence number or hash; `closed` raises
+  `ForensicWriteError`. `accepting_records()` is false after a failed write
+  until a write succeeds again.
+- Forensic chain verification reads one record at a time, in sequence
+  order, in constant memory, on a worker thread. `verify_chain()` (and the
+  synchronous `verify()`) take `from_seq` or a `checkpoint`
+  `(sequence_number, record_hash)` to verify only the records after it, and
+  return, besides `valid`, `records` and `last_hash`: `reason` and
+  `sequence_number` (the first failure) and `checkpoint` (where to resume).
+  Reason codes: `hash_mismatch` (a record is not a JSON object, or its
+  `record_hash` is not the hash of its content), `link_broken`
+  (`previous_hash` is not the hash of the record before it, `GENESIS` for
+  record 1), `missing_record`, `state_mismatch` (the records do not reach
+  the chain state's count, or the record at that count is not its head) and
+  `checkpoint_mismatch`. `admina.domains.compliance.forensic_integrity`
+  (`compute_record_hash()`, `canonical_record()`, `verify_entries()`) and
+  `admina.domains.compliance.forensic_files` (record keys, `atomic_write()`)
+  are public.
 
 ### Changed
 
@@ -109,6 +129,17 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   "param": "model", "code": "model_not_allowed"}}`) before any governance
   check, forensic record or upstream call. An empty list (the default) lets
   every model through.
+- The filesystem forensic store writes each record, `_chain_state.json` and
+  `_chain_state.json.sig` atomically and durably: to a temporary file in the
+  same directory (`.<name>.<random>.tmp`, never read as a record), fsynced,
+  renamed into place, then the directory fsynced; a new directory is fsynced
+  in its parent. Files keep the permissions a new file gets. A record never
+  goes into an hour directory earlier than the one of the record before it.
+- A forensic record that cannot be written (filesystem or S3) is not counted:
+  the next record takes its sequence number, so the stored chain has no gap.
+- The chain state also holds `format` (`admina-forensic/1`) and `head_key`
+  (the key of the last record). Rebuilding a missing chain state reads the
+  record names and one record, not every record.
 
 ## [0.13.0rc1] — 2026-09-27
 
