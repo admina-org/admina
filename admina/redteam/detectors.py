@@ -58,7 +58,8 @@ class InjectionAdapter:
     patterns, heuristic threshold, allowed tags); the Rust engine is
     measured only when *config* sets none of
     :data:`~admina.engines.PYTHON_ONLY_FIREWALL_KEYS`, which it cannot
-    apply. The deep path is on.
+    apply (:func:`~admina.redteam.run_suite` refuses ``engines=["rust"]``
+    then). The deep path is on.
 
     Raises:
         ValueError: *config* names a pattern pack that cannot be loaded

@@ -293,6 +293,85 @@ def test_baseline_that_is_not_a_mapping_is_refused(tmp_path):
         redteam.run_suite(engines=["python"], corpora=["injection"], baseline=path)
 
 
+# ── Explicitly selected engines ───────────────────────────────
+
+
+def test_rust_engine_alone_is_refused_when_the_config_sets_keys_it_cannot_apply(
+    tmp_path, external, monkeypatch
+):
+    monkeypatch.setattr(detectors, "rust_available", lambda: True)
+    config = _config(tmp_path, {"disabled_patterns": ["tool_abuse.en.1"]})
+    with pytest.raises(ValueError) as info:
+        redteam.run_suite(
+            engines=["rust"],
+            corpora=["injection", "extra-attacks"],
+            corpora_dir=external,
+            config=config,
+            baseline=redteam.BASELINE_PATH,
+        )
+    assert str(info.value) == (
+        "the selected engines (rust) cannot run the corpora injection, extra-attacks: "
+        f"{config} sets agent_security.firewall.disabled_patterns, which only the Python "
+        "firewall applies"
+    )
+
+
+def test_rust_engine_alone_is_refused_without_admina_core(monkeypatch):
+    monkeypatch.setattr(detectors, "rust_available", lambda: False)
+    with pytest.raises(ValueError) as info:
+        redteam.run_suite(engines=["rust"], baseline=redteam.BASELINE_PATH)
+    assert str(info.value) == (
+        "the selected engines (rust) cannot run the corpora injection, pii, loop: "
+        "admina-core is not installed (install admina-framework[rust])"
+    )
+
+
+def test_engine_that_a_detector_does_not_have_is_refused(external):
+    with pytest.raises(ValueError) as info:
+        redteam.run_suite(engines=["presidio"], corpora=["extra-attacks"], corpora_dir=external)
+    assert str(info.value).startswith(
+        "the selected engines (presidio) cannot run the corpus extra-attacks: "
+        "the injection detector runs on python"
+    )
+
+
+def test_selected_engines_run_where_one_of_them_is_available(tmp_path, monkeypatch):
+    monkeypatch.setattr(detectors, "rust_available", lambda: True)
+    config = _config(tmp_path, {"disabled_patterns": ["tool_abuse.en.1"]})
+    card = redteam.run_suite(engines=["python", "rust"], corpora=["injection"], config=config)
+    assert list(card["detectors"]["injection"]) == ["python"]
+
+
+def test_gate_fails_when_the_baseline_declares_none_of_the_engines_that_ran(external):
+    if not detectors.rust_available():
+        pytest.skip("the Rust engine is not installed")
+    committed = redteam.make_baseline(
+        redteam.run_suite(engines=["python"], corpora=["extra-attacks"], corpora_dir=external)
+    )
+    card = redteam.run_suite(
+        engines=["rust"], corpora=["extra-attacks"], corpora_dir=external, baseline=committed
+    )
+    assert list(card["detectors"]["extra-attacks"]) == ["rust"]
+    assert card["gate"]["failures"] == [
+        "extra-attacks/rust ran but the baseline declares no entry for the engines that ran "
+        "(nothing to compare: regenerate the baseline with these engines)"
+    ]
+
+
+def test_gate_on_the_rust_engine_alone_compares_its_baseline_entries():
+    if not detectors.rust_available():
+        pytest.skip("the Rust engine is not installed")
+    card = redteam.run_suite(
+        engines=["rust"], corpora=["injection"], baseline=redteam.BASELINE_PATH
+    )
+    assert card["gate"]["failures"] == []
+    committed = json.loads(redteam.BASELINE_PATH.read_text(encoding="utf-8"))
+    committed["injection"]["rust"]["recall"] = 1.0
+    card = redteam.run_suite(engines=["rust"], corpora=["injection"], baseline=committed)
+    assert len(card["gate"]["failures"]) == 1
+    assert card["gate"]["failures"][0].startswith("injection/rust recall ")
+
+
 # ── admina.yaml applied to the detectors ──────────────────────
 
 

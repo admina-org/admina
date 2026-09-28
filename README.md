@@ -329,16 +329,19 @@ the same command.
   does: custom patterns, pattern packs, disabled categories and patterns,
   heuristic threshold and allowed tags. The Rust firewall is measured only
   when the file sets none of the keys it cannot apply (see
-  [Engine selection](#engine-selection)). The PII redactor and the loop
-  breaker keep their defaults.
+  [Engine selection](#engine-selection)); with `--engine rust`, such a file
+  is an error. The PII redactor and the loop breaker keep their defaults.
 - `--write-baseline [FILE]` writes the baseline of the run (default:
   `baseline.json` next to `--out`). `--baseline FILE` compares the run with
   a baseline and prints the result on standard error; `--gate` exits with
-  status 1 when a recall drops or a false positive appears (default baseline:
-  the packaged one, for the packaged corpora with the default settings).
+  status 1 when a recall drops or a false positive appears, or when a corpus
+  ran only on engines the baseline does not declare (default baseline: the
+  packaged one, for the packaged corpora with the default settings).
 - Exit status 2: an option, a corpus, the configuration or the baseline is
   not valid (a hash that does not match, a row without `tag`, an unknown
-  corpus name).
+  corpus name), or `--engine rust` cannot run a selected corpus
+  (`admina-core` is not installed, or `--config` sets a key that only the
+  Python firewall applies).
 
 `admina dev` defaults to a **single-process local mode** with zero Docker
 dependency: one uvicorn serves the proxy API and the dashboard SPA on the

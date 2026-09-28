@@ -450,9 +450,13 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `--gate` the run is compared with the baseline (with `--gate` alone, the
   packaged one) and the result is printed on standard error. Exit status: 0;
   1 when `--gate` finds a regression (a lower recall or a new false
-  positive); 2 when an option, a corpus, the configuration or the baseline is
-  not valid. `scripts/redteam.py` runs this command; there `--baseline`
-  without a file writes the baseline, as `--write-baseline` does.
+  positive, or a corpus that ran only on engines the baseline does not
+  declare); 2 when an option, a corpus, the configuration or the baseline is
+  not valid, or when `--engine rust` cannot run a selected corpus
+  (`admina-core` is not installed, or `--config` sets a key that only the
+  Python firewall applies). `scripts/redteam.py` runs this command; there
+  `--baseline` without a file writes the baseline, as `--write-baseline`
+  does.
 - `run_suite()` of `admina.redteam` takes `corpora_dir`, `baseline` and
   `config`; without them the scorecard is unchanged.
   - `corpora_dir`: a directory of external corpora, `<name>.jsonl` files
@@ -465,9 +469,15 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
     selects them by name; an unknown name in `corpora=` raises `ValueError`.
     The scorecard's `external_corpora` holds `dir` and the detector of each.
   - `baseline`: a baseline file (or its mapping) compared with the run by
-    `compare()`, limited to the selected corpora and engines; the
-    scorecard's `gate` holds `baseline`, `failures` and `notes`.
-    `BASELINE_PATH` is the packaged baseline.
+    `compare()`, limited to the selected corpora and engines; a corpus that
+    ran without the Python engine is also a failure when the baseline
+    declares none of the engines it ran on. The scorecard's `gate` holds
+    `baseline`, `failures` and `notes`. `BASELINE_PATH` is the packaged
+    baseline.
+  - `engines`: a selected corpus that none of the selected engines can run
+    raises `ValueError` naming the corpora and the reason (with `["rust"]`:
+    `admina-core` is not installed, or `config` sets a key of
+    `PYTHON_ONLY_FIREWALL_KEYS`).
   - `config`: an admina.yaml whose `agent_security.firewall` settings
     (custom patterns, pattern packs and their directories, disabled
     categories and patterns, heuristic threshold, allowed tags) build the

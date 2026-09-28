@@ -19,6 +19,7 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from . import detectors
 from .corpora import load_corpus, load_external_corpora
 from .detectors import all_detectors, rust_available
 from .gate import compare
@@ -85,7 +86,13 @@ def _gate(
     engines: list[str] | None,
 ) -> dict:
     """:func:`compare` of the run against *baseline*, limited to the corpora
-    and engines selected for the run."""
+    and engines selected for the run.
+
+    A corpus that ran without the Python engine is also a failure when the
+    baseline declares none of the engines it ran on, since nothing of it
+    would be compared (``compare()`` checks the Python entry of every
+    corpus that ran).
+    """
     committed = {
         name: {
             engine: entry
@@ -95,9 +102,53 @@ def _gate(
         for name, entries in _load_baseline(baseline).items()
         if corpora is None or name in corpora
     }
-    result = compare(committed, make_baseline(card))
+    current = make_baseline(card)
+    result = compare(committed, current)
+    for name, entries in current.items():
+        declared = committed.get(name, {})
+        if entries and "python" not in entries and not any(e in declared for e in entries):
+            result["failures"].append(
+                f"{name}/{'+'.join(entries)} ran but the baseline declares no entry for the "
+                "engines that ran (nothing to compare: regenerate the baseline with these engines)"
+            )
     source = None if isinstance(baseline, dict) else str(baseline)
     return {"baseline": source, **result}
+
+
+def _no_engine_reason(adapter: Any, engines: list[str], config: str | Path | None) -> str:
+    """Why none of *engines* can run the corpora of *adapter*."""
+    if "rust" in engines:
+        if not detectors.rust_available():
+            return "admina-core is not installed (install admina-framework[rust])"
+        keys = adapter.python_only_keys() if hasattr(adapter, "python_only_keys") else []
+        if keys:
+            names = ", ".join(f"agent_security.firewall.{key}" for key in keys)
+            return f"{config} sets {names}, which only the Python firewall applies"
+    available = adapter.engines()
+    if available:
+        return f"the {adapter.name} detector runs on {', '.join(available)} only"
+    return f"the {adapter.name} detector has no available engine"
+
+
+def _refuse_unmeasured(
+    selected: list[tuple[str, Any, list[dict] | None]],
+    engines: list[str],
+    config: str | Path | None,
+) -> None:
+    """Raise ValueError when *engines* cannot run a corpus of *selected*,
+    naming the corpora and the reason."""
+    unmeasured: dict[str, list[str]] = {}
+    for name, adapter, _ in selected:
+        if not any(e in engines for e in adapter.engines()):
+            unmeasured.setdefault(_no_engine_reason(adapter, engines, config), []).append(name)
+    if unmeasured:
+        parts = [
+            f"the {'corpus' if len(names) == 1 else 'corpora'} {', '.join(names)}: {reason}"
+            for reason, names in unmeasured.items()
+        ]
+        raise ValueError(
+            f"the selected engines ({', '.join(engines)}) cannot run {'; '.join(parts)}"
+        )
 
 
 def run_suite(
@@ -110,7 +161,11 @@ def run_suite(
 ) -> dict:
     """Run each selected detector over its corpus on each available engine; return the scorecard.
 
-    engines: restrict to a subset of ["python", "rust"] (default: all available).
+    engines: restrict to a subset of ["python", "rust"] (default: all
+        available). A selected corpus that none of them can run is refused:
+        with ``["rust"]``, when ``admina-core`` is not installed or when
+        *config* sets a key of
+        :data:`~admina.engines.PYTHON_ONLY_FIREWALL_KEYS` (injection corpora).
     corpora: restrict to a subset of the corpora: "injection", "pii", "loop"
         and the external ones (default: all).
     corpora_dir: a directory of external corpora
@@ -121,7 +176,9 @@ def run_suite(
     baseline: a baseline (a file, or its mapping) that the run is compared
         with (:func:`~admina.redteam.gate.compare`), limited to the selected
         corpora and engines; the scorecard's ``gate`` holds the result
-        (``baseline``: the file or None, ``failures``, ``notes``).
+        (``baseline``: the file or None, ``failures``, ``notes``). A corpus
+        that ran without the Python engine is a failure when the baseline
+        declares none of the engines it ran on.
     config: an admina.yaml whose ``agent_security.firewall`` settings build
         the injection firewall (see
         :class:`~admina.redteam.detectors.InjectionAdapter`); the scorecard's
@@ -133,12 +190,13 @@ def run_suite(
             cannot be loaded (see ``load_external_corpora``) or is named as a
             packaged one; a *config* whose values have the wrong type or
             whose pattern packs cannot be loaded; a *baseline* that is not a
-            mapping.
+            mapping; *engines* that cannot run a selected corpus (the
+            message names the corpora and the reason).
         OSError: a file cannot be read (FileNotFoundError: *config* is not
             a file).
     """
     firewall_config = _firewall_config(config) if config is not None else None
-    detectors = {adapter.name: adapter for adapter in all_detectors(firewall_config)}
+    adapters = {adapter.name: adapter for adapter in all_detectors(firewall_config)}
     external = load_external_corpora(corpora_dir) if corpora_dir is not None else {}
     clash = sorted(set(external) & set(_CORPUS_FOR))
     if clash:
@@ -146,20 +204,22 @@ def run_suite(
             f"external corpora {', '.join(clash)} have the name of a packaged corpus: rename them"
         )
     plan: list[tuple[str, Any, list[dict] | None]] = [
-        (name, detectors[detector], None) for name, detector in _CORPUS_FOR.items()
+        (name, adapters[detector], None) for name, detector in _CORPUS_FOR.items()
     ]
-    plan += [(name, detectors[c.detector], c.rows) for name, c in external.items()]
+    plan += [(name, adapters[c.detector], c.rows) for name, c in external.items()]
     if corpora is not None:
         unknown = sorted(set(corpora) - {name for name, _, _ in plan})
         if unknown:
             known = ", ".join(name for name, _, _ in plan)
             raise ValueError(f"unknown corpora {', '.join(unknown)} (available: {known})")
 
+    selected = [entry for entry in plan if corpora is None or entry[0] in corpora]
+    if engines is not None:
+        _refuse_unmeasured(selected, engines, config)
+
     results: dict = {}
     env: dict = {}
-    for name, adapter, rows in plan:
-        if corpora is not None and name not in corpora:
-            continue
+    for name, adapter, rows in selected:
         available = adapter.engines()
         chosen = [e for e in available if engines is None or e in engines]
         samples = load_corpus(name) if rows is None else rows
@@ -185,7 +245,7 @@ def run_suite(
     if config is not None:
         card["config"] = {
             "path": str(config),
-            "python_only_keys": detectors["injection"].python_only_keys(),
+            "python_only_keys": adapters["injection"].python_only_keys(),
         }
     if baseline is not None:
         card["gate"] = _gate(card, baseline, corpora, engines)

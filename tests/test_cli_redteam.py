@@ -198,6 +198,35 @@ def test_input_that_cannot_run_exits_with_status_2(tmp_path, extra, expected):
         assert fragment in result.output
 
 
+@pytest.mark.parametrize(
+    ("rust_installed", "firewall", "expected"),
+    [
+        (
+            True,
+            "      disabled_patterns: [tool_abuse.en.1]\n",
+            "sets agent_security.firewall.disabled_patterns, which only the Python firewall",
+        ),
+        (False, None, "admina-core is not installed"),
+    ],
+)
+def test_rust_engine_that_cannot_run_the_corpus_exits_with_status_2(
+    tmp_path, monkeypatch, rust_installed, firewall, expected
+):
+    monkeypatch.setattr("admina.redteam.detectors.rust_available", lambda: rust_installed)
+    args = ["redteam", "--engine", "rust", "--corpus", "injection", "--format", "md", "--gate"]
+    if firewall is not None:
+        config = tmp_path / "admina.yaml"
+        config.write_text(
+            f"domains:\n  agent_security:\n    firewall:\n{firewall}", encoding="utf-8"
+        )
+        args += ["--config", str(config)]
+    result = _run(args)
+    assert result.exit_code == 2, result.output
+    assert "the selected engines (rust) cannot run the corpus injection" in result.output
+    assert expected in result.output
+    assert "redteam gate" not in result.output
+
+
 def test_help_lists_the_options():
     result = _run(["redteam", "--help"])
     assert result.exit_code == 0

@@ -23,9 +23,12 @@ baseline (default: the packaged one) and the result is printed on standard
 error.
 
 Exit status: 0; 1 when ``--gate`` finds a regression (a lower recall or a
-new false positive, see :func:`admina.redteam.gate.compare`); 2 when the
-command cannot run (an option, a corpus, the configuration or the baseline
-is not valid).
+new false positive, see :func:`admina.redteam.gate.compare`), or a corpus
+that ran only on engines the baseline does not declare; 2 when the command
+cannot run (an option, a corpus, the configuration or the baseline is not
+valid, or ``--engine rust`` cannot run a selected corpus: ``admina-core`` is
+not installed, or ``--config`` sets a key that only the Python firewall
+applies).
 """
 
 from __future__ import annotations
@@ -51,7 +54,10 @@ class _CannotRun(click.ClickException):
     type=click.Choice(["both", "python", "rust"]),
     default="both",
     show_default=True,
-    help="Engines to measure (both: every available engine).",
+    help=(
+        "Engines to measure (both: every available engine). A selected corpus that the "
+        "engine cannot run is an error (exit status 2)."
+    ),
 )
 @click.option(
     "--corpus",
