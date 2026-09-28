@@ -701,6 +701,19 @@ def _key_matches(presented: str) -> bool:
     return _secrets.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
 
 
+# The route that also accepts ADMINA_AUDIT_APPEND_KEY (appending records only).
+_AUDIT_APPEND_PATH = "/api/v1/audit"
+
+
+def _append_key_matches(method: str, path: str, presented: str) -> bool:
+    """True when *presented* is ``ADMINA_AUDIT_APPEND_KEY`` on
+    ``POST /api/v1/audit`` (constant-time); any other route refuses it."""
+    expected = settings.ADMINA_AUDIT_APPEND_KEY
+    if not expected or not presented or method != "POST" or path != _AUDIT_APPEND_PATH:
+        return False
+    return _secrets.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
+
+
 def _dashboard_session_expiry(cookies: Any) -> int | None:
     """Expiry of the valid dashboard session in *cookies*, else ``None``."""
     if not _dashboard_enabled() or not settings.ADMINA_API_KEY:
@@ -942,7 +955,13 @@ async def auth_middleware(request: Request, call_next) -> JSONResponse:
             return await call_next(request)
         return _invalid_key_response()
 
-    # 0. Dashboard browser session: accepted only for read-only requests to
+    # 0. The audit append key: POST /api/v1/audit only. The credential a
+    # request was admitted with is stamped on the audit record.
+    if _append_key_matches(request.method, path, _presented_api_key(request.headers)):
+        request.state.credential = "append_key"
+        return await call_next(request)
+
+    # 0b. Dashboard browser session: accepted only for read-only requests to
     # the dashboard API. Everywhere else the cookie is ignored and the
     # request must carry the API key.
     if (
@@ -991,6 +1010,7 @@ async def auth_middleware(request: Request, call_next) -> JSONResponse:
             cookies={},
         ):
             return _invalid_key_response()
+        request.state.credential = "api_key"
         return await call_next(request)
 
     # 3. No API key and no auth providers — block unless explicitly allowed

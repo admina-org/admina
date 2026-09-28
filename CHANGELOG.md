@@ -55,6 +55,13 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   uses it, writing nothing.
 - `GET /health` reports `forensic_chain`: `ok`, `rebuilt`, `invalid` (then
   `status` is `degraded`), or `null` without a stored chain.
+- `POST /api/v1/audit` stamps each record: `source` is always
+  `api_v1_audit` (a `source` sent by the caller is kept as `client_source`)
+  and `submitted_by` is the credential the request was admitted with
+  (`api_key`, `append_key`, `user:<id>` for an auth provider's user, or
+  `unauthenticated`). `ADMINA_AUDIT_APPEND_KEY` (or `_FILE`) is a key
+  accepted by this route only, besides the API key; every other route
+  refuses it. Unset (the default), the route needs the API key.
 
 ### Added
 

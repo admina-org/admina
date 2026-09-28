@@ -17,6 +17,12 @@
 Provides a simpler REST interface for non-MCP callers:
   POST /api/v1/validate  — validate an action payload
   POST /api/v1/audit     — log an action result to forensic black box
+
+The records of ``/api/v1/audit`` are stamped by the proxy: ``source`` is
+always ``api_v1_audit`` (a ``source`` sent by the caller is kept as
+``client_source``) and ``submitted_by`` is the credential the request was
+admitted with: ``api_key``, ``append_key`` (``ADMINA_AUDIT_APPEND_KEY``),
+``user:<id>`` for an auth provider's user, or ``unauthenticated``.
 """
 
 from __future__ import annotations
@@ -26,7 +32,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from admina.domains.compliance.forensic import ForensicWriteError
 
@@ -56,6 +62,21 @@ def _scrub_check_errors(checks: dict[str, Any]) -> dict[str, Any]:
         else:
             scrubbed[name] = entry
     return scrubbed
+
+
+#: ``source`` of every record written through ``POST /api/v1/audit``.
+AUDIT_SOURCE = "api_v1_audit"
+
+
+def _submitter(request: Request) -> str:
+    """The credential *request* was admitted with (see the module docstring)."""
+    credential = getattr(request.state, "credential", None)
+    if isinstance(credential, str) and credential:
+        return credential
+    user = getattr(request.state, "user", None)
+    if isinstance(user, dict) and user.get("user_id"):
+        return f"user:{user['user_id']}"
+    return "unauthenticated"
 
 
 def _require_forensic_records(fbox: Any) -> None:
@@ -173,11 +194,12 @@ def create_integration_endpoints(
         }
 
     @router.post("/audit")
-    async def audit_action(body: dict) -> dict[str, Any]:
+    async def audit_action(body: dict, request: Request) -> dict[str, Any]:
         """Log an action result to the forensic black box.
 
         Expects JSON body with ``event`` (dict) containing the
-        action details to record.
+        action details to record. ``source`` and ``submitted_by`` are set
+        by the proxy (see the module docstring).
 
         Returns forensic record metadata (sequence number, hash);
         ``recorded: false`` when the record could not be written, or 503
@@ -197,9 +219,14 @@ def create_integration_endpoints(
                 "error": "Forensic black box not available (no storage backend configured)",
             }
 
+        event_data = dict(event_data)
         event_data.setdefault("event_id", str(uuid.uuid4()))
         event_data.setdefault("timestamp", datetime.now(UTC).isoformat())
-        event_data.setdefault("source", "api_v1_audit")
+        client_source = event_data.pop("source", None)
+        if client_source is not None and client_source != AUDIT_SOURCE:
+            event_data["client_source"] = client_source
+        event_data["source"] = AUDIT_SOURCE
+        event_data["submitted_by"] = _submitter(request)
 
         try:
             record = fbox.record(event_data)

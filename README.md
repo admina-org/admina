@@ -507,6 +507,14 @@ needs only a restart. A store written without a key, or before a key was
 set, cannot be rebuilt: keep its chain state, or move it aside when a key is
 introduced.
 
+**Audit records.** `POST /api/v1/audit` records the event it receives with
+`source: "api_v1_audit"` (a `source` in the request is kept as
+`client_source`) and `submitted_by`: the credential the request was admitted
+with (`api_key`, `append_key`, `user:<id>` or `unauthenticated`).
+`ADMINA_AUDIT_APPEND_KEY` (or `ADMINA_AUDIT_APPEND_KEY_FILE`) is a key that
+this route accepts besides the API key and every other route refuses; unset
+(the default), the route needs the API key.
+
 **Surfaces.** `ADMINA_ENABLED_SURFACES` lists the surfaces the proxy serves,
 comma-separated (empty = all of them):
 
@@ -1304,6 +1312,7 @@ production.
 |----------|---------|-------------|
 | `ADMINA_API_KEY` | *(empty)* | API key for all endpoints |
 | `ADMINA_API_KEY_FILE` | *(empty)* | File holding the API key, instead of `ADMINA_API_KEY` |
+| `ADMINA_AUDIT_APPEND_KEY` | *(empty)* | Key accepted by `POST /api/v1/audit` only (also `_FILE`); empty: the route needs the API key |
 | `ADMINA_CONFIG` | *(empty)* | `admina.yaml` to load (empty: current directory, then package directory) |
 | `ADMINA_ENABLED_SURFACES` | *(empty = all)* | Surfaces served: `gateway`, `mcp`, `integration`, `compliance`, `dashboard` |
 | `UPSTREAM_MCP_URL` | `http://localhost:9000` | Default upstream MCP server |

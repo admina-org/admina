@@ -130,6 +130,12 @@ class Settings(BaseSettings):
     # file, not both; a missing, unreadable or empty file stops the proxy.
     ADMINA_API_KEY_FILE: str = ""
     ALLOW_UNAUTHENTICATED: bool = False
+    # A key accepted by POST /api/v1/audit only (appending audit records),
+    # besides the API key; any other route refuses it. Empty (default): the
+    # route needs the API key, like every other route. Or set
+    # ADMINA_AUDIT_APPEND_KEY_FILE to a file holding the key, not both.
+    ADMINA_AUDIT_APPEND_KEY: str = ""
+    ADMINA_AUDIT_APPEND_KEY_FILE: str = ""
     # `Secure` flag of the dashboard session cookie. It is always set when the
     # request arrives over HTTPS. Over plain HTTP:
     #   false (default): not set;
@@ -463,6 +469,18 @@ class Settings(BaseSettings):
             )
             _warn_if_short_api_key(key or "")
             self.ADMINA_API_KEY = key or ""
+        return self
+
+    @model_validator(mode="after")
+    def read_audit_append_key_file(self) -> "Settings":
+        """Take ADMINA_AUDIT_APPEND_KEY from its _FILE when that is set."""
+        if self.ADMINA_AUDIT_APPEND_KEY_FILE:
+            key = resolve_secret(
+                self.ADMINA_AUDIT_APPEND_KEY,
+                self.ADMINA_AUDIT_APPEND_KEY_FILE,
+                setting="ADMINA_AUDIT_APPEND_KEY",
+            )
+            self.ADMINA_AUDIT_APPEND_KEY = key or ""
         return self
 
 

@@ -88,6 +88,16 @@ Log an event to the forensic black box (SHA-256 hash chain).
 }
 ```
 
+The proxy stamps the recorded event: `source` is always `api_v1_audit` (a
+`source` in the request is kept as `client_source`) and `submitted_by` is
+the credential the request was admitted with (`api_key`, `append_key`,
+`user:<id>` for an auth provider's user, or `unauthenticated`).
+
+`ADMINA_AUDIT_APPEND_KEY` (or `ADMINA_AUDIT_APPEND_KEY_FILE`) sets a key
+that this route accepts besides the API key, and that every other route
+refuses: give it to integrations that only append audit records. Unset, the
+route needs the API key.
+
 ---
 
 ## Available Integrations
