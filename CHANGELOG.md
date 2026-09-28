@@ -77,6 +77,12 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `request_texts()` of `admina.domains.agent_security.scan_policy` collects
   the texts and reports `truncated`; `run_pipeline(scan_truncated=True)`
   blocks.
+- `ADMINA_GATEWAY_MODELS_ALLOWLIST` applies to `POST /v1/chat/completions`
+  too: a request for a model outside the list, or without a model, is
+  answered `403` (`{"error": {"message", "type": "invalid_request_error",
+  "param": "model", "code": "model_not_allowed"}}`) before any governance
+  check, forensic record or upstream call. An empty list (the default) lets
+  every model through.
 
 ## [0.13.0rc1] — 2026-09-27
 

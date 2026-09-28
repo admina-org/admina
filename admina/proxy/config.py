@@ -238,8 +238,10 @@ class Settings(BaseSettings):
     # characters: the text of every message, as scanned (0 = no limit).
     # Longer requests get 413 before any governance check.
     ADMINA_GATEWAY_MAX_PROMPT_CHARS: int = Field(default=0, ge=0)
-    # Optional comma-separated allow-list applied to GET /v1/models.
-    # Empty = passthrough of the upstream's full model list.
+    # Optional comma-separated allow-list of model ids: GET /v1/models lists
+    # only these, and POST /v1/chat/completions for any other model gets 403
+    # (code model_not_allowed) before it is governed or forwarded.
+    # Empty = every model, and the upstream's full model list.
     ADMINA_GATEWAY_MODELS_ALLOWLIST: str = ""
     # How streamed chat completions (stream=true) are relayed:
     #   "passthrough": the upstream bytes are forwarded unchanged, each SSE

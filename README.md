@@ -488,6 +488,13 @@ pipeline on each chat completion and forwards requests to an upstream route.
 By default there is one route, `default`, to `ADMINA_GATEWAY_UPSTREAM`
 (`http://localhost:11434/v1`), and no credentials are sent upstream.
 
+`ADMINA_GATEWAY_MODELS_ALLOWLIST` (comma-separated model ids; empty, the
+default, = every model) limits the models: `GET /v1/models` lists only those,
+and a chat completion for any other model, or without a model, gets 403 in
+the OpenAI error format (`invalid_request_error`, `param: "model"`, code
+`model_not_allowed`) before any governance check, forensic record or upstream
+call.
+
 Named routes come from `ADMINA_GATEWAY_UPSTREAMS` or from `gateway.upstreams`
 in `admina.yaml`; the environment variable, when set, replaces the YAML routes
 (URLs and key files):
@@ -759,11 +766,11 @@ counts the policies: `admina_prescan_accepted_total`,
 
 #### Governance outcome
 
-Once a request has passed the route, JSON and size checks it gets an event
-id, and every response to it carries the outcome of governance, streaming or
-not (response headers, sent before the first event). The body must be a JSON
-object; any other body is answered `400` (`Invalid JSON body`) before the
-event id exists.
+Once a request has passed the route, JSON, model and size checks it gets an
+event id, and every response to it carries the outcome of governance,
+streaming or not (response headers, sent before the first event). The body
+must be a JSON object; any other body is answered `400` (`Invalid JSON body`)
+before the event id exists.
 
 | Header | Value |
 |---|---|
@@ -783,8 +790,8 @@ the gateway `500` with `"type": "server_error"`. `X-Admina-Ruleset` (see
 [Firewall ruleset](#firewall-ruleset)) and `X-Admina-Version` (the Admina
 version, `admina.__version__`) are on these responses and on those the
 gateway sends before the event id exists (unknown route, invalid JSON,
-message text over the limit). Read the outcome from `X-Admina-Action`, not
-from the body.
+model outside the allowlist, message text over the limit). Read the outcome
+from `X-Admina-Action`, not from the body.
 
 `ADMINA_GATEWAY_BLOCK_STATUS` sets how a blocked request is answered:
 

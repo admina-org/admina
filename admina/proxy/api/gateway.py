@@ -25,6 +25,10 @@ Routes (prefix /v1):
   GET  /v1/models             — passthrough with optional allow-list
   GET  /v1/admina/ruleset     — the active firewall ruleset
 
+With ``ADMINA_GATEWAY_MODELS_ALLOWLIST`` set, ``GET /v1/models`` lists only
+those models and a chat completion for any other model is answered 403
+(code ``model_not_allowed``) before it is governed, recorded or forwarded.
+
 Every chat completion response carries ``X-Admina-Ruleset``, the
 :func:`~admina.domains.agent_security.ruleset.ruleset_sha256` of the rules
 the gateway scans with (see :mod:`admina.proxy.gateway_scan`), and
@@ -304,6 +308,23 @@ def _unknown_upstream() -> JSONResponse:
             "unknown_upstream",
         ),
     )
+
+
+def _models_allowlist(cfg: Any) -> tuple[str, ...]:
+    """The model ids of ``ADMINA_GATEWAY_MODELS_ALLOWLIST``; empty = every
+    model."""
+    return tuple(m.strip() for m in cfg.ADMINA_GATEWAY_MODELS_ALLOWLIST.split(",") if m.strip())
+
+
+def _model_not_allowed() -> JSONResponse:
+    """403 in the OpenAI error format for a model outside the allowlist."""
+    error = {
+        "message": "The requested model is not available.",
+        "type": "invalid_request_error",
+        "param": "model",
+        "code": "model_not_allowed",
+    }
+    return _error_response(403, error)
 
 
 def _extract_prompt_text(messages: Any) -> str:
@@ -1099,6 +1120,9 @@ async def _chat_completion(
         body = None
     if not isinstance(body, dict):
         return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"}), None
+    allowed_models = _models_allowlist(cfg)
+    if allowed_models and body.get("model") not in allowed_models:
+        return _model_not_allowed(), None
     prompt_text = _extract_prompt_text(body.get("messages") or [])
     if 0 < cfg.ADMINA_GATEWAY_MAX_PROMPT_CHARS < len(prompt_text):
         too_long = _error(
@@ -1341,7 +1365,7 @@ def create_gateway_endpoints(
                 )
         except (TimeoutError, httpx.RequestError) as exc:
             return _failure_response(route, exc)
-        allow = [m.strip() for m in cfg.ADMINA_GATEWAY_MODELS_ALLOWLIST.split(",") if m.strip()]
+        allow = _models_allowlist(cfg)
         if not allow or not _is_success(resp.status_code):
             return _as_received(resp.status_code, resp.headers, resp.content)
         data = _json_object(resp.content)
