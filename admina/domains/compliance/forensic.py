@@ -710,6 +710,58 @@ class UnavailableForensicStore(ForensicBlackBox):
         }
 
 
+def _state_of(payload: bytes | None) -> tuple[int, str] | None:
+    """``(record_count, chain_head)`` of a chain-state payload, or None."""
+    if payload is None:
+        return None
+    try:
+        state = json.loads(payload)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(state, dict):
+        return None
+    count, head = state.get("record_count", 0), state.get("chain_head", GENESIS)
+    if not isinstance(count, int) or not isinstance(head, str):
+        return None
+    return count, head
+
+
+def verify_directory(
+    base_dir: str | Path,
+    *,
+    from_seq: int | None = None,
+    checkpoint: tuple[int, str] | None = None,
+) -> dict:
+    """Verify the chain stored in the filesystem store directory *base_dir*,
+    reading one record at a time and writing nothing.
+
+    As :meth:`ForensicBlackBox.verify`, against the chain state stored in
+    the directory. ``last_hash`` is the state's head (or, without a state,
+    the hash of the last record checked).
+    """
+    if checkpoint is not None and from_seq is not None:
+        raise ValueError("pass from_seq or checkpoint, not both")
+    base = Path(base_dir)
+    try:
+        payload = (base / _CHAIN_STATE_KEY).read_bytes()
+    except FileNotFoundError:
+        payload = None
+    state = _state_of(payload)
+    start = checkpoint[0] if checkpoint is not None else (from_seq or 1)
+    report = verify_entries(
+        ((seq, path.read_bytes) for seq, path in iter_record_files(base, start)),
+        from_seq=start,
+        checkpoint=checkpoint,
+        state=state,
+    )
+    result = report.as_dict()
+    if state is not None:
+        last_hash = state[1]
+    else:
+        last_hash = report.checkpoint[1] if report.checkpoint is not None else GENESIS
+    return {**result, "last_hash": last_hash}
+
+
 def _probe_directory(directory: Path) -> bool:
     """Create, write, fsync and remove a probe file in *directory*."""
     try:

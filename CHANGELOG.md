@@ -113,6 +113,14 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   set in both places with different values is logged at startup. An unknown
   backend in `admina.yaml` stops the proxy. `admina.proxy.forensic_backend`
   builds the store.
+- `admina forensic export --from-seq N --format jsonl [--dir DIR] [--out
+  FILE|-]`: the records of a filesystem store from sequence number N on, in
+  sequence order, one per line, each the bytes of its file followed by a
+  newline. `admina forensic verify [--from-seq N | --checkpoint SEQ:HASH]`
+  prints the verification result as JSON and exits with 0 (valid) or 1.
+  Both read `--dir` (default `$FORENSIC_BASE_DIR`) and write nothing to it;
+  so does `verify_directory()` of `admina.domains.compliance.forensic`, and
+  `admina doctor` now uses it for the filesystem backend.
 - `GET /health` `status` is `degraded` while forensic records cannot be
   written (`forensic_writable` false, or the last record or chain-state
   write failed); `healthy` otherwise.

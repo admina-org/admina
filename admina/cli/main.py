@@ -37,6 +37,7 @@ import yaml
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from admina import __version__
+from admina.cli.forensic import forensic as forensic_commands
 from admina.core.secrets import SecretVault, validate_password
 
 logger = logging.getLogger(__name__)
@@ -1355,11 +1356,14 @@ def doctor() -> None:
         try:
             import asyncio as _asyncio
 
-            from admina.domains.compliance.forensic import ForensicBlackBox
+            from admina.domains.compliance.forensic import ForensicBlackBox, verify_directory
 
             if forensic_backend == "filesystem":
                 base_dir = env.get("FORENSIC_BASE_DIR", os.environ.get("FORENSIC_BASE_DIR", ""))
-                fbox = ForensicBlackBox(filesystem_dir=base_dir if base_dir else None)
+                if not base_dir or not Path(base_dir).is_dir():
+                    raise FileNotFoundError(f"no forensic directory at {base_dir!r}")
+                # Read-only: nothing is written to the store.
+                chain = verify_directory(base_dir)
             else:
                 # s3 — needs boto3; construct without credentials (probe only)
                 try:
@@ -1377,14 +1381,18 @@ def doctor() -> None:
                     s3_kwargs["endpoint_url"] = s3_endpoint
                 client = _boto3.client("s3", **s3_kwargs)
                 fbox = ForensicBlackBox(boto3_client=client, bucket=s3_bucket)
-
-            chain = _asyncio.run(fbox.verify_chain())
+                chain = _asyncio.run(fbox.verify_chain())
             n = chain.get("records", 0)
             if chain.get("valid"):
                 click.echo(f"    {forensic_backend:20s} {ok_mark}  {n} records, valid")
             else:
+                where = (
+                    f"{chain['reason']} at record {chain.get('sequence_number')}"
+                    if chain.get("reason")
+                    else f"{n} records"
+                )
                 click.echo(
-                    f"    {forensic_backend:20s} {fail_mark}  chain verification FAILED ({n} records)"
+                    f"    {forensic_backend:20s} {fail_mark}  chain verification FAILED ({where})"
                 )
                 issues.append("Forensic hash-chain integrity check failed")
         except ImportError as _exc:
@@ -1485,6 +1493,11 @@ def password_set(new_password: str) -> None:
 
     click.echo("\n  Password updated across all services.")
     click.echo("  Restart services to apply: docker compose up --build -d\n")
+
+
+# ── admina forensic commands ─────────────────────────────────
+
+app.add_command(forensic_commands)
 
 
 # ── admina egress commands ───────────────────────────────────

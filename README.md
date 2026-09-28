@@ -291,7 +291,20 @@ admina dev --with-llm      # --stack + ollama + chromadb + open-webui
 admina plugin list         # List all registered plugins
 admina plugin install X    # Install a plugin from path or registry
 admina plugin create X     # Scaffold a new plugin from template
+admina forensic export --from-seq 1 --format jsonl --out records.jsonl
+admina forensic verify     # Verify the forensic chain (read-only, JSON result)
 ```
+
+`admina forensic export` and `admina forensic verify` read the directory of a
+`filesystem` forensic store (`--dir`, default `$FORENSIC_BASE_DIR`) and never
+write to it, so they can run while the proxy does. `export` writes the
+records from `--from-seq` on, in sequence order, one per line: the bytes of
+each record file as they are, then a newline (`--out FILE`, replaced once
+complete, or `-` for standard output). `verify` prints the verification
+result (`valid`, `records`, `reason`, `sequence_number`, `checkpoint`,
+`last_hash`) and exits with 0 when the chain is valid, 1 when it is not;
+`--checkpoint SEQ:HASH` (the `checkpoint` of an earlier result) checks only
+the records after it.
 
 `admina dev` defaults to a **single-process local mode** with zero Docker
 dependency: one uvicorn serves the proxy API and the dashboard SPA on the
