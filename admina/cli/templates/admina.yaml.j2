@@ -56,7 +56,11 @@ domains:
     enabled: {{ domains.compliance | lower }}
 {% if domains.compliance %}
     forensic:
-      storage: filesystem
+      # The proxy's forensic backend and directory. FORENSIC_BACKEND and
+      # FORENSIC_BASE_DIR, when set, take precedence (the generated
+      # docker-compose.yml sets both; `admina dev` sets FORENSIC_BACKEND).
+      # backend: filesystem
+      # base_dir: .admina/forensic
       bucket: forensic-blackbox
     eu_ai_act:
       enabled: true

@@ -261,7 +261,8 @@ def test_health_answers_in_time_when_the_check_stalls(monkeypatch):
         store.release.set()
     assert [r.status_code for r in responses] == [200] * 20
     assert {r.json()["forensic_writable"] for r in responses} == {False}
-    assert {r.json()["status"] for r in responses} == {"healthy"}
+    # A store that does not answer in time is reported as not writable.
+    assert {r.json()["status"] for r in responses} == {"degraded"}
     assert elapsed < 3.0, elapsed
     assert store.calls == 1
 

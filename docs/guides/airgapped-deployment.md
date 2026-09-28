@@ -155,9 +155,18 @@ domains:
   compliance:
     forensic:
       backend: s3
-      endpoint: http://seaweedfs:8333
-      bucket: forensic-blackbox
 ```
+
+```bash
+# .env — the S3 connection is configured with the FORENSIC_S3_* variables
+FORENSIC_S3_ENDPOINT=http://seaweedfs:8333
+FORENSIC_S3_BUCKET=forensic-blackbox
+```
+
+`FORENSIC_BACKEND` and `FORENSIC_BASE_DIR`, when set, take precedence over
+`backend` and `base_dir` of `admina.yaml`. With
+`ADMINA_FORENSIC_FAIL_MODE=closed` a backend that cannot be opened stops the
+proxy, and a request whose record cannot be written is answered `503`.
 
 > **Note**: the legacy MinIO-SDK backend was removed in 0.9.5. MinIO
 > servers remain fully supported through the `s3` backend — point

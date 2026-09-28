@@ -97,7 +97,10 @@ Upstream responses (stream mode, timeouts and connection pool: see
   event as soon as it is complete. Otherwise each SSE chunk is parsed and
   re-serialised (``governed``).
 - A timeout before the response starts gets 504, any other transport
-  failure 502, with an OpenAI-style error body. A failure during a stream
+  failure 502, with an OpenAI-style error body.
+- With ``ADMINA_FORENSIC_FAIL_MODE=closed``, a request whose
+  ``gateway_request`` record cannot be written gets 503 (``"code":
+  "forensic_unavailable"``) and is not forwarded. A failure during a stream
   ends it with one ``data: {"error": ...}`` event and no ``data: [DONE]``.
 """
 
@@ -131,6 +134,7 @@ from admina.domains.agent_security.scan_policy import (
     request_texts,
     resolve_scan_scope,
 )
+from admina.domains.compliance.forensic import ForensicWriteError
 from admina.domains.governance import (
     GovernanceResult,
     run_pipeline,
@@ -1008,13 +1012,24 @@ _BODY_NOT_ENCODABLE = _error(
 _GATEWAY_FAILED = _error(
     "The gateway could not complete the request.", "server_error", "internal_error"
 )
+# ADMINA_FORENSIC_FAIL_MODE=closed: the request record was not written.
+_FORENSIC_UNAVAILABLE = _error(
+    "The forensic record of the request could not be written.",
+    "server_error",
+    "forensic_unavailable",
+)
 
 
 def _unexpected_failure(call: GatewayCall, exc: Exception, body: dict) -> JSONResponse:
-    """The response to *call*, which raised *exc* unexpectedly: 400 when
-    the request *body* has no strict JSON encoding (the upstream request
-    cannot be built), else 500. The call records the class of *exc*."""
+    """The response to *call*, which raised *exc* unexpectedly: 503 when its
+    forensic record was not written (closed fail mode; the request was not
+    forwarded), 400 when the request *body* has no strict JSON encoding (the
+    upstream request cannot be built), else 500. The call records the class
+    of *exc*."""
     call.failed(exc)
+    if isinstance(exc, ForensicWriteError):
+        logger.error("Gateway request not forwarded: its forensic record was not written")
+        return _error_response(503, _FORENSIC_UNAVAILABLE)
     if isinstance(exc, (ValueError, TypeError, RecursionError)) and not _json_encodable(body):
         logger.warning("Gateway request body has no JSON encoding: %s", type(exc).__name__)
         return _error_response(400, _BODY_NOT_ENCODABLE)

@@ -26,6 +26,7 @@ from admina.core.config import GATEWAY_STREAM_MODES
 from admina.core.secretfile import resolve_secret
 from admina.core.types import EventType, GovernanceAction, RiskLevel
 from admina.domains.agent_security.scan_policy import SCAN_ROLES, parse_scan_roles
+from admina.domains.compliance.forensic import FAIL_MODES as FORENSIC_FAIL_MODES
 from admina.domains.governance import normalize_guard_fail_mode
 from admina.proxy.dashboard_session import parse_cookie_secure
 from admina.proxy.gateway_body import forward_field_names
@@ -93,6 +94,21 @@ class Settings(BaseSettings):
     # Retry / backoff for transient S3 failures (network blip, throttling).
     FORENSIC_S3_MAX_RETRIES: int = 5
     FORENSIC_S3_BASE_DELAY_S: float = 0.2
+    # FORENSIC_BACKEND and FORENSIC_BASE_DIR, when set, win over
+    # domains.compliance.forensic.backend (or storage) and base_dir of
+    # admina.yaml (see admina.proxy.forensic_backend).
+    # What the proxy does when a forensic record cannot be written:
+    #   "open" (default): the failure is logged and the request is served
+    #       without its record;
+    #   "closed": the request is answered 503 and not forwarded (gateway,
+    #       /mcp), /api/v1/validate answers 503 until a record is written
+    #       again, and a filesystem or S3 backend that cannot be opened (no
+    #       directory, a directory that cannot be written, S3 not reachable)
+    #       stops the proxy at startup.
+    # In "open" mode such a backend is reported at startup and by /health
+    # (forensic_writable false, status degraded); nothing is recorded, in
+    # memory either, until it is fixed.
+    ADMINA_FORENSIC_FAIL_MODE: str = "open"
 
     # Telemetry
     OTEL_ENDPOINT: str = "http://localhost:4317"
@@ -407,6 +423,17 @@ class Settings(BaseSettings):
             return "s3"
         if v not in {"memory", "filesystem", "s3"}:
             raise ValueError(f"FORENSIC_BACKEND must be 'memory' | 'filesystem' | 's3' (got {v!r})")
+        return v
+
+    @field_validator("ADMINA_FORENSIC_FAIL_MODE")
+    @classmethod
+    def validate_forensic_fail_mode(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in FORENSIC_FAIL_MODES:
+            raise ValueError(
+                "ADMINA_FORENSIC_FAIL_MODE must be one of: "
+                f"{' | '.join(FORENSIC_FAIL_MODES)} (got {v!r})"
+            )
         return v
 
     @field_validator("CORS_ORIGINS")

@@ -28,6 +28,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from admina.domains.compliance.forensic import ForensicWriteError
+
 logger = logging.getLogger("admina.api.integration")
 
 
@@ -54,6 +56,19 @@ def _scrub_check_errors(checks: dict[str, Any]) -> dict[str, Any]:
         else:
             scrubbed[name] = entry
     return scrubbed
+
+
+def _require_forensic_records(fbox: Any) -> None:
+    """503 while a closed-mode forensic store does not accept records (its
+    last write failed, or its backend could not be opened)."""
+    if fbox is None or getattr(fbox, "fail_mode", "open") != "closed":
+        return
+    accepting = getattr(fbox, "accepting_records", None)
+    if accepting is not None and not accepting():
+        raise HTTPException(
+            status_code=503,
+            detail="Forensic records cannot be written (ADMINA_FORENSIC_FAIL_MODE=closed)",
+        )
 
 
 def create_integration_endpoints(
@@ -91,7 +106,8 @@ def create_integration_endpoints(
         ``session_id``, ``method``.
 
         Returns ``action`` (ALLOW / BLOCK / REDACT), ``risk_level``,
-        and per-domain ``checks``.
+        and per-domain ``checks``. With a closed-mode forensic store that
+        does not accept records (its last write failed), 503.
         """
         from admina.domains.agent_security.egress import egress_policy_for, resolve_egress_mode
         from admina.domains.governance import run_pipeline
@@ -99,6 +115,7 @@ def create_integration_endpoints(
         content = body.get("content", "")
         if not content:
             raise HTTPException(status_code=400, detail="'content' field is required")
+        _require_forensic_records(get_forensic_box())
 
         session_id = body.get("session_id", "rest-" + uuid.uuid4().hex[:8])
         agent_id = body.get("agent_id", "rest-api")
@@ -162,7 +179,9 @@ def create_integration_endpoints(
         Expects JSON body with ``event`` (dict) containing the
         action details to record.
 
-        Returns forensic record metadata (sequence number, hash).
+        Returns forensic record metadata (sequence number, hash);
+        ``recorded: false`` when the record could not be written, or 503
+        with a closed-mode forensic store.
         """
         event_data = body.get("event")
         if not event_data or not isinstance(event_data, dict):
@@ -182,7 +201,14 @@ def create_integration_endpoints(
         event_data.setdefault("timestamp", datetime.now(UTC).isoformat())
         event_data.setdefault("source", "api_v1_audit")
 
-        record = fbox.record(event_data)
+        try:
+            record = fbox.record(event_data)
+        except ForensicWriteError:
+            raise HTTPException(
+                status_code=503, detail="The forensic record could not be written"
+            ) from None
+        if record.get("record_hash") is None:
+            return {"recorded": False, "error": "The forensic record could not be written"}
         return {
             "recorded": True,
             "sequence_number": record["sequence_number"],

@@ -36,6 +36,9 @@ record concerned:
   the record at that count is not the state's head;
 - ``checkpoint_mismatch``: the record at the checkpoint's sequence number
   has another ``record_hash``.
+
+``store_unavailable`` is the reason given by a store whose backend could not
+be opened (:class:`~admina.domains.compliance.forensic.UnavailableForensicStore`).
 """
 
 from __future__ import annotations
@@ -55,6 +58,7 @@ __all__ = [
     "LINK_BROKEN",
     "MISSING_RECORD",
     "STATE_MISMATCH",
+    "STORE_UNAVAILABLE",
     "ChainReport",
     "canonical_record",
     "compute_record_hash",
@@ -73,6 +77,7 @@ LINK_BROKEN = "link_broken"
 MISSING_RECORD = "missing_record"
 STATE_MISMATCH = "state_mismatch"
 CHECKPOINT_MISMATCH = "checkpoint_mismatch"
+STORE_UNAVAILABLE = "store_unavailable"
 
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 

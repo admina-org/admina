@@ -98,6 +98,24 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   (`compute_record_hash()`, `canonical_record()`, `verify_entries()`) and
   `admina.domains.compliance.forensic_files` (record keys, `atomic_write()`)
   are public.
+- `ADMINA_FORENSIC_FAIL_MODE`: `open` (default) or `closed`. In `closed`
+  mode a request whose forensic record cannot be written is answered `503`
+  and not forwarded: the gateway with `{"error": {"message", "type":
+  "server_error", "param": null, "code": "forensic_unavailable"}}`, `/mcp`
+  with a JSON-RPC error (`-32603`), `POST /api/v1/audit` with `503`;
+  `POST /api/v1/validate` answers `503` until a record is written again; and
+  a `filesystem` or `s3` backend that cannot be opened at startup stops the
+  proxy (`ForensicBackendError`). In `open` mode the failure is logged and
+  the request served.
+- The proxy reads `domains.compliance.forensic.backend` (or its older name
+  `storage`) and `base_dir` from `admina.yaml` when `FORENSIC_BACKEND` and
+  `FORENSIC_BASE_DIR` are not set; the environment's values win, and a value
+  set in both places with different values is logged at startup. An unknown
+  backend in `admina.yaml` stops the proxy. `admina.proxy.forensic_backend`
+  builds the store.
+- `GET /health` `status` is `degraded` while forensic records cannot be
+  written (`forensic_writable` false, or the last record or chain-state
+  write failed); `healthy` otherwise.
 
 ### Changed
 
@@ -137,6 +155,18 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   goes into an hour directory earlier than the one of the record before it.
 - A forensic record that cannot be written (filesystem or S3) is not counted:
   the next record takes its sequence number, so the stored chain has no gap.
+- `FORENSIC_BACKEND=filesystem` without a directory (or with one that
+  cannot be created), and `FORENSIC_BACKEND=s3` without boto3 or with S3 not
+  reachable, no longer fall back to the in-memory store: in `open` mode the
+  proxy starts with a store that records nothing (`UnavailableForensicStore`,
+  `forensic_writable: false`) and logs an error; in `closed` mode it does not
+  start. A directory that exists but cannot be written is logged at startup
+  (and stops the proxy in `closed` mode).
+- `POST /api/v1/audit` answers `{"recorded": false, "error": ...}` when the
+  record could not be written; `/mcp` sends no `X-Admina-Forensic-Hash` then.
+- The `admina init` template leaves the forensic backend to
+  `FORENSIC_BACKEND` and `FORENSIC_BASE_DIR` (the lines in `admina.yaml` are
+  comments).
 - The chain state also holds `format` (`admina-forensic/1`) and `head_key`
   (the key of the last record). Rebuilding a missing chain state reads the
   record names and one record, not every record.

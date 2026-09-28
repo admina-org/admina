@@ -58,6 +58,7 @@ from admina.domains.compliance.forensic_files import (
 )
 from admina.domains.compliance.forensic_integrity import (
     GENESIS,
+    STORE_UNAVAILABLE,
     RecordEntry,
     compute_record_hash,
     verify_entries,
@@ -662,6 +663,50 @@ class ForensicBlackBox(BaseForensicStore):
             "record_count": self.record_count,
             "chain_head": self.chain_head[:16] + "...",
             "storage_available": self._durable,
+        }
+
+
+class UnavailableForensicStore(ForensicBlackBox):
+    """The store of a configured backend that could not be opened.
+
+    It records nothing, not even in memory: every :meth:`record` fails as
+    the fail mode says (logged, or :class:`ForensicWriteError`), it is never
+    writable and its chain never verifies (``store_unavailable``).
+    """
+
+    def __init__(self, backend: str, reason: str, *, fail_mode: str = "open"):
+        self.backend = backend
+        self.reason = reason
+        super().__init__(fail_mode=fail_mode)
+
+    def _ensure_bucket(self):
+        """Nothing to create: the backend could not be opened."""
+
+    def record(self, event: dict) -> dict:
+        with self._write_lock:
+            cause = RuntimeError(f"forensic backend {self.backend} cannot be used: {self.reason}")
+            return self._not_written(self.record_count + 1, cause)
+
+    def accepting_records(self) -> bool:
+        return False
+
+    def writable(self) -> bool:
+        return False
+
+    def verify(
+        self,
+        last_n: int = 0,
+        *,
+        from_seq: int | None = None,
+        checkpoint: tuple[int, str] | None = None,
+    ) -> dict:
+        return {
+            "valid": False,
+            "records": 0,
+            "reason": STORE_UNAVAILABLE,
+            "sequence_number": None,
+            "checkpoint": None,
+            "last_hash": self.chain_head,
         }
 
 

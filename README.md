@@ -396,6 +396,28 @@ one trailing newline removed. A missing, unreadable or empty file, or a key
 set both directly and as a file, stops the proxy; the error names the
 setting and the path, never the key.
 
+**Forensic store.** `FORENSIC_BACKEND` (`memory`, `filesystem`, `s3`) and
+`FORENSIC_BASE_DIR` choose where the forensic records go. When they are not
+set (in the environment or `.env`), the proxy reads
+`domains.compliance.forensic.backend` (or its older name `storage`) and
+`base_dir` from `admina.yaml`; without either, the backend is `memory`. A
+value set in both places with different values is logged at startup, and
+the environment's is used.
+
+`ADMINA_FORENSIC_FAIL_MODE` says what happens when a record cannot be
+written (a full disk, a directory that cannot be written, S3 errors):
+
+| | `open` (default) | `closed` |
+|---|---|---|
+| Record not written | logged; the request is served without it | `503` and not forwarded: gateway `{"error": {..., "type": "server_error", "code": "forensic_unavailable"}}`, `/mcp` a JSON-RPC error (`-32603`), `/api/v1/audit` `503` |
+| `/api/v1/validate` after a failed write | served | `503` until a record is written again |
+| Backend that cannot be opened at startup (`filesystem` without a directory, or one that cannot be created or written; `s3` without boto3 or not reachable) | an error is logged; nothing is recorded, not even in memory, and `/health` reports `forensic_writable: false` | the proxy does not start |
+
+A record that is not written is never counted: the next one takes its
+sequence number. Each record, `_chain_state.json` and its signature are
+written atomically (a temporary file in the same directory, fsynced and
+renamed, then the directory fsynced).
+
 **Surfaces.** `ADMINA_ENABLED_SURFACES` lists the surfaces the proxy serves,
 comma-separated (empty = all of them):
 
@@ -477,6 +499,9 @@ does not start when they are enabled without it.
 }
 ```
 
+- `status`: `healthy`, or `degraded` while forensic records cannot be
+  written (`forensic_writable` is `false`, or the last record or chain-state
+  write failed); the HTTP status is 200 either way;
 - `mode`: the governance mode (`enforce`, `observe` or `dry-run`);
 - `surfaces`: the enabled surfaces;
 - `ruleset_sha256`: the active firewall ruleset, the value of
@@ -484,7 +509,8 @@ does not start when they are enabled without it.
 - `forensic_writable`: whether the forensic store accepts writes. With the
   `filesystem` backend a probe file is created, written, fsynced and removed
   in `FORENSIC_BASE_DIR`; with `s3` it is the result of the last record
-  write (`null` before the first); with `memory` it is `null`. The check
+  write (`null` before the first); with `memory` it is `null`; for a
+  backend that could not be opened at startup it is `false`. The check
   runs at most once every 10 s, on a thread of its own, and its result is
   reused until then; a check that takes longer than 1 s reports `false`, so
   `/health` answers within about a second even when the store stalls.
@@ -1189,7 +1215,9 @@ production.
 | `UPSTREAM_MCP_URL` | `http://localhost:9000` | Default upstream MCP server |
 | `REDIS_URL` | `redis://localhost:6379/0` | Session state + rate limiting (empty = no Redis) |
 | `CLICKHOUSE_HOST` | `localhost` | Event analytics (empty = no ClickHouse) |
-| `FORENSIC_BACKEND` | `memory` | Forensic store: `memory` \| `filesystem` \| `s3` |
+| `FORENSIC_BACKEND` | `memory` | Forensic store: `memory` \| `filesystem` \| `s3` (else `domains.compliance.forensic.backend` of `admina.yaml`) |
+| `FORENSIC_BASE_DIR` | *(empty)* | Directory of the `filesystem` store (else `domains.compliance.forensic.base_dir`) |
+| `ADMINA_FORENSIC_FAIL_MODE` | `open` | A forensic record that cannot be written: `open` (logged, request served) \| `closed` (`503`, not forwarded) |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
 | `ADMINA_LOG_FORMAT` | `text` | Log output: `text` \| `json` |
 

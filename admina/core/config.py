@@ -221,6 +221,11 @@ class ForensicConfig:
 
     storage: str = "filesystem"
     bucket: str = "forensic-blackbox"
+    # domains.compliance.forensic.backend, else its older name ``storage``,
+    # lower case; empty when neither is set.
+    backend: str = ""
+    # domains.compliance.forensic.base_dir; empty when not set.
+    base_dir: str = ""
 
 
 @dataclass
@@ -514,13 +519,15 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
 
     # compliance
     co_raw = domains.get("compliance", {})
-    fo_raw = co_raw.get("forensic", {})
+    fo_raw = co_raw.get("forensic") or {}
     ot_raw = co_raw.get("otel", {})
     comp = ComplianceConfig(
         enabled=co_raw.get("enabled", True),
         forensic=ForensicConfig(
             storage=fo_raw.get("storage", "filesystem"),
             bucket=fo_raw.get("bucket", "forensic-blackbox"),
+            backend=_forensic_backend(fo_raw),
+            base_dir=str(fo_raw.get("base_dir") or "").strip(),
         ),
         eu_ai_act_enabled=co_raw.get("eu_ai_act", {}).get("enabled", True),
         otel=OTELConfig(endpoint=ot_raw.get("endpoint", "http://localhost:4317")),
@@ -558,6 +565,21 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
         plugins=data.get("plugins", []),
         plugin_config=data.get("plugin_config", {}),
     )
+
+
+def _forensic_backend(raw: dict) -> str:
+    """``backend`` of ``domains.compliance.forensic``, else ``storage``; the
+    two set to different values are logged, and ``backend`` is used."""
+    backend = str(raw.get("backend") or "").strip().lower()
+    storage = str(raw.get("storage") or "").strip().lower()
+    if backend and storage and backend != storage:
+        logger.warning(
+            "admina.yaml: domains.compliance.forensic.backend=%r and storage=%r differ; "
+            "backend is used",
+            backend,
+            storage,
+        )
+    return backend or storage
 
 
 def _build_from_env() -> AdminaConfig:

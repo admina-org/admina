@@ -48,7 +48,7 @@ from admina.domains.agent_security.egress import (
     payload_fields,
     resolve_egress_mode,
 )
-from admina.domains.compliance.forensic import ForensicBlackBox
+from admina.domains.compliance.forensic import ForensicWriteError
 from admina.domains.compliance.otel import OTELGovernanceExporter
 from admina.domains.governance import (
     build_governance_details,
@@ -69,6 +69,7 @@ from admina.proxy.api.gateway import create_gateway_endpoints
 from admina.proxy.api.integration import create_integration_endpoints
 from admina.proxy.body_limit import BodyLimitMiddleware
 from admina.proxy.config import GovernanceEvent, settings
+from admina.proxy.forensic_backend import build_forensic_store
 from admina.proxy.gateway_scan import (
     RulesetHeaderMiddleware,
     build_gateway_scan_config,
@@ -365,78 +366,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
         state.quarantine_refresh = _spawn(_refresh_loop())
 
-    # Forensic backend: filesystem (default) | s3 (boto3 generic) | memory.
+    # Forensic backend: memory (default) | filesystem | s3 (boto3 generic),
+    # from the environment or admina.yaml; see admina.proxy.forensic_backend.
     # MinIO servers are supported through the s3 backend (they speak the S3
     # API); the legacy minio-SDK backend was removed in 0.9.5.
-    boto3_client = None
-
-    if settings.FORENSIC_BACKEND == "s3":
-        try:
-            import boto3
-
-            kwargs = {
-                "service_name": "s3",
-                "region_name": settings.FORENSIC_S3_REGION,
-            }
-            if settings.FORENSIC_S3_ENDPOINT:
-                kwargs["endpoint_url"] = settings.FORENSIC_S3_ENDPOINT
-            if settings.FORENSIC_S3_ACCESS_KEY:
-                kwargs["aws_access_key_id"] = settings.FORENSIC_S3_ACCESS_KEY
-                kwargs["aws_secret_access_key"] = settings.FORENSIC_S3_SECRET_KEY
-            boto3_client = boto3.client(**kwargs)
-            boto3_client.list_buckets()
-            logger.info(
-                "S3 forensic backend connected (endpoint=%s)",
-                settings.FORENSIC_S3_ENDPOINT or "default AWS",
-            )
-        except ImportError:
-            logger.warning(
-                "FORENSIC_BACKEND=s3 requires boto3 (pip install boto3) — "
-                "falling back to filesystem"
-            )
-            boto3_client = None
-        except Exception as e:  # noqa: BLE001
-            logger.warning("S3 not reachable: %s — falling back to filesystem", e)
-            boto3_client = None
-
-    if boto3_client is not None:
-        state.forensic_box = ForensicBlackBox(
-            boto3_client=boto3_client,
-            bucket=settings.FORENSIC_S3_BUCKET,
-            s3_object_lock=settings.FORENSIC_S3_LOCK,
-            s3_lock_days=settings.FORENSIC_S3_LOCK_DAYS,
-            s3_auto_create_locked_bucket=settings.FORENSIC_S3_LOCK_AUTO_BUCKET,
-            s3_max_retries=settings.FORENSIC_S3_MAX_RETRIES,
-            s3_base_delay_s=settings.FORENSIC_S3_BASE_DELAY_S,
-        )
-        if settings.FORENSIC_S3_LOCK:
-            logger.info(
-                "Forensic Object Lock ENABLED: every record locked for %d days "
-                "in COMPLIANCE mode (WORM)",
-                settings.FORENSIC_S3_LOCK_DAYS,
-            )
-    elif settings.FORENSIC_BACKEND == "filesystem":
-        if not settings.FORENSIC_BASE_DIR:
-            logger.warning(
-                "FORENSIC_BACKEND=filesystem but FORENSIC_BASE_DIR is empty — "
-                "downgrading to in-memory backend (records will be lost on restart)"
-            )
-            state.forensic_box = ForensicBlackBox()
-        else:
-            state.forensic_box = ForensicBlackBox(filesystem_dir=settings.FORENSIC_BASE_DIR)
-            logger.info(
-                "Forensic backend: filesystem at %s",
-                settings.FORENSIC_BASE_DIR,
-            )
-    else:
-        # Default: in-memory only. Loud warning so the operator
-        # knows the proxy is running with no audit persistence.
-        state.forensic_box = ForensicBlackBox()
-        logger.warning(
-            "Forensic backend: IN-MEMORY ONLY — events will be LOST on restart. "
-            "Set FORENSIC_BACKEND=filesystem (with FORENSIC_BASE_DIR) or =s3 "
-            "for persistence."
-        )
+    state.forensic_box = build_forensic_store(settings, _admina_config)
 
     # ClickHouse — optional, skip if host is empty
     state.clickhouse = _connect_clickhouse()
@@ -1098,26 +1032,37 @@ app.add_middleware(
 async def health(request: Request) -> dict[str, Any]:
     """Liveness probe, with the configuration a deployment checks.
 
-    ``mode``: the governance mode; ``surfaces``: the enabled surfaces;
-    ``ruleset_sha256``: the active firewall ruleset (the value of
-    ``X-Admina-Ruleset``); ``forensic_writable``: whether the forensic store
-    accepts writes (filesystem: a probe file is written, fsynced and removed;
-    S3: the last record write; in-memory: ``null``). The check runs at most
+    ``status``: ``healthy``, or ``degraded`` while forensic records cannot
+    be written (``forensic_writable`` is false, or the last record or chain
+    state write failed); ``mode``: the governance mode; ``surfaces``: the
+    enabled surfaces; ``ruleset_sha256``: the active firewall ruleset (the
+    value of ``X-Admina-Ruleset``); ``forensic_writable``: whether the
+    forensic store accepts writes (filesystem: a probe file is written,
+    fsynced and removed; S3: the last record write; in-memory: ``null``;
+    a backend that could not be opened: ``false``). The check runs at most
     once every 10 s on a thread of its own and reports ``false`` when it
     takes longer than 1 s (see admina.proxy.forensic_probe).
     """
     state = getattr(request.app.state, "proxy", None)
+    forensic_writable = await _forensic_writable(state)
+    degraded = forensic_writable is False or not _forensic_accepting(state)
     return {
-        "status": "healthy",
+        "status": "degraded" if degraded else "healthy",
         "service": "admina-proxy",
         "version": __version__,
         "mode": settings.GOVERNANCE_MODE,
         "surfaces": list(enabled_surfaces()),
         "ruleset_sha256": scan_config_of(state).ruleset_sha256,
-        "forensic_writable": await _forensic_writable(state),
+        "forensic_writable": forensic_writable,
         "engine": engine_status(),
         "timestamp": datetime.now(UTC).isoformat(),
     }
+
+
+def _forensic_accepting(state: Any) -> bool:
+    """False while the forensic store's last write failed."""
+    accepting = getattr(getattr(state, "forensic_box", None), "accepting_records", None)
+    return True if accepting is None else bool(accepting())
 
 
 async def _forensic_writable(state: Any) -> bool | None:
@@ -1640,6 +1585,26 @@ _mount("compliance", _compliance_router)
 # ── MCP Proxy Endpoint ──────────────────────────────────────
 _mcp_router = APIRouter()
 
+_FORENSIC_UNAVAILABLE = "The forensic record of the request could not be written."
+
+
+def _forensic_unavailable_mcp(body: dict, event_id: str) -> JSONResponse:
+    """503 for an /mcp request whose forensic record was not written
+    (ADMINA_FORENSIC_FAIL_MODE=closed); the request is not forwarded."""
+    logger.error("MCP request %s not forwarded: its forensic record was not written", event_id)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "jsonrpc": "2.0",
+            "id": body.get("id") if isinstance(body, dict) else None,
+            "error": {
+                "code": -32603,
+                "message": _FORENSIC_UNAVAILABLE,
+                "data": {"event_id": event_id},
+            },
+        },
+    )
+
 
 @_mcp_router.post("/mcp", tags=["proxy"], summary="MCP JSON-RPC governance proxy")
 @_mcp_router.post("/mcp/{path:path}", tags=["proxy"], include_in_schema=False)
@@ -1798,30 +1763,35 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
         _spawn(_fire_alerts(state.alert_channels, _alert))
 
     # ─── Forensic Black Box (non-blocking) ─────────────────────
+    # With ADMINA_FORENSIC_FAIL_MODE=closed a record that is not written
+    # raises: the request is answered 503 and not forwarded.
     forensic_record = None
     if state.forensic_box:
         _loop = asyncio.get_running_loop()
-        forensic_record = await _loop.run_in_executor(
-            None,
-            lambda: state.forensic_box.record(
-                {
-                    "event_id": event_id,
-                    "event_type": EventType.MCP_REQUEST,
-                    "agent_id": agent_id,
-                    "session_id": session_id,
-                    "method": method,
-                    "action": action,
-                    "risk_level": risk_level,
-                    "governance_latency_ms": round(governance_latency, 2),
-                    "checks": {k: safe_serialize(v) for k, v in pipeline_result.checks.items()},
-                    "would_action": (
-                        safe_serialize(pipeline_result.would_action)
-                        if pipeline_result.would_action is not None
-                        else None
-                    ),
-                }
-            ),
-        )
+        try:
+            forensic_record = await _loop.run_in_executor(
+                None,
+                lambda: state.forensic_box.record(
+                    {
+                        "event_id": event_id,
+                        "event_type": EventType.MCP_REQUEST,
+                        "agent_id": agent_id,
+                        "session_id": session_id,
+                        "method": method,
+                        "action": action,
+                        "risk_level": risk_level,
+                        "governance_latency_ms": round(governance_latency, 2),
+                        "checks": {k: safe_serialize(v) for k, v in pipeline_result.checks.items()},
+                        "would_action": (
+                            safe_serialize(pipeline_result.would_action)
+                            if pipeline_result.would_action is not None
+                            else None
+                        ),
+                    }
+                ),
+            )
+        except ForensicWriteError:
+            return _forensic_unavailable_mcp(body, event_id)
 
     # ─── Store to ClickHouse (fire-and-forget) ─────────────────
     _spawn(
@@ -2066,9 +2036,12 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                                 },
                             }
                             _loop = asyncio.get_running_loop()
-                            await _loop.run_in_executor(
-                                None, state.forensic_box.record, error_record
-                            )
+                            try:
+                                await _loop.run_in_executor(
+                                    None, state.forensic_box.record, error_record
+                                )
+                            except ForensicWriteError:
+                                return _forensic_unavailable_mcp(body, event_id)
                         state.inc_metric("requests_blocked")
                         logger.warning(
                             "Guard %r response error blocked response for event %s (fail-closed)",
@@ -2083,11 +2056,10 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
         total_latency = (time.perf_counter() - start_time) * 1000
         state.update_avg_latency(total_latency)
 
+        record_hash = (forensic_record or {}).get("record_hash")
         headers = mcp_transport.format_allow_headers(
             gov_response,
-            forensic_hash=(
-                forensic_record.get("record_hash", "")[:16] if forensic_record else None
-            ),
+            forensic_hash=record_hash[:16] if record_hash else None,
         )
 
         return JSONResponse(content=response_data, headers=headers)

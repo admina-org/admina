@@ -179,17 +179,20 @@ domains:
   compliance:
     enabled: true
     forensic:
-      # backend: memory | filesystem | s3
+      # backend: memory | filesystem | s3 (older name: storage)
       # Default is "memory" — events hashed and chained but LOST on
       # restart. Set explicitly to opt in to persistence.
+      # FORENSIC_BACKEND and FORENSIC_BASE_DIR, when set, take precedence
+      # over backend and base_dir (a difference is logged at startup).
       backend: memory
       bucket: forensic-blackbox
       # Required when backend=filesystem (no default — explicit opt-in)
       # base_dir: /var/lib/admina/forensic
-      # Required when backend=s3 (boto3-based, works with any
-      # S3-compatible store: AWS S3, R2, B2, SeaweedFS, Garage, …)
-      # s3_endpoint: ""
-      # s3_object_lock: false           # WORM (COMPLIANCE mode, 7y default)
+      # backend=s3 (boto3-based, works with any S3-compatible store: AWS
+      # S3, R2, B2, SeaweedFS, Garage, …) is configured with the
+      # FORENSIC_S3_* variables (endpoint, bucket, keys, Object Lock).
+      # A record that cannot be written: ADMINA_FORENSIC_FAIL_MODE=open
+      # (default: logged, request served) or closed (503, not forwarded).
     eu_ai_act:
       enabled: true
     nis2:
