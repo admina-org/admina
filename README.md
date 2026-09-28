@@ -352,6 +352,9 @@ See [`admina.yaml.example`](https://github.com/admina-org/admina/blob/main/admin
   `load_config()` raises `ConfigSchemaError` (a `ValueError`) and the proxy
   does not start, for example `admina.yaml /etc/admina/admina.yaml:
   domains.agent_security.loop_breaker.window_size: must be an integer`. The
+  engine factories of the SDK (`get_firewall()`, `get_pii_engine()`,
+  `pii_mask_style()`, `get_egress_policy()`) raise the same error, whatever
+  key it names, and `admina plugin list` exits with it. The
   values of `gateway` and `presidio` are checked by their own readers, with
   the same effect. An empty value (`key:` and nothing after it) is not
   checked.

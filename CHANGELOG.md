@@ -447,7 +447,13 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   by `ADMINA_CONFIG` gives a `ConfigFileError`, as for other invalid files),
   for example "admina.yaml /etc/admina/admina.yaml:
   domains.agent_security.loop_breaker.window_size: must be an integer", and
-  the proxy does not start. The values of `gateway` and `presidio` are
+  the proxy does not start. The engine factories that read admina.yaml
+  (`get_firewall()`, `get_pii_engine()`, `pii_mask_style()`,
+  `get_egress_policy()`, the SDK included) raise the same error, whatever
+  key it names (`get_egress_policy()` gave an empty allowlist for a value
+  it could not read); `admina plugin list` exits with it, and
+  `admina doctor` reports it under plugin discovery. The values of
+  `gateway` and `presidio` are
   checked by their readers, as before; empty values (null) and the
   free-form blocks (`plugin_config`, `integrations`,
   `agent_security.domains`, the entries of `custom_patterns`) are not

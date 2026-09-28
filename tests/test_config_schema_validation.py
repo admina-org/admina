@@ -48,7 +48,7 @@ EXAMPLE = REPO / "admina.yaml.example"
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    for name in ("ADMINA_CONFIG", "ADMINA_ENGINE", "ADMINA_PII_ENGINE"):
+    for name in ("ADMINA_CONFIG", "ADMINA_ENGINE", "ADMINA_PII_ENGINE", "ADMINA_PII_MASK_STYLE"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -350,6 +350,76 @@ def test_integers_are_numbers_and_quoted_version_is_accepted(tmp_path):
         "domains:\n  agent_security:\n    loop_breaker: {similarity_threshold: 1}\n",
     )
     assert check_config(path, strict=True).unknown == ()
+
+
+# ── In the SDK ───────────────────────────────────────────────
+#
+# The engine factories read the file that load_config reads and raise its
+# error, whatever key it names: a wrong type elsewhere in the file does not
+# make them use their defaults for the keys that are right.
+
+SDK_FILE = """\
+    pii_engine: presidio
+    pii_mask_style: omissis
+    dashboard:
+      port: "3000"
+    """
+
+
+@pytest.mark.parametrize(
+    "factory",
+    ["pii_mask_style", "get_pii_engine", "get_pii_scanner", "get_egress_policy", "get_firewall"],
+)
+def test_engine_factories_raise_on_a_wrong_type(tmp_path, factory):
+    import admina.engines as engines
+
+    _write(tmp_path, SDK_FILE)
+    with pytest.raises(ValueError, match=r"dashboard\.port: must be an integer") as caught:
+        getattr(engines, factory)()
+    # By name: other tests import the package again.
+    assert type(caught.value).__name__ == "ConfigSchemaError"
+
+
+def test_governed_data_raises_on_a_wrong_type(tmp_path):
+    from admina.sdk.governed_data import BaseDataConnector, GovernedData
+
+    class _Connector(BaseDataConnector):
+        async def ingest(self, source, **kwargs):
+            return {"doc_count": 1, "chunk_count": 1}
+
+        async def query(self, query, **kwargs):
+            return []
+
+        @property
+        def name(self) -> str:
+            return "example"
+
+    _write(tmp_path, SDK_FILE)
+    data = GovernedData(connector=_Connector(), audit=False)
+    with pytest.raises(ValueError, match=r"dashboard\.port: must be an integer") as caught:
+        asyncio.run(data.ingest("Contact: someone@example.com"))
+    assert type(caught.value).__name__ == "ConfigSchemaError"
+
+
+def test_engine_factories_read_a_valid_file(tmp_path):
+    import admina.engines as engines
+
+    _write(tmp_path, "pii_mask_style: omissis\ndashboard:\n  port: 3000\n")
+    assert engines.pii_mask_style() == "omissis"
+
+
+def test_engine_factories_use_their_defaults_when_the_file_cannot_be_read(monkeypatch):
+    import admina.engines as engines
+    from admina.domains.agent_security.egress import analyze
+
+    def _unreadable(*args, **kwargs):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr("admina.core.config.load_config", _unreadable)
+    assert engines.pii_mask_style() == "typed"
+    # An empty allowlist: every destination is blocked.
+    policy = engines.get_egress_policy()
+    assert not policy.evaluate(analyze({"url": "https://example.com"}), "enforce").allowed
 
 
 # ── At proxy startup ─────────────────────────────────────────

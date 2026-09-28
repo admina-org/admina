@@ -467,6 +467,9 @@ included. Wiring it is a separate change, not a configuration option.
   fail-closed, consistent with default-deny — and a warning is logged
   naming the parse error. If every destination is suddenly blocked, check
   the logs for this warning before assuming the allowlist itself is wrong.
+  A value of the wrong type anywhere in the file is not read as an empty
+  allowlist: it is a `ConfigSchemaError` naming the key, the proxy does not
+  start, and `get_egress_policy()` raises it in the SDK.
 - **The quarantine hook now has a live caller.** `EgressPolicy.set_quarantine()`
   is invoked every 5 seconds by `refresh_quarantine_once`, fed by the
   coordination detector below (§5c) through `admina/proxy/main.py`'s

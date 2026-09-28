@@ -894,11 +894,21 @@ def _pip_install(package: str) -> subprocess.CompletedProcess[str]:
 
 
 def _config_extra_modules() -> list[str]:
-    """Module paths from admina.yaml ``plugins:`` — empty if no config."""
+    """Module paths from admina.yaml ``plugins:`` — empty if no config.
+
+    Raises:
+        ConfigFileError: the file named by ``ADMINA_CONFIG`` cannot be loaded.
+        ConfigSchemaError: a value of admina.yaml has the wrong type (the
+            message names its key).
+    """
+    from admina.core.config import ConfigSchemaError
+
     try:
         from admina.core.config import load_config
 
         return list(load_config().plugins)
+    except ConfigSchemaError:
+        raise
     except (ImportError, ValueError, OSError) as exc:
         logger.debug("Could not read plugins from admina.yaml: %s", exc)
         return []
@@ -1028,7 +1038,12 @@ def _plugin_install_path(cls: type) -> str:
 @plugin.command("list")
 def plugin_list() -> None:
     """List all installed Admina plugins by type, with their source path."""
-    all_plugins = _discover_and_list_plugins()
+    from admina.core.config import ConfigFileError, ConfigSchemaError
+
+    try:
+        all_plugins = _discover_and_list_plugins()
+    except (ConfigFileError, ConfigSchemaError) as exc:
+        raise click.ClickException(str(exc)) from exc
     total = 0
 
     click.echo("\n  Installed plugins:\n")

@@ -481,16 +481,10 @@ class TestEgressPolicyFactory:
         # read_only_tools is empty too on parse failure
         assert policy.read_only_tools == frozenset()
 
-    def test_wrong_type_field_returns_empty_policy_not_crash(self, tmp_path, monkeypatch):
-        """Regression test: TypeError is NOT a ValueError/OSError/ImportError.
-
-        When allow is an int (allow: 5) instead of a list, the config
-        module raises TypeError when trying to iterate. This is NOT caught
-        by (ImportError, AttributeError, OSError, ValueError) and would crash
-        the proxy if the except clause is re-narrowed. This test pins that
-        the broad Exception handler is required.
-        """
-        from admina.domains.agent_security.egress import EgressPolicy, analyze
+    def test_wrong_type_field_is_a_schema_error(self, tmp_path, monkeypatch):
+        """A value of the wrong type (allow: 5 instead of a list) is the
+        ConfigSchemaError of load_config, naming the key, as for
+        get_firewall(); not an empty allowlist."""
         from admina.engines import get_egress_policy
 
         (tmp_path / "admina.yaml").write_text(
@@ -501,6 +495,28 @@ class TestEgressPolicyFactory:
             "      allow: 5\n"  # Wrong type: int instead of list
         )
         monkeypatch.chdir(tmp_path)
+        with pytest.raises(
+            ValueError, match=r"domains\.agent_security\.egress\.allow: must be a list of strings"
+        ) as caught:
+            get_egress_policy()
+        # By name: other tests import the package again.
+        assert type(caught.value).__name__ == "ConfigSchemaError"
+
+    def test_type_error_while_building_returns_empty_policy_not_crash(self, monkeypatch):
+        """Regression test: TypeError is NOT a ValueError/OSError/ImportError.
+
+        A TypeError raised while the configuration is built is NOT caught by
+        (ImportError, AttributeError, OSError, ValueError) and would crash
+        the proxy if the except clause is re-narrowed. This test pins that
+        the broad Exception handler is required.
+        """
+        from admina.domains.agent_security.egress import EgressPolicy, analyze
+        from admina.engines import get_egress_policy
+
+        def _type_error(*args, **kwargs):
+            raise TypeError("'int' object is not iterable")
+
+        monkeypatch.setattr("admina.core.config.load_config", _type_error)
         policy = get_egress_policy()
         assert isinstance(policy, EgressPolicy)
         # Verify it is genuinely empty: a call to any destination is blocked

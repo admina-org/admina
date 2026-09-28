@@ -170,7 +170,9 @@ def _firewall_config() -> FirewallConfig | None:
     """``agent_security.firewall`` of admina.yaml (or of the .env fallback);
     None when the file cannot be read, except for a file named by
     ``ADMINA_CONFIG``, whose failure raises
-    :class:`~admina.core.config.ConfigFileError`."""
+    :class:`~admina.core.config.ConfigFileError`, and a value of the wrong
+    type anywhere in admina.yaml, which raises
+    :class:`~admina.core.config.ConfigSchemaError`."""
     try:
         from admina.core.config import load_config
 
@@ -517,6 +519,8 @@ def get_firewall(*, deep_path_enabled: bool | None = None) -> FirewallBridge:
         EngineSelectionError: ``ADMINA_ENGINE=rust`` and ``admina-core`` is
             not installed, or admina.yaml sets a key of
             :data:`PYTHON_ONLY_FIREWALL_KEYS` (the message names them).
+        ConfigSchemaError: a value of admina.yaml has the wrong type (the
+            message names its key).
         ValueError: ``ADMINA_ENGINE`` has another value;
             ``heuristic_threshold`` is not a finite number greater than 0; a
             pattern pack cannot be loaded, or is too slow with
@@ -566,20 +570,24 @@ def get_egress_policy() -> EgressPolicy | None:
 
     A configuration that cannot be read gives an empty allowlist, except a
     file named by ``ADMINA_CONFIG``, whose failure raises
-    :class:`~admina.core.config.ConfigFileError`.
+    :class:`~admina.core.config.ConfigFileError`, and a value of the wrong
+    type anywhere in admina.yaml, which raises
+    :class:`~admina.core.config.ConfigSchemaError`.
 
     Raises:
+        ConfigSchemaError: a value of admina.yaml has the wrong type (the
+            message names its key).
         ValueError: ``agent_security.egress.surfaces`` is not a list of
             surface names.
     """
-    from admina.core.config import ConfigFileError
+    from admina.core.config import ConfigFileError, ConfigSchemaError
     from admina.domains.agent_security.egress import EgressPolicy
 
     try:
         from admina.core.config import load_config
 
         cfg = load_config().agent_security.egress
-    except ConfigFileError:
+    except (ConfigFileError, ConfigSchemaError):
         raise
     except Exception as exc:
         logger.warning("Egress config unavailable or malformed, using an empty allowlist: %s", exc)
@@ -624,12 +632,19 @@ def _admina_config() -> AdminaConfig | None:
     """admina.yaml (or the .env fallback), or None when it cannot be read.
 
     A file named by ``ADMINA_CONFIG`` that cannot be loaded raises
-    :class:`~admina.core.config.ConfigFileError`.
+    :class:`~admina.core.config.ConfigFileError`; a value of the wrong type
+    anywhere in admina.yaml raises
+    :class:`~admina.core.config.ConfigSchemaError`, as :func:`get_firewall`
+    does.
     """
+    from admina.core.config import ConfigSchemaError
+
     try:
         from admina.core.config import load_config
 
         return load_config()
+    except ConfigSchemaError:
+        raise
     except (ImportError, ValueError, OSError) as exc:
         logger.debug("admina.yaml unavailable, using the PII engine defaults: %s", exc)
         return None
@@ -640,6 +655,8 @@ def pii_mask_style() -> str:
     admina.yaml ``pii_mask_style`` > ``typed``.
 
     Raises:
+        ConfigSchemaError: a value of admina.yaml has the wrong type (the
+            message names its key).
         ValueError: the value is not ``typed`` or ``omissis``.
     """
     from admina.domains.data_sovereignty.masking import normalize_mask_style
@@ -668,6 +685,8 @@ def get_pii_engine(name: str | None = None) -> PIIBridge:
     :data:`admina.core.offline.OFFLINE_ENVIRONMENT` are set first.
 
     Raises:
+        ConfigSchemaError: a value of admina.yaml has the wrong type (the
+            message names its key).
         ValueError: no engine has that name (the message lists the names
             available).
     """
