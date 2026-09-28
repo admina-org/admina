@@ -145,9 +145,12 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   Reason codes: `hash_mismatch` (a record is not a JSON object, or its
   `record_hash` is not the hash of its content), `link_broken`
   (`previous_hash` is not the hash of the record before it, `GENESIS` for
-  record 1), `missing_record`, `state_mismatch` (the records do not reach
-  the chain state's count, or the record at that count is not its head) and
-  `checkpoint_mismatch`. `admina.domains.compliance.forensic_integrity`
+  record 1), `missing_record` (there is no record with the next sequence
+  number: before the first one found, between two records, or before the
+  chain state's count), `state_mismatch` (the record at the chain state's
+  count is not its head) and `checkpoint_mismatch` (the record at the
+  checkpoint's sequence number has another `record_hash`).
+  `admina.domains.compliance.forensic_integrity`
   (`compute_record_hash()`, `canonical_record()`, `verify_entries()`) and
   `admina.domains.compliance.forensic_files` (record keys, `atomic_write()`)
   are public.
