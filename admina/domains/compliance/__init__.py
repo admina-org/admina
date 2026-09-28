@@ -67,6 +67,12 @@ from admina.domains.compliance.oisg import (
 from admina.domains.compliance.oisg import (
     get_level as oisg_get_level,
 )
+from admina.domains.compliance.oisg_evidence import (
+    OISGEvidence,
+    OISGEvidenceError,
+    OISGEvidenceResult,
+    compute_oisg_score_from_evidence,
+)
 from admina.domains.compliance.otel import OTELGovernanceExporter
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -92,7 +98,11 @@ __all__ = [
     "NIS2_AREAS",
     "NIS2_TRANSPOSITION_DEADLINE",
     "compute_oisg_score",
+    "compute_oisg_score_from_evidence",
     "oisg_get_level",
+    "OISGEvidence",
+    "OISGEvidenceError",
+    "OISGEvidenceResult",
     "OISGResult",
     "PillarResult",
     "CriterionResult",

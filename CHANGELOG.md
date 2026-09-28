@@ -418,6 +418,30 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `admina.engines.EngineSelectionError` (a `ValueError`).
 - The loop breaker and PII bridges name their engine (`engine` attribute),
   as the firewall bridges do.
+- `compute_oisg_score_from_evidence(evidence)`
+  (`admina.domains.compliance.oisg_evidence`, also exported by
+  `admina.domains.compliance`): the OISG adequacy score of the 20 criteria
+  of `oisg.CRITERIA` (same ids and labels) from evidence that the caller
+  supplies, `{"schema_version": 1, "criteria": {"o1": {"status", "reason",
+  "evidence_ref"}, ...}}` with an entry for every criterion (JSON Schema
+  `admina/domains/compliance/schemas/oisg-evidence.schema.json`, read by
+  `evidence_schema()`; dataclasses `OISGEvidence` and `CriterionEvidence`).
+  A status is `satisfied`, `partial`, `gap_consapevole` (a known gap,
+  accepted with a `reason`, which is required and not blank) or
+  `not_applicable`. Scoring: `satisfied` is worth 5 points, `partial` 2.5,
+  `gap_consapevole` 0; `not_applicable` criteria are left out and each
+  pillar is rescaled to 25 over the criteria that apply; a pillar without
+  any has no score (`null`) and the total is rescaled to 100 over the other
+  pillars. Scores are rounded half up to one decimal, and the level is
+  `get_level()` of the total. A missing or unknown criterion, an unknown
+  status or key, a `gap_consapevole` without a reason, and evidence where
+  every criterion is `not_applicable` raise `OISGEvidenceError` (a
+  `ValueError`; `problems` names each key). The result,
+  `OISGEvidenceResult` (an `OISGResult`), carries the `status`, `reason`,
+  `evidence_ref` and `points` of each criterion and the number of
+  `applicable` criteria of each pillar, and exports as JSON (`to_json()`,
+  read back by `from_dict()`) and Markdown (`to_markdown()`, a table per
+  pillar). `compute_oisg_score()` is unchanged.
 
 ### Changed
 

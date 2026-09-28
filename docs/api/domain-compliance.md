@@ -21,6 +21,16 @@
 ::: domains.compliance.eu_ai_act
 
 
+## OISG Adequacy Score
+
+::: domains.compliance.oisg
+
+
+### Score from evidence
+
+::: domains.compliance.oisg_evidence
+
+
 ## OpenTelemetry Export
 
 ::: domains.compliance.otel
