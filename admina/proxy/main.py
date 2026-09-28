@@ -19,7 +19,6 @@ https://admina.org
 """
 
 import asyncio
-import hashlib
 import inspect
 import json
 import logging
@@ -70,6 +69,7 @@ from admina.proxy.api.gateway import create_gateway_endpoints
 from admina.proxy.api.integration import create_integration_endpoints
 from admina.proxy.body_limit import BodyLimitMiddleware
 from admina.proxy.config import GovernanceEvent, settings
+from admina.proxy.decisions import Decision, text_sha256
 from admina.proxy.forensic_backend import build_forensic_store
 from admina.proxy.gateway_scan import (
     RulesetHeaderMiddleware,
@@ -1768,18 +1768,11 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
 
     if pipeline_result.checks.get("pii_redaction", {}).get("count", 0) > 0:
         state.inc_metric("requests_redacted")
-    _spawn(
-        governance_bus.emit(
-            BusGovernanceEvent(
-                event_type=EventType.GOVERNANCE_DECISION,
-                session_id=session_id,
-                action=gov_response.action,
-                risk_level=gov_response.risk_level,
-                domain="proxy",
-                metadata=gov_response.to_dict(),
-            )
-        )
+    request_sha256 = text_sha256(content_str)
+    decision = Decision.of(
+        "mcp", event_id, pipeline_result, request_sha256=request_sha256, session_id=session_id
     )
+    _spawn(governance_bus.emit(decision.event()))
 
     # ── Fire alerts on block/circuit-break (non-blocking) ─────
     if action in (GovernanceAction.BLOCK, GovernanceAction.CIRCUIT_BREAK) and state.alert_channels:
@@ -1840,7 +1833,7 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                 risk_level=risk_level,
                 details=persisted_details,
                 latency_ms=governance_latency,
-                request_hash=hashlib.sha256(content_str.encode()).hexdigest()[:32],
+                request_hash=request_sha256[:32],
             ),
         )
     )

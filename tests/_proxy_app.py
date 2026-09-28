@@ -16,8 +16,8 @@
 
 :func:`isolate` keeps the lifespan off Redis, ClickHouse and OTEL and gives
 it an event bus of its own; :func:`serve` starts the lifespan, points the
-gateway at an in-process fake upstream and sends requests through the ASGI
-app, middleware included.
+gateway and ``/mcp`` at in-process fake upstreams and sends requests through
+the ASGI app, middleware included.
 """
 
 from __future__ import annotations
@@ -103,24 +103,54 @@ def upstream(request: httpx.Request) -> httpx.Response:
     )
 
 
+def mcp_upstream(request: httpx.Request) -> httpx.Response:
+    """A fake MCP server: every call gets one fixed tool result."""
+    result = {"content": [{"type": "text", "text": "ok"}]}
+    return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": result})
+
+
+async def drain(state: Any) -> None:
+    """Wait for the proxy's fire-and-forget tasks (bus events, analytics
+    rows) to finish; the quarantine refresh loop, which never does, is
+    left out."""
+    from admina.proxy import main as proxy_main
+
+    for _ in range(100):
+        pending = [
+            task
+            for task in proxy_main._background_tasks
+            if not task.done() and task is not getattr(state, "quarantine_refresh", None)
+        ]
+        if not pending:
+            return
+        await asyncio.wait(pending, timeout=1)
+
+
 def serve(
     requests: list[dict],
     *,
     inspect: Callable[[Any], Any] | None = None,
+    gateway: Callable[[httpx.Request], httpx.Response] = upstream,
+    mcp: Callable[[httpx.Request], httpx.Response] = mcp_upstream,
 ) -> tuple[list[httpx.Response], Any]:
     """Start the proxy lifespan, send *requests* (kwargs of
     ``httpx.AsyncClient.request``) and return the responses with the value
-    of ``inspect(state)`` taken while the proxy is still running."""
+    of ``inspect(state)`` taken while the proxy is still running, once its
+    background tasks are done. *gateway* and *mcp* answer in place of the
+    upstreams of the gateway and of ``/mcp``."""
     from admina.proxy import main as proxy_main
 
     async def go() -> tuple[list[httpx.Response], Any]:
         async with proxy_main.lifespan(proxy_main.app):
             state = proxy_main.app.state.proxy
             await state.gateway_http_client.aclose()
-            state.gateway_http_client = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+            state.gateway_http_client = httpx.AsyncClient(transport=httpx.MockTransport(gateway))
+            await state.http_client.aclose()
+            state.http_client = httpx.AsyncClient(transport=httpx.MockTransport(mcp))
             transport = httpx.ASGITransport(app=proxy_main.app, raise_app_exceptions=False)
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
                 responses = [await client.request(**kw) for kw in requests]
+            await drain(state)
             return responses, (inspect(state) if inspect else state)
 
     return asyncio.run(go())
