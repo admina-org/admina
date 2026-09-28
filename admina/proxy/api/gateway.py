@@ -115,7 +115,7 @@ from starlette.types import Receive, Scope, Send
 from admina import __version__
 from admina.core.trace_context import TraceContext
 from admina.core.types import EventType, GovernanceAction
-from admina.domains.agent_security.egress import resolve_egress_mode
+from admina.domains.agent_security.egress import egress_policy_for, resolve_egress_mode
 from admina.domains.agent_security.scan_policy import (
     SCAN_POLICY_HEADER,
     SCAN_ROLES,
@@ -1188,7 +1188,7 @@ async def _governed_call(
             loop_enabled=False,
             mode=cfg.GOVERNANCE_MODE,
             guard_fail_mode=cfg.GUARD_FAIL_MODE,
-            egress_policy=state.egress_policy,
+            egress_policy=egress_policy_for(state.egress_policy, "gateway"),
             egress_mode=resolve_egress_mode(cfg.GOVERNANCE_MODE),
             scan_texts=scanned.texts,
             scan_truncated=scanned.truncated,

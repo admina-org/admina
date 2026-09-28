@@ -193,6 +193,10 @@ class EgressConfig:
     enabled: bool = True
     allow: list[str] = field(default_factory=list)
     read_only_tools: list[str] = field(default_factory=list)
+    # Surfaces the stage runs on (gateway, mcp, integration, sdk); None =
+    # every surface. Checked when the egress policy is built, which raises
+    # on an unknown name.
+    surfaces: list[str] | None = None
     # Parsed now, consumed by the coordination detector.
     coordination_declared: list[str] = field(default_factory=list)
     fanin_window_seconds: int = 3600
@@ -500,6 +504,7 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
             enabled=eg_raw.get("enabled", True),
             allow=list(eg_raw.get("allow") or []),
             read_only_tools=list(eg_raw.get("read_only_tools") or []),
+            surfaces=eg_raw.get("surfaces"),
             coordination_declared=list(eg_raw.get("coordination_declared") or []),
             fanin_window_seconds=int(eg_fanin.get("window_seconds", 3600)),
             fanin_min_agents=int(eg_fanin.get("min_agents", 5)),

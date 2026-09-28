@@ -165,14 +165,17 @@ class GovernedModel:
     def _get_egress_policy(self) -> Any:
         """Return the egress policy, creating it lazily.
 
-        ``None`` means egress control is disabled, and that result is itself
-        cached — so a disabled egress stage does not re-read admina.yaml on
-        every call. As with the firewall, PII redactor, and loop breaker
-        above, an admina.yaml edit made after this instance is constructed
-        is not picked up until a new GovernedModel is created.
+        ``None`` means egress control is disabled, or does not run on the
+        ``sdk`` surface (``agent_security.egress.surfaces``), and that
+        result is itself cached — so a disabled egress stage does not re-read
+        admina.yaml on every call. As with the firewall, PII redactor, and
+        loop breaker above, an admina.yaml edit made after this instance is
+        constructed is not picked up until a new GovernedModel is created.
         """
         if not self._egress_policy_loaded:
-            self._egress_policy = _load_egress_policy()
+            from admina.domains.agent_security.egress import egress_policy_for
+
+            self._egress_policy = egress_policy_for(_load_egress_policy(), "sdk")
             self._egress_policy_loaded = True
         return self._egress_policy
 

@@ -376,6 +376,10 @@ def get_egress_policy() -> EgressPolicy | None:
     A configuration that cannot be read gives an empty allowlist, except a
     file named by ``ADMINA_CONFIG``, whose failure raises
     :class:`~admina.core.config.ConfigFileError`.
+
+    Raises:
+        ValueError: ``agent_security.egress.surfaces`` is not a list of
+            surface names.
     """
     from admina.core.config import ConfigFileError
     from admina.domains.agent_security.egress import EgressPolicy
@@ -397,6 +401,7 @@ def get_egress_policy() -> EgressPolicy | None:
     return EgressPolicy(
         allow=list(cfg.allow),
         read_only_tools=frozenset(cfg.read_only_tools),
+        surfaces=cfg.surfaces,
     )
 
 

@@ -292,7 +292,9 @@ stage is wired into five governed surfaces — `/mcp`,
 `/v1/chat/completions`, `/api/v1/validate`, `GovernedModel.ask()` and
 `GovernedModel.stream()` — after PII redaction and before pluggable
 governance guards, so a denied destination never reaches third-party
-guard code.
+guard code. `agent_security.egress.surfaces` in `admina.yaml` limits it to
+some of them (`gateway`, `mcp`, `integration`, `sdk`; unset = all): with
+`gateway` left out, the text of chat messages is not evaluated.
 
 ### Coverage is not uniform across those five surfaces
 

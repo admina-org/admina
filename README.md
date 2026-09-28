@@ -413,6 +413,29 @@ breaker is built only when `mcp` or `integration` is enabled, the
 coordination detector and its quarantine refresh loop only with `mcp`, and
 the gateway's pipeline threads only with `gateway`.
 
+**Egress per surface.** `agent_security.egress.surfaces` in `admina.yaml`
+lists the surfaces the egress stage runs on, among `gateway` (the text of
+the chat messages of `POST /v1/chat/completions`), `mcp` (the arguments of
+`/mcp` tool calls), `integration` (`/api/v1/validate`) and `sdk`
+(`GovernedModel.ask()` and `stream()`). Unset, the stage runs on every one;
+an empty list runs it on none. An unknown name, or a value that is not a
+list, stops the proxy at startup (the SDK raises `ValueError`). To check
+tool calls only:
+
+```yaml
+domains:
+  agent_security:
+    egress:
+      enabled: true
+      surfaces: [mcp]
+      allow: [api.example.com]
+```
+
+With `gateway` left out, the gateway does not evaluate the text of chat
+messages for destinations (a message that starts with a URL off the
+allowlist is not refused by the stage) and its records have no
+`checks.egress`.
+
 **Optional dependencies.** `redis` is imported only when `REDIS_URL` has a
 Redis scheme, `clickhouse_connect` only when `CLICKHOUSE_HOST` is not empty
 and `boto3` only when `FORENSIC_BACKEND=s3`. `REDIS_URL=` and

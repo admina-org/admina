@@ -86,6 +86,11 @@ domains:
       # ARGUMENTS, not what the tool actually dials — a tool that assembles
       # a URL from parts is not covered (see MODEL_CARD.md).
       enabled: true
+      # Surfaces the stage runs on, among gateway (the text of the chat
+      # messages of /v1/chat/completions), mcp (/mcp tool calls),
+      # integration (/api/v1/validate) and sdk (GovernedModel). Unset: all
+      # of them; [] none. An unknown name stops the proxy at startup.
+      # surfaces: [mcp]
       # Reaction mode is a SEPARATE env var, ADMINA_EGRESS_MODE:
       #   observe  → record destinations, never block (DEFAULT)
       #   enforce  → default-deny: anything not in `allow` is blocked, and

@@ -43,7 +43,11 @@ from admina import __version__
 from admina.core.event_bus import GovernanceEvent as BusGovernanceEvent
 from admina.core.event_bus import bus as governance_bus
 from admina.core.types import EventType, GovernanceAction, RiskLevel
-from admina.domains.agent_security.egress import payload_fields, resolve_egress_mode
+from admina.domains.agent_security.egress import (
+    egress_policy_for,
+    payload_fields,
+    resolve_egress_mode,
+)
 from admina.domains.compliance.forensic import ForensicBlackBox
 from admina.domains.compliance.otel import OTELGovernanceExporter
 from admina.domains.governance import (
@@ -1755,7 +1759,7 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
         pii_enabled=settings.PII_REDACTION_ENABLED,
         mode=settings.GOVERNANCE_MODE,
         guard_fail_mode=settings.GUARD_FAIL_MODE,
-        egress_policy=state.egress_policy,
+        egress_policy=egress_policy_for(state.egress_policy, "mcp"),
         egress_mode=resolve_egress_mode(settings.GOVERNANCE_MODE),
     )
 

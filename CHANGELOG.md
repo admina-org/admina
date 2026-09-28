@@ -53,6 +53,17 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `error` (the exception class only).
 - `admina.core.trace_context` (W3C `traceparent` and `tracestate` parsing)
   and `OTELGovernanceExporter.start_span()`.
+- `agent_security.egress.surfaces` in `admina.yaml`: the surfaces the egress
+  stage runs on, among `gateway` (the text of the chat messages of
+  `POST /v1/chat/completions`), `mcp` (the arguments of `/mcp` tool calls),
+  `integration` (`/api/v1/validate`) and `sdk` (`GovernedModel.ask()` and
+  `stream()`). Unset: every surface; an empty list: none. Names are
+  case-insensitive; an unknown name, or a value that is not a list, stops
+  the proxy at startup and raises `ValueError` in the SDK. With `gateway`
+  left out, the gateway does not evaluate the text of chat messages for
+  destinations and its records have no `checks.egress`.
+  `admina.domains.agent_security.egress` adds `EGRESS_SURFACES`,
+  `parse_egress_surfaces()` and `egress_policy_for()`.
 
 ### Changed
 

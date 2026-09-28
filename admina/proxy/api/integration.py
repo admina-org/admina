@@ -93,7 +93,7 @@ def create_integration_endpoints(
         Returns ``action`` (ALLOW / BLOCK / REDACT), ``risk_level``,
         and per-domain ``checks``.
         """
-        from admina.domains.agent_security.egress import resolve_egress_mode
+        from admina.domains.agent_security.egress import egress_policy_for, resolve_egress_mode
         from admina.domains.governance import run_pipeline
 
         content = body.get("content", "")
@@ -122,7 +122,7 @@ def create_integration_endpoints(
             injection_enabled=True,
             pii_enabled=True,
             mode=mode,
-            egress_policy=get_egress_policy(),
+            egress_policy=egress_policy_for(get_egress_policy(), "integration"),
             egress_mode=resolve_egress_mode(mode),
         )
 

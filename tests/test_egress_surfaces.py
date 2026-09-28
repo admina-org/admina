@@ -506,3 +506,194 @@ def test_integration_router_is_wired_to_the_proxy_state_policy(monkeypatch):
     assert resp.status_code == 200
     assert resp.json()["action"] == "BLOCK"
     assert resp.json()["checks"]["egress"]["blocked"] == ["publictestwiki.com"]
+
+
+# ══════════════════════════════════════════════════════════════
+#  agent_security.egress.surfaces — the surfaces the stage runs on
+# ══════════════════════════════════════════════════════════════
+
+# A chat message that starts with a destination off the allowlist.
+MESSAGE_WITH_URL = "https://example.org/report.pdf summarise this report"
+
+
+def _surfaces_policy(surfaces) -> EgressPolicy:
+    return EgressPolicy(allow=ALLOWLIST, surfaces=surfaces)
+
+
+def _post_gateway(policy, content: str, fbox=None):
+    upstream = _json_response(
+        {
+            "id": "cmpl-1",
+            "object": "chat.completion",
+            "model": "llama3",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+    )
+    http = _FakeHTTP(upstream)
+    app = _gateway_app(_gateway_state(http, policy, fbox), _gateway_settings())
+    body = {"model": "llama3", "messages": [{"role": "user", "content": content}]}
+
+    async def go():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, raise_app_exceptions=True),
+            base_url="http://test",
+        ) as c:
+            return await c.post("/v1/chat/completions", json=body)
+
+    return asyncio.run(go()), http
+
+
+def test_surfaces_unset_runs_the_stage_on_every_surface():
+    from admina.core.config import EgressConfig
+    from admina.domains.agent_security.egress import EGRESS_SURFACES
+
+    assert EGRESS_SURFACES == ("gateway", "mcp", "integration", "sdk")
+    assert EgressConfig().surfaces is None
+    assert _policy().surfaces == frozenset(EGRESS_SURFACES)
+    assert _surfaces_policy(None).surfaces == frozenset(EGRESS_SURFACES)
+
+
+def test_surfaces_unset_still_blocks_the_message_on_the_gateway():
+    fbox = _RecordingForensic()
+    resp, http = _post_gateway(_surfaces_policy(None), MESSAGE_WITH_URL, fbox)
+    assert resp.json()["choices"][0]["finish_reason"] == "content_filter"
+    assert http.last_post is None
+    assert fbox.records[0]["checks"]["egress"]["blocked"] == ["example.org"]
+
+
+def test_gateway_left_out_does_not_evaluate_message_text():
+    fbox = _RecordingForensic()
+    resp, http = _post_gateway(_surfaces_policy(["mcp"]), MESSAGE_WITH_URL, fbox)
+    assert resp.status_code == 200
+    assert resp.json()["choices"][0]["finish_reason"] == "stop"
+    assert http.last_post is not None
+    request_record = fbox.records[0]
+    assert request_record["action"] == "ALLOW"
+    assert "egress" not in request_record["checks"]
+
+
+def test_mcp_listed_still_blocks_tool_calls(monkeypatch):
+    mock_http, fbox = _inject_proxy_state(monkeypatch, _surfaces_policy(["mcp"]))
+    resp = _post_mcp({"url": "https://example.org/report.pdf", "body": "a long enough payload"})
+    assert resp.status_code == 403
+    mock_http.post.assert_not_awaited()
+    assert fbox.records[0]["checks"]["egress"]["blocked"] == ["example.org"]
+
+
+def test_mcp_left_out_does_not_evaluate_tool_calls(monkeypatch):
+    mock_http, fbox = _inject_proxy_state(monkeypatch, _surfaces_policy(["gateway"]))
+    resp = _post_mcp({"url": "https://example.org/report.pdf", "body": "a long enough payload"})
+    assert resp.status_code == 200
+    mock_http.post.assert_awaited()
+    assert "egress" not in fbox.records[0]["checks"]
+
+
+def test_integration_left_out_does_not_evaluate_content():
+    resp = _post_validate(_validate_app(_surfaces_policy(["mcp"])), MESSAGE_WITH_URL)
+    assert resp.json()["action"] == "ALLOW"
+    assert "egress" not in resp.json()["checks"]
+
+
+def test_integration_listed_still_evaluates_content():
+    resp = _post_validate(_validate_app(_surfaces_policy(["integration"])), MESSAGE_WITH_URL)
+    assert resp.json()["action"] == "BLOCK"
+    assert resp.json()["checks"]["egress"]["blocked"] == ["example.org"]
+
+
+def test_sdk_left_out_does_not_evaluate_the_prompt(monkeypatch):
+    model, adapter = _governed_model(monkeypatch, _surfaces_policy(["mcp"]))
+    resp = asyncio.run(model.ask(MESSAGE_WITH_URL))
+    assert resp.action == "ALLOW"
+    assert adapter.called is True
+    assert "egress" not in resp.governance["pipeline"]
+
+
+def test_sdk_listed_still_evaluates_the_prompt(monkeypatch):
+    model, adapter = _governed_model(monkeypatch, _surfaces_policy(["sdk"]))
+    resp = asyncio.run(model.ask(MESSAGE_WITH_URL))
+    assert resp.action == "BLOCK"
+    assert adapter.called is False
+
+
+def test_sdk_left_out_does_not_evaluate_the_streamed_prompt(monkeypatch):
+    model, adapter = _governed_model(monkeypatch, _surfaces_policy(["mcp"]))
+
+    async def go():
+        return [chunk async for chunk in model.stream(MESSAGE_WITH_URL)]
+
+    assert asyncio.run(go()) == ["upstream answer"]
+    assert adapter.stream_called is True
+
+
+def test_empty_surfaces_run_the_stage_nowhere(monkeypatch):
+    policy = _surfaces_policy([])
+    assert policy.surfaces == frozenset()
+    resp, http = _post_gateway(policy, MESSAGE_WITH_URL)
+    assert http.last_post is not None
+    mock_http, _fbox = _inject_proxy_state(monkeypatch, policy)
+    assert _post_mcp({"url": "https://example.org/report.pdf"}).status_code == 200
+
+
+def test_surface_names_are_trimmed_and_case_insensitive():
+    assert _surfaces_policy([" MCP ", "Gateway"]).surfaces == frozenset({"mcp", "gateway"})
+
+
+@pytest.mark.parametrize(
+    "surfaces",
+    [["mpc"], ["mcp", "dashboard"], ["compliance"], "mcp", {"mcp": True}, [None], ["mcp", 5]],
+)
+def test_unknown_or_malformed_surfaces_are_rejected(surfaces):
+    with pytest.raises(ValueError, match="agent_security.egress.surfaces"):
+        _surfaces_policy(surfaces)
+
+
+def _write_yaml(tmp_path, egress: str):
+    path = tmp_path / "admina.yaml"
+    path.write_text("domains:\n  agent_security:\n    egress:\n" + egress)
+    return path
+
+
+def test_surfaces_are_parsed_from_admina_yaml(tmp_path):
+    from admina.core.config import load_config
+
+    path = _write_yaml(tmp_path, "      enabled: true\n      surfaces: [mcp]\n      allow: []\n")
+    assert load_config(path).agent_security.egress.surfaces == ["mcp"]
+    path = _write_yaml(tmp_path, "      enabled: true\n")
+    assert load_config(path).agent_security.egress.surfaces is None
+
+
+def test_the_egress_policy_carries_the_configured_surfaces(tmp_path, monkeypatch):
+    from admina.engines import get_egress_policy
+
+    path = _write_yaml(tmp_path, "      surfaces: [mcp, integration]\n")
+    monkeypatch.setenv("ADMINA_CONFIG", str(path))
+    policy = get_egress_policy()
+    assert policy is not None
+    assert policy.surfaces == frozenset({"mcp", "integration"})
+
+
+def test_unknown_surface_in_admina_yaml_is_an_error(tmp_path, monkeypatch):
+    from admina.engines import get_egress_policy
+
+    path = _write_yaml(tmp_path, "      surfaces: [mcp, webhook]\n")
+    monkeypatch.setenv("ADMINA_CONFIG", str(path))
+    with pytest.raises(ValueError, match="webhook"):
+        get_egress_policy()
+
+
+def test_policy_for_a_surface():
+    from admina.domains.agent_security.egress import egress_policy_for
+
+    policy = _surfaces_policy(["mcp"])
+    assert egress_policy_for(policy, "mcp") is policy
+    assert egress_policy_for(policy, "gateway") is None
+    assert egress_policy_for(None, "mcp") is None
+    # A policy object without surfaces (a stand-in) runs everywhere.
+    stand_in = SimpleNamespace(evaluate=lambda intent, mode: None)
+    assert egress_policy_for(stand_in, "gateway") is stand_in
