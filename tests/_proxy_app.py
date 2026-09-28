@@ -132,12 +132,14 @@ def serve(
     inspect: Callable[[Any], Any] | None = None,
     gateway: Callable[[httpx.Request], httpx.Response] = upstream,
     mcp: Callable[[httpx.Request], httpx.Response] = mcp_upstream,
+    prepare: Callable[[Any], Any] | None = None,
 ) -> tuple[list[httpx.Response], Any]:
     """Start the proxy lifespan, send *requests* (kwargs of
     ``httpx.AsyncClient.request``) and return the responses with the value
     of ``inspect(state)`` taken while the proxy is still running, once its
     background tasks are done. *gateway* and *mcp* answer in place of the
-    upstreams of the gateway and of ``/mcp``."""
+    upstreams of the gateway and of ``/mcp``; ``prepare(state)`` runs once
+    the lifespan has started, before the first request."""
     from admina.proxy import main as proxy_main
 
     async def go() -> tuple[list[httpx.Response], Any]:
@@ -147,6 +149,8 @@ def serve(
             state.gateway_http_client = httpx.AsyncClient(transport=httpx.MockTransport(gateway))
             await state.http_client.aclose()
             state.http_client = httpx.AsyncClient(transport=httpx.MockTransport(mcp))
+            if prepare is not None:
+                prepare(state)
             transport = httpx.ASGITransport(app=proxy_main.app, raise_app_exceptions=False)
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
                 responses = [await client.request(**kw) for kw in requests]

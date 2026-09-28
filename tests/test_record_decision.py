@@ -23,6 +23,8 @@ emitted on the event bus and, with ClickHouse configured, stored as a row of
   the SHA-256 of the response sent (``response_hash``).
 - A gateway completion answered with the block message after the upstream
   answered is a ``BLOCK`` of ``response_firewall`` or ``response_pii``.
+- An ``/mcp`` response that a governance guard blocks is a ``BLOCK`` of
+  ``response_guard``, with one event, one alert and one row.
 - A request that failed before the pipeline decided has neither an event
   nor a row.
 - A gateway completion whose decision cannot be recorded still has its
@@ -180,6 +182,73 @@ def test_a_completion_whose_redaction_does_not_finish_is_a_block(sinks, monkeypa
     (event,) = events
     assert event.action == "BLOCK"
     assert event.metadata["domain"] == "response_pii"
+
+
+class _ResponseGuard:
+    """Allows every request; on the response, returns *verdict* or, when
+    *verdict* is None, breaks its contract."""
+
+    name = "response-check"
+
+    def __init__(self, verdict: dict | None) -> None:
+        self.verdict = verdict
+
+    async def inspect_request(self, payload: dict) -> dict:
+        return {"action": "ALLOW", "risk_level": "low"}
+
+    async def inspect_response(self, payload: dict) -> dict:
+        if self.verdict is None:
+            raise RuntimeError("response check failed")
+        return self.verdict
+
+
+class _AlertChannel:
+    channel_name = "capture"
+
+    def __init__(self) -> None:
+        self.alerts: list[dict] = []
+
+    async def send_alert(self, alert: dict) -> None:
+        self.alerts.append(alert)
+
+
+@pytest.mark.parametrize(
+    ("verdict", "risk"),
+    [({"action": "BLOCK", "risk_level": "medium"}, "MEDIUM"), (None, "HIGH")],
+    ids=["block", "closed_error"],
+)
+def test_an_mcp_response_blocked_by_a_guard_is_a_block(sinks, monkeypatch, verdict, risk):
+    from admina.proxy import main as proxy_main
+
+    events, rows = sinks
+    monkeypatch.setattr(proxy_main.settings, "GUARD_FAIL_MODE", "closed")
+    channel = _AlertChannel()
+    plugins = {"governance_guard": [_ResponseGuard(verdict)], "alert_channel": [channel]}
+    monkeypatch.setattr(
+        proxy_main,
+        "instantiate_plugins",
+        lambda registry, category, plugin_config=None: plugins.get(category, []),
+    )
+    upstream_calls: list[httpx.Request] = []
+
+    def mcp(request: httpx.Request) -> httpx.Response:
+        upstream_calls.append(request)
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {"text": "ok"}})
+
+    responses, _ = serve([_mcp(ALLOWED)], mcp=mcp)
+    assert responses[0].status_code == 403
+    assert len(upstream_calls) == 1
+    (event,) = events
+    assert event.action == "BLOCK"
+    assert event.risk_level == risk
+    assert event.metadata["domain"] == "response_guard"
+    assert event.metadata["surface"] == "mcp"
+    (row,) = rows
+    assert row["action"] == "block"
+    assert row["risk_level"] == risk.lower()
+    assert row["event_id"] == event.metadata["event_id"]
+    (alert,) = channel.alerts
+    assert alert["details"] == event.metadata
 
 
 def test_a_request_that_fails_before_the_decision_is_not_stored(sinks, monkeypatch):

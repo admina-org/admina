@@ -295,6 +295,15 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   duration of the counted requests) and the `requests_*` counters of
   `/api/stats` count every governed surface, so the dashboard score counts
   gateway blocks too.
+- An `/mcp` request is recorded (counted on `/metrics`, its
+  `governance.decision` event, its ClickHouse row) once it has been
+  answered, with the action of its response: a response that a governance
+  guard blocks (its `inspect_response` verdict, or its contract error with
+  `ADMINA_GUARD_FAIL_MODE=closed`) makes the request a `BLOCK` of `domain`
+  `response_guard`, with the guard's `risk_level` (`HIGH` for a contract
+  error). It is counted in `admina_requests_total{surface="mcp",
+  action="BLOCK"}` and `admina_requests_blocked_total` only, and sends one
+  alert.
 - The ClickHouse `request_hash` of an `/mcp` row is the whole SHA-256 (64
   hexadecimal characters), the `request_sha256` of its event.
 - Each gateway chat completion writes two forensic records,

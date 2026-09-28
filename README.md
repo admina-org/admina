@@ -706,7 +706,8 @@ the OpenTelemetry exporter and the alert channels read (one alert per
 `governance_events`: `event_type` `gateway_request`, `mcp_request` or
 `validate_request`, `request_hash` the event's `request_sha256`, and for
 the gateway `response_hash` the SHA-256 of the response sent. A gateway
-request is recorded once its response has ended.
+request is recorded once its response has ended, an `/mcp` request once it
+has been answered: each with the action of its response.
 
 - `admina_requests_total{surface,action}`: counter per surface (`gateway`,
   `mcp`, `integration`; the enabled ones have samples from startup) and
@@ -714,8 +715,12 @@ request is recorded once its response has ended.
   request), `CIRCUIT_BREAK`, or `ERROR` (the request failed in the proxy
   before the governance pipeline decided). A gateway completion answered
   with the block message after the upstream answered (flagged by the
-  response scan, or whose PII redaction did not finish) is a `BLOCK`, and
-  so are `/mcp` requests over the rate limits or `MAX_REQUEST_TOKENS`.
+  response scan, or whose PII redaction did not finish) is a `BLOCK`; so
+  is an `/mcp` request whose response a governance guard blocks (its
+  `inspect_response` verdict, or its contract error with
+  `ADMINA_GUARD_FAIL_MODE=closed`), with the guard's `risk_level` (`HIGH`
+  for a contract error), and so are `/mcp` requests over the rate limits or
+  `MAX_REQUEST_TOKENS`.
   Requests refused before they are governed are not counted: gateway
   requests answered before they have an event id (unknown route, a body
   that is not a JSON object, a model outside the allowlist, a refused
@@ -736,7 +741,8 @@ Label values come from these fixed sets only, never from a request. The
 metadata of a `governance.decision` event is `surface`, `event_id` (of the
 request's forensic records; a new id for `/api/v1/validate`), `domain` (the
 part of the pipeline that decided: `firewall`, `pii`, `loop_breaker`, a
-guard's name, `pipeline`, `response_firewall`, `response_pii` or `none`),
+guard's name, `pipeline`, `response_firewall`, `response_pii`,
+`response_guard` or `none`),
 `latency_us` (the pipeline's time), `categories` (firewall category names),
 `pii_count`, `request_sha256` and, in `observe` and `dry-run` mode,
 `would_action`: names, counts and hashes, never text of a request or of a

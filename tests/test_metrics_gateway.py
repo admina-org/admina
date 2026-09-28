@@ -210,6 +210,46 @@ def test_a_completion_blocked_by_the_response_scan_is_counted_as_block(proxy, mo
     assert _requests(samples, "gateway", "ALLOW") == 0
 
 
+class ResponseGuard:
+    """A governance guard that allows every request and, on the response,
+    returns *verdict* or, when *verdict* is None, breaks its contract."""
+
+    name = "response-check"
+
+    def __init__(self, verdict: dict | None) -> None:
+        self.verdict = verdict
+
+    async def inspect_request(self, payload: dict) -> dict:
+        return {"action": "ALLOW", "risk_level": "low"}
+
+    async def inspect_response(self, payload: dict) -> dict:
+        if self.verdict is None:
+            raise RuntimeError("response check failed")
+        return self.verdict
+
+
+@pytest.mark.parametrize(
+    "verdict", [{"action": "BLOCK", "risk_level": "high"}, None], ids=["block", "closed_error"]
+)
+def test_an_mcp_response_blocked_by_a_guard_is_counted_as_block(proxy, monkeypatch, verdict):
+    monkeypatch.setattr(proxy, "GUARD_FAIL_MODE", "closed")
+    guards = [ResponseGuard(verdict)]
+    requests = [_mcp("What are the opening hours of the city library?", "s1"), METRICS]
+    responses, _ = serve(
+        requests, prepare=lambda state: setattr(state, "governance_guards", guards)
+    )
+    assert responses[0].status_code == 403
+    samples = _samples(responses[-1].text)
+    assert _requests(samples, "mcp", "BLOCK") == 1
+    assert _requests(samples, "mcp", "ALLOW") == 0
+    assert samples["admina_requests_blocked_total"] == 1
+    assert samples["admina_requests_allowed_total"] == 0
+    total = sum(v for k, v in samples.items() if k.startswith("admina_requests_total{"))
+    assert total == 1
+    assert samples['admina_request_duration_seconds_count{surface="mcp"}'] == 1
+    assert samples['admina_governance_duration_seconds_count{surface="mcp"}'] == 1
+
+
 def test_mcp_is_counted_under_its_own_surface(proxy):
     requests = [
         _mcp("What are the opening hours of the city library?", "s1"),

@@ -28,6 +28,7 @@ import secrets as _secrets
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -1652,20 +1653,69 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
     """
     Main MCP proxy endpoint.
     All agent traffic flows through here for governance inspection.
-    Each request answered is counted on /metrics with its duration.
+    Each request is recorded once it has been answered, with its duration
+    (see :class:`_McpOutcome`).
     """
     started = time.perf_counter()
-    response = await _mcp_exchange(request, path, started)
-    _get_state(request).observe_request_duration("mcp", time.perf_counter() - started)
-    return response
+    outcome = _McpOutcome()
+    try:
+        return await _mcp_exchange(request, path, outcome)
+    finally:
+        outcome.record(_get_state(request), time.perf_counter() - started)
 
 
-async def _mcp_exchange(request: Request, path: str, started: float) -> JSONResponse:
-    """The response to a governed /mcp request that arrived at *started*
-    (``time.perf_counter()``; see :func:`mcp_proxy`). A request whose body
-    is not JSON is refused (HTTPException) before it is governed or counted;
-    one whose governance pipeline raises is counted as ``ERROR``, with its
-    duration, and the exception goes on."""
+@dataclass
+class _McpOutcome:
+    """How an /mcp request is recorded once it has been answered.
+
+    *decision* is set when the governance pipeline has decided (``ERROR``
+    when it raised) and becomes a ``BLOCK`` of ``response_guard`` when a
+    governance guard blocks the response: the request is recorded with it
+    (:func:`record_decision`: counted, one ``governance.decision`` event,
+    one ClickHouse row). A request *refused* before the pipeline ran (rate
+    limits, ``MAX_REQUEST_TOKENS``) is only counted, as ``BLOCK``. One
+    with neither, whose body is not JSON, is not recorded.
+    """
+
+    decision: Decision | None = None
+    refused: bool = False
+
+    def block_response(self, risk_level: str) -> None:
+        """A governance guard blocked the response: the decision becomes a
+        ``BLOCK`` of ``response_guard`` with *risk_level*."""
+        if self.decision is not None:
+            self.decision = replace(
+                self.decision, action="BLOCK", risk_level=risk_level, domain="response_guard"
+            )
+
+    def record(self, state: ProxyState, duration_s: float) -> None:
+        """Record the request, answered after *duration_s* seconds."""
+        if self.decision is not None:
+            try:
+                record_decision(state, self.decision, duration_s=duration_s)
+            except Exception as exc:  # noqa: BLE001 — the response is sent as it is
+                logger.error("MCP decision not recorded: %s", type(exc).__name__)
+        elif self.refused:
+            state.count_request("mcp", "BLOCK")
+            state.observe_request_duration("mcp", duration_s)
+
+
+# Risk levels of a decision, upper case.
+_RISK_LABELS = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
+
+
+def _guard_risk(verdict: dict) -> str:
+    """The risk level of a guard's blocking *verdict*, upper case: its
+    ``risk_level`` when it is one of the risk levels, else ``HIGH``."""
+    label = str(safe_serialize(verdict.get("risk_level", RiskLevel.HIGH))).upper()
+    return label if label in _RISK_LABELS else "HIGH"
+
+
+async def _mcp_exchange(request: Request, path: str, outcome: _McpOutcome) -> JSONResponse:
+    """The response to a governed /mcp request; how it is recorded goes in
+    *outcome* (see :func:`mcp_proxy`). A request whose body is not JSON is
+    refused (HTTPException) before it is governed; one whose governance
+    pipeline raises is recorded as ``ERROR``, and the exception goes on."""
     state = _get_state(request)
     # Sanitize header values: strip CRLF (Redis key injection) and cap length
     session_id = re.sub(r"[\r\n]", "", request.headers.get("X-Session-Id", "default"))[:128]
@@ -1680,7 +1730,7 @@ async def _mcp_exchange(request: Request, path: str, started: float) -> JSONResp
             if count == 1:
                 await state.redis.expire(rl_key, settings.RATE_LIMIT_WINDOW_SECONDS)
             if count > settings.RATE_LIMIT_MAX_REQUESTS:
-                state.count_request("mcp", "BLOCK")
+                outcome.refused = True
                 return JSONResponse(
                     status_code=429,
                     content={
@@ -1708,7 +1758,7 @@ async def _mcp_exchange(request: Request, path: str, started: float) -> JSONResp
             if ip_count == 1:
                 await state.redis.expire(rl_ip_key, settings.RATE_LIMIT_WINDOW_SECONDS)
             if ip_count > settings.RATE_LIMIT_MAX_REQUESTS * settings.RATE_LIMIT_IP_MULTIPLIER:
-                state.count_request("mcp", "BLOCK")
+                outcome.refused = True
                 return JSONResponse(
                     status_code=429,
                     content={
@@ -1741,7 +1791,7 @@ async def _mcp_exchange(request: Request, path: str, started: float) -> JSONResp
 
     # ─── Token size guard ─────────────────────────────────────
     if settings.MAX_REQUEST_TOKENS > 0 and len(content_str) > settings.MAX_REQUEST_TOKENS:
-        state.count_request("mcp", "BLOCK")
+        outcome.refused = True
         return JSONResponse(
             status_code=413,
             content={
@@ -1779,9 +1829,7 @@ async def _mcp_exchange(request: Request, path: str, started: float) -> JSONResp
             egress_mode=resolve_egress_mode(settings.GOVERNANCE_MODE),
         )
     except Exception:
-        record_decision(
-            state, Decision.failed("mcp", event_id), duration_s=time.perf_counter() - started
-        )
+        outcome.decision = Decision.failed("mcp", event_id)
         raise
 
     redacted_body = pipeline_result.redacted_body
@@ -1791,19 +1839,17 @@ async def _mcp_exchange(request: Request, path: str, started: float) -> JSONResp
     risk_level = pipeline_result.risk_level
 
     # Metrics, the bus event (alerts on BLOCK / CIRCUIT_BREAK) and the
-    # ClickHouse row; the forensic record is written below.
-    record_decision(
-        state,
-        Decision.of(
-            "mcp",
-            event_id,
-            pipeline_result,
-            request_sha256=text_sha256(content_str),
-            session_id=session_id,
-            agent_id=agent_id,
-            method=method,
-            tool_name=params.get("name", "") if isinstance(params, dict) else "",
-        ),
+    # ClickHouse row, once the request has been answered (mcp_proxy); the
+    # forensic record is written below.
+    outcome.decision = Decision.of(
+        "mcp",
+        event_id,
+        pipeline_result,
+        request_sha256=text_sha256(content_str),
+        session_id=session_id,
+        agent_id=agent_id,
+        method=method,
+        tool_name=params.get("name", "") if isinstance(params, dict) else "",
     )
 
     # ─── Forensic Black Box (non-blocking) ─────────────────────
@@ -2011,7 +2057,7 @@ async def _mcp_exchange(request: Request, path: str, started: float) -> JSONResp
                 try:
                     guard_result = await guard.inspect_response(resp_payload)
                     if guard_result.get("action") in ("BLOCK", "REDACT"):
-                        state.inc_metric("requests_blocked")
+                        outcome.block_response(_guard_risk(guard_result))
                         logger.warning(
                             "Guard %r blocked response for event %s",
                             guard.name,
@@ -2039,6 +2085,7 @@ async def _mcp_exchange(request: Request, path: str, started: float) -> JSONResp
                         # The request-side forensic record was written before the
                         # upstream call, so it cannot carry this response-side error —
                         # write an explicit ERROR record here for the audit trail.
+                        outcome.block_response("HIGH")
                         if state.forensic_box:
                             error_record = {
                                 "event_id": event_id,
@@ -2062,7 +2109,6 @@ async def _mcp_exchange(request: Request, path: str, started: float) -> JSONResp
                                 )
                             except ForensicWriteError:
                                 return _forensic_unavailable_mcp(body, event_id)
-                        state.inc_metric("requests_blocked")
                         logger.warning(
                             "Guard %r response error blocked response for event %s (fail-closed)",
                             guard.name,

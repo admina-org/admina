@@ -31,7 +31,8 @@ the text of the request (:meth:`Decision.event`): its ``metadata`` is
   ``loop_breaker``, a guard's name, ``pipeline``, or ``none``); for a gateway
   completion answered with the block message after the upstream answered,
   ``response_firewall`` (flagged by the response scan) or ``response_pii``
-  (its PII redaction did not finish);
+  (its PII redaction did not finish); for an ``/mcp`` request whose
+  response a governance guard blocked, ``response_guard``;
 - ``latency_us``: the time the governance pipeline took, in microseconds;
 - ``categories``: the names of the firewall categories that matched;
 - ``pii_count``: the number of PII entities masked in the request;
