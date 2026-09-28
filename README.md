@@ -718,7 +718,9 @@ level 1, and the JSON of tool call arguments is at the level of its string.
 A request with a string nested deeper is blocked in `enforce` mode
 (`X-Admina-Would-Action: BLOCK` in `observe` and `dry-run`), and its record
 has `checks.scan_depth = {"action": "BLOCK", "reason":
-"depth_limit_exceeded"}`.
+"depth_limit_exceeded"}`. Tool call arguments nested deeper than the JSON
+parser reads are scanned as they are, and the request is blocked the same
+way.
 
 #### Scan scope
 

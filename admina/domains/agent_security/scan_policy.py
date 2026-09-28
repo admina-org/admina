@@ -23,7 +23,9 @@ Which parts of a chat request the firewall scans:
   it holds, each string of it a text of its own; when it is not JSON, as it
   is. Text nested more than :data:`REQUEST_SCAN_DEPTH` levels deep is not
   collected and the result says so (``truncated``), so that the caller can
-  refuse the request. Roles and blocks (below) narrow the messages only.
+  refuse the request. Arguments nested deeper than the JSON parser reads
+  are collected as they are and count as nested past that limit too. Roles
+  and blocks (below) narrow the messages only.
 - **Roles.** Messages whose ``role`` is ``system``, ``user``, ``assistant``
   or ``tool`` are scanned when the role is in scope; messages with any
   other role, or none, are always scanned. The operator sets the roles in
@@ -284,7 +286,8 @@ class RequestTexts:
 
     texts: list[str]
     #: True when text lies deeper than :data:`REQUEST_SCAN_DEPTH` and is not
-    #: in :attr:`texts`.
+    #: in :attr:`texts`, or when tool call arguments nest deeper than the
+    #: JSON parser reads (their string is in :attr:`texts`, undecoded).
     truncated: bool
 
 
@@ -295,7 +298,8 @@ def request_texts(body: dict, scope: ScanScope) -> RequestTexts:
     removed from the content of the others, as in :func:`scope_texts`; every
     other field is taken whole. The ``arguments`` string of a message's tool
     call (or legacy ``function_call``) gives the strings of the JSON it holds,
-    or itself when it is not JSON.
+    or itself when it is not JSON; itself, with ``truncated`` set, when it
+    nests deeper than the JSON parser reads.
     """
     walk = _TextWalk()
     for key, value in body.items():
@@ -336,21 +340,25 @@ class _TextWalk:
                 self.add(key, depth + 1)
                 if in_message and key == "arguments" and isinstance(item, str):
                     # Read once: strings inside the arguments stay strings.
-                    self.add(_arguments(item), depth + 1)
+                    self.add(self._arguments(item), depth + 1)
                 else:
                     self.add(item, depth + 1, in_message=in_message)
         elif isinstance(value, list):
             for item in value:
                 self.add(item, depth + 1, in_message=in_message)
 
-
-def _arguments(text: str) -> Any:
-    """The JSON value that tool call arguments hold, or *text* when they
-    hold none."""
-    try:
-        return json.loads(text)
-    except (ValueError, RecursionError):
-        return text
+    def _arguments(self, text: str) -> Any:
+        """The JSON value that tool call arguments hold, or *text* when they
+        hold none or nest deeper than the JSON parser reads."""
+        try:
+            return json.loads(text)
+        except ValueError:
+            return text
+        except RecursionError:
+            # Nested deeper than the parser reads, so far past the limit: the
+            # string is scanned as it is and the walk is truncated.
+            self.truncated = True
+            return text
 
 
 def _without_blocks(message: dict, tags: frozenset[str]) -> dict:

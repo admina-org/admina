@@ -173,6 +173,24 @@ def _nested_lists(levels: int, leaf: object) -> object:
     return value
 
 
+# Deeper than the JSON parser reads on any supported Python version.
+_TOO_DEEP_TO_READ = 100_000
+
+
+def _arguments_too_deep_to_read(leaf: str) -> str:
+    """JSON text of the string *leaf* inside more nested arrays than
+    ``json.loads`` reads: parsing it raises ``RecursionError``."""
+    arguments = "[" * _TOO_DEEP_TO_READ + leaf + "]" * _TOO_DEEP_TO_READ
+    with pytest.raises(RecursionError):
+        json.loads(arguments)
+    return arguments
+
+
+def _escaped(text: str) -> str:
+    """A JSON string literal of *text* with every character as a ``\\u`` escape."""
+    return '"' + "".join(f"\\u{ord(char):04x}" for char in text) + '"'
+
+
 # ── Through the gateway ───────────────────────────────────────
 
 
@@ -281,6 +299,21 @@ def test_arguments_nested_past_the_depth_limit_are_blocked():
     resp, upstream, recorder = _send(body)
     assert resp.headers["x-admina-action"] == "BLOCK"
     assert upstream.requests == []
+    assert recorder.request["checks"]["scan_depth"] == SCAN_DEPTH
+
+
+@pytest.mark.parametrize(
+    "leaf", [json.dumps(BENIGN), _escaped(OVERRIDE)], ids=["benign", "escaped_override"]
+)
+def test_arguments_too_deep_to_read_as_json_are_blocked(leaf):
+    # Nested past what the JSON parser reads, so past the depth limit too:
+    # the raw string is scanned and the request is blocked for its depth.
+    arguments = _arguments_too_deep_to_read(leaf)
+    body = {"model": "example-model", "messages": [QUESTION, _tool_call(arguments)]}
+    resp, upstream, recorder = _send(body)
+    assert resp.headers["x-admina-action"] == "BLOCK"
+    assert upstream.requests == []
+    assert recorder.request["action"] == "BLOCK"
     assert recorder.request["checks"]["scan_depth"] == SCAN_DEPTH
 
 
@@ -404,7 +437,19 @@ def test_request_texts_hold_arguments_that_are_not_json_as_they_are(arguments):
     from admina.domains.agent_security.scan_policy import request_texts
 
     body = {"model": "m", "messages": [_tool_call(arguments)]}
-    assert arguments in request_texts(body, _full_scope()).texts
+    scanned = request_texts(body, _full_scope())
+    assert arguments in scanned.texts
+    assert scanned.truncated is False
+
+
+def test_request_texts_hold_arguments_too_deep_to_read_as_they_are_and_truncated():
+    from admina.domains.agent_security.scan_policy import request_texts
+
+    arguments = _arguments_too_deep_to_read(json.dumps("leaf text"))
+    body = {"model": "m", "messages": [_tool_call(arguments)]}
+    scanned = request_texts(body, _full_scope())
+    assert arguments in scanned.texts
+    assert scanned.truncated is True
 
 
 def test_request_texts_depth_is_counted_from_the_body():

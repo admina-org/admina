@@ -82,7 +82,8 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   scanned as the JSON they hold, each string separately, and as they are
   when they are not JSON. `ADMINA_GATEWAY_SCAN_ROLES` and
   `X-Admina-Scan-Policy` narrow the messages only. A request whose body has
-  a string nested more than 32 levels deep is blocked in `enforce` mode
+  a string nested more than 32 levels deep, or tool call arguments nested
+  deeper than the JSON parser reads, is blocked in `enforce` mode
   (`would_action` in `observe` and `dry-run`), with `checks.scan_depth =
   {"action": "BLOCK", "reason": "depth_limit_exceeded"}` in its record.
   `request_texts()` of `admina.domains.agent_security.scan_policy` collects
