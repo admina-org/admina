@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import math
 from decimal import Decimal
-from json.encoder import encode_basestring
+from json.encoder import encode_basestring, encode_basestring_ascii
 from typing import Any
 
 __all__ = ["canonicalize"]
@@ -100,9 +100,14 @@ def _check_unicode(text: str) -> None:
 
 
 def _string(text: str) -> str:
-    _check_unicode(text)
     # The json module escapes what RFC 8785 escapes, the same way: '"', '\\'
-    # and U+0000-U+001F (\b \t \n \f \r, else \u00xx in lower case).
+    # and U+0000-U+001F (\b \t \n \f \r, else \u00xx in lower case). Its
+    # ASCII variant, about twice as fast, also escapes U+007F and every
+    # non-ASCII character: it serves ASCII text without U+007F, which has
+    # no surrogates either.
+    if text.isascii() and "\x7f" not in text:
+        return encode_basestring_ascii(text)
+    _check_unicode(text)
     return encode_basestring(text)
 
 

@@ -222,6 +222,15 @@ def test_every_latin1_and_special_character_is_serialised_as_rfc8785_says():
             assert _text({text: text}) == "{" + expected + ":" + expected + "}", hex(code_point)
 
 
+@pytest.mark.parametrize("extra", ["", "\x7f", "é", "😀"], ids=["ascii", "del", "latin1", "astral"])
+def test_text_with_every_ascii_character_is_serialised_as_rfc8785_says(extra):
+    text = "".join(map(chr, range(0x7F))) * 3 + extra + "long text " * 1000
+    assert _text(text) == _rfc8785_string(text)
+    assert (
+        _text({text: [text]}) == "{" + _rfc8785_string(text) + ":[" + _rfc8785_string(text) + "]}"
+    )
+
+
 def test_lone_surrogate_is_rejected():
     with pytest.raises(ValueError):
         canonicalize("a\ud800b")
