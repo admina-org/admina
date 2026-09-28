@@ -19,6 +19,7 @@ Dual-layer defense: regex pattern matching + heuristic analysis.
 
 import base64
 import logging
+import math
 import re
 import time
 import unicodedata
@@ -519,6 +520,22 @@ IMPERATIVE_WORDS = [
     "leak",
 ]
 
+#: Deep-path score from which a text is flagged
+#: (``agent_security.firewall.heuristic_threshold``).
+DEFAULT_HEURISTIC_THRESHOLD = 0.5
+
+#: Texts longer than this many characters get the length signal of the deep
+#: path: longer than one message of a normal prompt, retrieved documents
+#: included.
+LONG_TEXT_CHARS = 100_000
+
+# Deep-path context-switch markers: separators, headings, code fences and
+# tags (group 1: the tag name).
+_CONTEXT_SWITCH_RX = re.compile(r"---+|===+|###|```|</?([a-z]++)>", re.IGNORECASE)
+# Deep-path encoding markers: \uXXXX escape sequences. HTML entities and
+# percent-encoding are ordinary in documents and URLs, and do not count.
+_ENCODING_RX = re.compile(r"\\u[0-9a-fA-F]{4}")
+
 # Compile patterns for performance
 COMPILED_PATTERNS = [
     (re.compile(pattern, re.IGNORECASE | re.DOTALL), name, level)
@@ -554,6 +571,20 @@ def parse_custom_patterns(
     return patterns
 
 
+def _threshold(value: Any) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise ValueError(
+            "agent_security.firewall.heuristic_threshold must be a finite number "
+            f"greater than 0 (got {value!r})"
+        )
+    return float(value)
+
+
 class InjectionFirewall:
     """
     Dual-layer prompt injection defense.
@@ -567,6 +598,9 @@ class InjectionFirewall:
         disabled_categories: list[str] | set[str] | None = None,
         *,
         disabled_patterns: Iterable[str] | None = None,
+        heuristic_threshold: float = DEFAULT_HEURISTIC_THRESHOLD,
+        allowed_tags: Iterable[str] | None = None,
+        deep_path_enabled: bool = True,
     ) -> None:
         """Build a firewall instance.
 
@@ -585,11 +619,26 @@ class InjectionFirewall:
             disabled_patterns: Ids of patterns left out of the pattern set
                 (``agent_security.firewall.disabled_patterns``). An id that
                 names no pattern is logged as a warning and ignored.
+            heuristic_threshold: Deep-path score from which a text is
+                flagged (``agent_security.firewall.heuristic_threshold``).
+            allowed_tags: Tag names (any case) left out of the deep path's
+                context-switch signal
+                (``agent_security.firewall.allowed_tags``).
+            deep_path_enabled: False turns the deep path off
+                (``INJECTION_DEEP_PATH_ENABLED``): :meth:`check` returns
+                the fast-path result.
+
+        Raises:
+            ValueError: *heuristic_threshold* is not a finite number
+                greater than 0.
         """
         self.total_checked: int = 0
         self.total_blocked: int = 0
         self.detections_by_type: dict[str, int] = {}
         self._disabled = set(disabled_categories or ())
+        self._threshold = _threshold(heuristic_threshold)
+        self._allowed_tags = frozenset(tag.lower() for tag in allowed_tags or ())
+        self._deep_path_enabled = bool(deep_path_enabled)
 
         # Compile per-instance pattern list. Builtins first, then user
         # extras (so user rules can match what builtins miss).
@@ -671,6 +720,11 @@ class InjectionFirewall:
         Heuristic-based deep path analysis for novel attacks.
         Scores multiple signals to detect sophisticated injection attempts.
         Target: <200ms.
+
+        The text is flagged when its score reaches the heuristic threshold.
+        Tags named in ``allowed_tags`` are not context switches; HTML
+        entities and percent-encoding are not encoding markers; the length
+        signal starts above :data:`LONG_TEXT_CHARS` characters.
         """
         start = time.perf_counter()
         score = 0.0
@@ -692,25 +746,29 @@ class InjectionFirewall:
             score += 0.2
             signals.append(f"special_char_ratio={special_ratio:.2f}")
 
-        # Signal 3: Context switching markers
-        context_switches = len(re.findall(r"(---+|===+|###|```|</?[a-z]+>)", text, re.IGNORECASE))
+        # Signal 3: Context switching markers (allowed tags left out)
+        context_switches = sum(
+            1
+            for marker in _CONTEXT_SWITCH_RX.finditer(text)
+            if marker.group(1) is None or marker.group(1).lower() not in self._allowed_tags
+        )
         if context_switches > 2:
             score += 0.25
             signals.append(f"context_switches={context_switches}")
 
-        # Signal 4: Abnormal length for a tool argument
-        if len(text) > 2000:
+        # Signal 4: Abnormal length
+        if len(text) > LONG_TEXT_CHARS:
             score += 0.15
             signals.append(f"abnormal_length={len(text)}")
 
-        # Signal 5: Mixed languages / encoding markers
-        if re.search(r"(\\u[0-9a-fA-F]{4}|&#x?[0-9a-fA-F]+;)", text):
+        # Signal 5: Encoding markers (escape sequences)
+        if _ENCODING_RX.search(text):
             score += 0.2
             signals.append("encoded_chars_detected")
 
         elapsed_ms = (time.perf_counter() - start) * 1000
 
-        is_injection = score >= 0.5
+        is_injection = score >= self._threshold
         risk = RiskLevel.LOW
         if score >= 0.7:
             risk = RiskLevel.CRITICAL
@@ -731,6 +789,8 @@ class InjectionFirewall:
     def check(self, text: str) -> dict:
         """
         Full dual-layer scan. Fast path first, deep path if needed.
+
+        With the deep path off, the fast-path result.
         """
         self.total_checked += 1
 
@@ -745,6 +805,12 @@ class InjectionFirewall:
                     self.detections_by_type.get(p["pattern"], 0) + 1
                 )
             logger.warning("[BLOCKED] Injection blocked (fast path): %s", fast["patterns"])
+            return fast
+
+        if not self._deep_path_enabled:
+            if fast["is_injection"]:
+                self.total_blocked += 1
+                logger.warning("[BLOCKED] Injection blocked (fast path): %s", fast["patterns"])
             return fast
 
         # Layer 2: Deep path

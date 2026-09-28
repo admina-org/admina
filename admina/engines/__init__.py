@@ -163,6 +163,8 @@ class _FirewallSettings:
     extras: list = field(default_factory=list)
     disabled_categories: list[str] = field(default_factory=list)
     disabled_patterns: list[str] = field(default_factory=list)
+    heuristic_threshold: float = 0.5
+    allowed_tags: list[str] = field(default_factory=list)
 
     @property
     def python_only(self) -> bool:
@@ -180,7 +182,20 @@ def _firewall_settings() -> _FirewallSettings:
         extras=_custom_patterns(fw_cfg),
         disabled_categories=list(fw_cfg.disabled_categories),
         disabled_patterns=list(fw_cfg.disabled_patterns),
+        heuristic_threshold=fw_cfg.heuristic_threshold,
+        allowed_tags=list(fw_cfg.allowed_tags),
     )
+
+
+#: Environment variable that turns the firewall's deep path off.
+DEEP_PATH_ENV = "INJECTION_DEEP_PATH_ENABLED"
+_FALSE_WORDS = frozenset({"0", "false", "no", "off", "f", "n"})
+
+
+def _deep_path_from_env() -> bool:
+    """``INJECTION_DEEP_PATH_ENABLED``: False for 0, false, no, off (any
+    case); True otherwise, and when unset or empty."""
+    return os.environ.get(DEEP_PATH_ENV, "").strip().lower() not in _FALSE_WORDS
 
 
 # ── Bridge Protocols ────────────────────────────────────────────────────────
@@ -215,7 +230,9 @@ class _PythonFirewallBridge:
 
     engine = "python"
 
-    def __init__(self, settings: _FirewallSettings | None = None):
+    def __init__(
+        self, settings: _FirewallSettings | None = None, *, deep_path_enabled: bool = True
+    ):
         from admina.domains.agent_security.firewall import InjectionFirewall
 
         if settings is None:
@@ -232,6 +249,9 @@ class _PythonFirewallBridge:
             extra_patterns=settings.extras or None,
             disabled_categories=settings.disabled_categories or None,
             disabled_patterns=settings.disabled_patterns,
+            heuristic_threshold=settings.heuristic_threshold,
+            allowed_tags=settings.allowed_tags,
+            deep_path_enabled=deep_path_enabled,
         )
 
     def check(self, text: str) -> dict:
@@ -252,8 +272,8 @@ class _RustFirewallBridge:
 
     engine = "rust"
 
-    def __init__(self):
-        self._impl = admina_core.RustFirewall()
+    def __init__(self, *, deep_path_enabled: bool = True):
+        self._impl = admina_core.RustFirewall(deep_path=deep_path_enabled)
 
     def check(self, text: str) -> dict:
         result = self._impl.check(text)
@@ -396,14 +416,25 @@ class _RustLoopBridge:
 # ── Factory functions ───────────────────────────────────────────────────────
 
 
-def get_firewall() -> FirewallBridge:
+def get_firewall(*, deep_path_enabled: bool | None = None) -> FirewallBridge:
     """Get the configured firewall engine.
 
     If YAML overrides (custom_patterns, disabled_categories or
     disabled_patterns) are present, the Python bridge is used even when Rust
     is available — Rust cannot receive operator-defined patterns, so using
     it would silently ignore them.
+
+    *deep_path_enabled* switches the deep path (heuristic scoring) of either
+    engine; ``None`` reads ``INJECTION_DEEP_PATH_ENABLED`` (default on).
+    ``heuristic_threshold`` and ``allowed_tags`` apply to the Python
+    firewall; the Rust engine scores with signals and a threshold of its own.
+
+    Raises:
+        ValueError: ``heuristic_threshold`` is not a finite number greater
+            than 0.
     """
+    if deep_path_enabled is None:
+        deep_path_enabled = _deep_path_from_env()
     settings = _firewall_settings()
     if settings.python_only:
         resolved = _resolve_engine()
@@ -414,10 +445,10 @@ def get_firewall() -> FirewallBridge:
                 "falling back to the Python bridge so operator rules are enforced. "
                 "Remove overrides to use Rust acceleration."
             )
-        return _PythonFirewallBridge(settings)
+        return _PythonFirewallBridge(settings, deep_path_enabled=deep_path_enabled)
     if _resolve_engine() == "rust":
-        return _RustFirewallBridge()
-    return _PythonFirewallBridge(settings)
+        return _RustFirewallBridge(deep_path_enabled=deep_path_enabled)
+    return _PythonFirewallBridge(settings, deep_path_enabled=deep_path_enabled)
 
 
 def get_loop_breaker(**kwargs: Any) -> LoopBreakerBridge:

@@ -59,13 +59,14 @@ def _custom_config() -> FirewallConfig:
 # ── Test vectors ──────────────────────────────────────────────
 
 _RUST_CANONICAL = (
-    b'{"admina_version":"0.13.0","builtin":{"admina_core_version":"0.9.3"},'
+    b'{"admina_version":"0.13.0","allowed_tags":[],'
+    b'"builtin":{"admina_core_version":"0.9.3"},'
     b'"custom_patterns":[],"disabled_categories":[],"disabled_patterns":[],"engine":"rust",'
-    b'"heuristic_threshold_milli":700,"pattern_packs":[]}'
+    b'"heuristic_threshold_milli":500,"pattern_packs":[]}'
 )
-_RUST_VECTOR = "f3302142af311422e4eb8f3821adff008f20caafbb7d1bcff8aacb046613a1c3"
-_PYTHON_VECTOR = "3486a8b0056ec3169abf913986fb7f54bbc942f44464c055eae5b65cd9158217"
-_PYTHON_CUSTOM_VECTOR = "cf5c6ddf4f808f3fb22255bcad12d06368e38008595de0be66ff15f40e1a3ee2"
+_RUST_VECTOR = "e69d13465ec5a301c5a291a4b4be8856a4f7b89c61a4692e50efa573a78985c6"
+_PYTHON_VECTOR = "d9a221bc1cc441065b1977e2de48ea883bec45da29de6573da083618958bc589"
+_PYTHON_CUSTOM_VECTOR = "9e8fe37762bb499db8360a6871c7e349ebc84acf34e18421956871bbad7c65ea"
 
 
 def test_rust_vector_canonical_bytes():
@@ -95,7 +96,8 @@ def test_python_vector_object():
         "custom_patterns": [],
         "disabled_categories": [],
         "disabled_patterns": [],
-        "heuristic_threshold_milli": 700,
+        "allowed_tags": [],
+        "heuristic_threshold_milli": 500,
     }
 
 
@@ -184,7 +186,9 @@ def test_changes_with_a_builtin_pattern(monkeypatch):
         {"disabled_patterns": ["role_hijack.en.1", "role_hijack.en.2"]},
         {"pattern_packs": []},
         {"pattern_packs": ["example-pack", "second-pack"]},
-        {"heuristic_threshold": 0.5},
+        {"heuristic_threshold": 0.7},
+        {"allowed_tags": ["source"]},
+        {"allowed_tags": ["source", "document"]},
     ],
     ids=[
         "custom-regex",
@@ -198,6 +202,8 @@ def test_changes_with_a_builtin_pattern(monkeypatch):
         "no-packs",
         "more-packs",
         "threshold",
+        "allowed-tag",
+        "more-allowed-tags",
     ],
 )
 def test_changes_with_the_configuration(change):
@@ -208,6 +214,13 @@ def test_disabled_patterns_are_sorted_without_duplicates():
     a = replace(_custom_config(), disabled_patterns=["tool_abuse.en.2", "jailbreak.en.1"] * 2)
     b = replace(_custom_config(), disabled_patterns=["jailbreak.en.1", "tool_abuse.en.2"])
     assert ruleset_object(a)["disabled_patterns"] == ["jailbreak.en.1", "tool_abuse.en.2"]
+    assert ruleset_sha256(a) == ruleset_sha256(b)
+
+
+def test_allowed_tags_are_lowercase_sorted_without_duplicates():
+    a = replace(_custom_config(), allowed_tags=["Source", "document", "source"])
+    b = replace(_custom_config(), allowed_tags=["document", "source"])
+    assert ruleset_object(a)["allowed_tags"] == ["document", "source"]
     assert ruleset_sha256(a) == ruleset_sha256(b)
 
 
@@ -293,7 +306,12 @@ def test_threshold_must_be_a_number(threshold):
 
 @pytest.mark.parametrize(
     "change",
-    [{"pattern_packs": [1]}, {"disabled_categories": [None]}, {"disabled_patterns": [2]}],
+    [
+        {"pattern_packs": [1]},
+        {"disabled_categories": [None]},
+        {"disabled_patterns": [2]},
+        {"allowed_tags": [3]},
+    ],
 )
 def test_names_must_be_strings(change):
     with pytest.raises(ValueError):
@@ -312,7 +330,7 @@ def test_same_hash_whatever_the_yaml_key_order(tmp_path):
             domains:
               agent_security:
                 firewall:
-                  heuristic_threshold: 0.7
+                  heuristic_threshold: 0.5
                   pattern_packs: [example-pack]
                   disabled_categories: [tool_abuse]
                   custom_patterns:
@@ -336,7 +354,7 @@ def test_same_hash_whatever_the_yaml_key_order(tmp_path):
                       regex: "\\\\bexample\\\\s+secret\\\\s+phrase\\\\b"
                   disabled_categories: [tool_abuse]
                   pattern_packs: [example-pack]
-                  heuristic_threshold: 0.7
+                  heuristic_threshold: 0.5
             """
         ),
         encoding="utf-8",

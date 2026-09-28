@@ -309,6 +309,18 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   a list of strings is a configuration error. Like `custom_patterns`, it
   makes `get_firewall()` use the Python firewall when the Rust engine is
   selected.
+- `agent_security.firewall.heuristic_threshold` sets the deep-path score
+  from which the Python firewall flags a text (default `0.5`, the value it
+  used before; a value that is not a finite number greater than 0 stops
+  `get_firewall()` with `ValueError`). `INJECTION_DEEP_PATH_ENABLED=false`
+  turns the deep path off on either engine: `check()` then returns the
+  fast-path result. `get_firewall(deep_path_enabled=...)` overrides the
+  variable; the proxy passes its setting (read from the environment or
+  `.env`).
+- `agent_security.firewall.allowed_tags`: tag names (any case) the deep
+  path does not count as context switches, such as the tag an application
+  puts around retrieved documents. Other tags, separators and code fences
+  still count. Python engine; it does not select the Python firewall.
 
 ### Changed
 
@@ -408,9 +420,19 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   list bundled with `tldextract`, with no download and no cache files.
 - The object `ruleset_sha256()` hashes also has `disabled_patterns`
   (`agent_security.firewall.disabled_patterns`, sorted without duplicates;
-  `builtin` still leaves out only the patterns of a disabled category), so
-  every ruleset hash of 0.13.0rc1 changes. New test vectors are in
+  `builtin` still leaves out only the patterns of a disabled category) and
+  `allowed_tags` (lower case, sorted without duplicates), so every ruleset
+  hash of 0.13.0rc1 changes. New test vectors are in
   `tests/test_ruleset_sha256.py`.
+- The default `agent_security.firewall.heuristic_threshold` of the
+  configuration is `0.5` (it was `0.7`, which the firewall did not read), so
+  the default `heuristic_threshold_milli` of the ruleset is `500`.
+  `admina.yaml.example` and the `admina init` template set `0.5`.
+- Deep path of the Python firewall: HTML entities (named, decimal and
+  hexadecimal) no longer count as encoding markers, only `\uXXXX` escape
+  sequences do (percent-encoding never counted); the length signal counts
+  texts longer than 100 000 characters (`firewall.LONG_TEXT_CHARS`; it
+  counted texts longer than 2000).
 
 ## [0.13.0rc1] — 2026-09-27
 

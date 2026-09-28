@@ -180,13 +180,16 @@ class FirewallConfig:
     """Anti-injection firewall settings."""
 
     enabled: bool = True
-    heuristic_threshold: float = 0.7
+    # Deep-path score from which a text is flagged.
+    heuristic_threshold: float = 0.5
     custom_patterns: list[dict] = field(default_factory=list)
     disabled_categories: list[str] = field(default_factory=list)
     # Ids of the patterns left out (builtin, pack-qualified or custom.<n>).
     disabled_patterns: list[str] = field(default_factory=list)
     # Names of the pattern packs listed in admina.yaml, in order.
     pattern_packs: list[str] = field(default_factory=list)
+    # Tag names the deep path does not count as context switches.
+    allowed_tags: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -543,11 +546,12 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
         ),
         firewall=FirewallConfig(
             enabled=fw_raw.get("enabled", True),
-            heuristic_threshold=fw_raw.get("heuristic_threshold", 0.7),
+            heuristic_threshold=fw_raw.get("heuristic_threshold", 0.5),
             custom_patterns=list(fw_raw.get("custom_patterns") or []),
             disabled_categories=list(fw_raw.get("disabled_categories") or []),
             disabled_patterns=_firewall_strings(fw_raw, "disabled_patterns"),
             pattern_packs=list(fw_raw.get("pattern_packs") or []),
+            allowed_tags=_firewall_strings(fw_raw, "allowed_tags"),
         ),
         loop_breaker=LoopBreakerConfig(
             enabled=lb_raw.get("enabled", True),

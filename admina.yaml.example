@@ -46,7 +46,14 @@ domains:
       upstream: "http://localhost:9000"
     firewall:
       enabled: true
-      heuristic_threshold: 0.7
+      # Deep-path (heuristic) score from which a text is flagged, 0.5 by
+      # default (Python engine). INJECTION_DEEP_PATH_ENABLED=false turns the
+      # deep path off.
+      heuristic_threshold: 0.5
+      # Tags of your own prompt format that the deep path must not count
+      # as context switches, e.g. the tag around retrieved documents:
+      #   <source>…</source>  →  allowed_tags: [source]
+      allowed_tags: []
       # Governance reaction mode (see ADMINA_GOVERNANCE_MODE):
       #   enforce  → block flagged requests (default, restrictive)
       #   observe  → never block, log "would have blocked" (use for the

@@ -363,6 +363,29 @@ domains:
 with either set, `get_firewall()` uses the Python firewall even when the
 Rust engine is selected.
 
+The deep path scores five heuristic signals (imperative words, special
+characters, context switches, length, escape sequences) and flags a text
+whose score reaches `agent_security.firewall.heuristic_threshold` (default
+`0.5`). Separators (`---`, `===`), `###`, code fences and tags count as
+context switches, except the tags named in `allowed_tags` (any case), such
+as the tag your application puts around retrieved documents. HTML entities
+(`&euro;`, `&#8364;`) and percent-encoding (`%20`) are not escape sequences,
+and only a text longer than 100 000 characters gets the length signal.
+`INJECTION_DEEP_PATH_ENABLED=false` turns the deep path off: a text is then
+flagged by the patterns only.
+
+```yaml
+domains:
+  agent_security:
+    firewall:
+      heuristic_threshold: 0.5
+      allowed_tags: [source]
+```
+
+`heuristic_threshold` and `allowed_tags` apply to the Python firewall; the
+Rust engine scores with signals and a threshold of its own, and follows
+`INJECTION_DEEP_PATH_ENABLED`.
+
 Custom firewall rules (`agent_security.firewall.custom_patterns`) run on
 Python's backtracking `re` engine. Check each one on long inputs before
 deploying it:
@@ -992,7 +1015,8 @@ rules a configuration applies: the SHA-256, as 64 lowercase hex characters, of
 the RFC 8785 (JCS) serialisation of the Admina version, the engine, the active
 builtin patterns (Python engine) or the `admina-core` version (Rust engine),
 `pattern_packs`, `custom_patterns`, `disabled_categories`,
-`disabled_patterns` and `heuristic_threshold` in thousandths. The exact form is in the module
+`disabled_patterns`, `allowed_tags` and `heuristic_threshold` in
+thousandths. The exact form is in the module
 docstring. The SDK can compute it from `admina.yaml` without the proxy:
 
 ```python

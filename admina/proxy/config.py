@@ -199,6 +199,8 @@ class Settings(BaseSettings):
     LOOP_SIMILARITY_THRESHOLD: float = 0.85
     LOOP_MAX_CONSECUTIVE: int = 3
     INJECTION_FAST_PATH_ENABLED: bool = True
+    # False turns off the firewall's deep path (heuristic scoring), on
+    # either engine: a text is then flagged by the patterns only.
     INJECTION_DEEP_PATH_ENABLED: bool = True
     PII_REDACTION_ENABLED: bool = True
     # Longest request content accepted on /mcp, estimated as its length in

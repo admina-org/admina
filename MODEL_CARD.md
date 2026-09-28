@@ -92,9 +92,13 @@ Scans inbound text for prompt-injection attempts. Two layers: a fast
 path of compiled regexes run against the raw text *and* against an
 evasion-normalised copy (homoglyph / leetspeak / char-by-char /
 base64 neutralised), and a deep path that scores five heuristic signals
-(`0.0`–`1.0`). The fast path returns matched **categories**; the deep
+(`0.0`–`1.0`) and flags a text from `heuristic_threshold` (default
+`0.5`). The fast path returns matched **categories**; the deep
 path returns **signals** (e.g. `imperative_density=0.14`) and a score,
-never a category.
+never a category. Tags listed in `allowed_tags` are not context
+switches, HTML entities and percent-encoding are not encoding markers,
+and the length signal starts above 100 000 characters;
+`INJECTION_DEEP_PATH_ENABLED=false` turns the deep path off.
 
 ### Categories emitted (v0.11.0)
 

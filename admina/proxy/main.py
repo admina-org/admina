@@ -258,7 +258,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     state = ProxyState(
         gateway_upstreams=gateway_upstreams,
         gateway_stream_mode=resolve_stream_mode(settings, gateway_config),
-        firewall=get_firewall(),
+        firewall=get_firewall(deep_path_enabled=settings.INJECTION_DEEP_PATH_ENABLED),
         pii_redactor=get_pii_engine(),
         loop_breaker=(
             _build_loop_breaker() if _LOOP_BREAKER_SURFACES.intersection(surfaces) else None
