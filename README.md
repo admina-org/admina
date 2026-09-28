@@ -458,10 +458,11 @@ and are reported as unsigned).
 Verification (`GET /api/v1/forensic/verify`, `admina forensic verify`,
 `verify_chain()`) reads one record at a time in sequence order and returns
 `valid`, `records`, `last_hash`, `checkpoint` (`{"sequence_number",
-"record_hash"}` of the last record checked: pass it back to check only the
-records after it), `signed`, `unsigned`, `signatures_verified` (false
-without the key) and, for the first failure, `sequence_number` and
-`reason`:
+"record_hash"}` of the last record checked: pass it back as
+`?checkpoint=SEQ:HASH`, `--checkpoint SEQ:HASH` or `checkpoint=(seq, hash)`
+to check only the records after it; `from_seq` starts from a sequence
+number instead), `signed`, `unsigned`, `signatures_verified` (false without
+the key) and, for the first failure, `sequence_number` and `reason`:
 
 | `reason` | The record at `sequence_number` |
 |---|---|

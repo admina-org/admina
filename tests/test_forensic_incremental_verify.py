@@ -167,3 +167,67 @@ def test_verification_of_200k_records(tmp_path):
     assert result["records"] == 200_000
     assert peak < 16 * 1024 * 1024, f"peak {peak / 1e6:.1f} MB"
     print(f"\n200k records: {elapsed:.1f} s, peak {peak / 1e6:.1f} MB (tracemalloc)")
+
+
+# ── GET /api/v1/forensic/verify ───────────────────────────────
+
+
+def _verify_route(box: ForensicBlackBox, query: str = ""):
+    pytest.importorskip("fastapi")
+    import httpx
+    from fastapi import FastAPI
+
+    from admina.proxy.api.integration import create_integration_endpoints
+
+    app = FastAPI()
+    app.include_router(
+        create_integration_endpoints(
+            get_firewall=lambda: None,
+            get_pii_scanner=lambda: None,
+            get_loop_breaker=lambda: None,
+            get_forensic_box=lambda: box,
+        )
+    )
+
+    async def go():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.get(f"/api/v1/forensic/verify{query}")
+
+    return asyncio.run(go())
+
+
+def test_the_verify_route_resumes_from_a_checkpoint(tmp_path):
+    box = _box(tmp_path, 3)
+    checkpoint = _verify(box)["checkpoint"]
+    for i in range(3, 7):
+        box.record({"event_id": f"e{i}", "note": f"note-{i}"})
+
+    response = _verify_route(
+        box, f"?checkpoint={checkpoint['sequence_number']}:{checkpoint['record_hash']}"
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert (body["valid"], body["records"], body["backend"]) == (True, 4, "filesystem")
+    assert body["checkpoint"] == {"sequence_number": 7, "record_hash": box.chain_head}
+
+
+def test_the_verify_route_from_a_sequence_number(tmp_path):
+    box = _box(tmp_path, 5)
+    body = _verify_route(box, "?from_seq=4").json()
+    assert (body["valid"], body["records"]) == (True, 2)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "?checkpoint=3",
+        "?checkpoint=x:" + "0" * 64,
+        "?from_seq=0",
+        "?from_seq=2&checkpoint=1:" + "0" * 64,
+    ],
+)
+def test_the_verify_route_rejects_bad_parameters(tmp_path, query):
+    box = _box(tmp_path, 3)
+    assert _verify_route(box, query).status_code in (400, 422)

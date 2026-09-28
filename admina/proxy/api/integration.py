@@ -28,11 +28,12 @@ admitted with: ``api_key``, ``append_key`` (``ADMINA_AUDIT_APPEND_KEY``),
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from admina.domains.compliance.forensic import ForensicWriteError
 
@@ -63,6 +64,9 @@ def _scrub_check_errors(checks: dict[str, Any]) -> dict[str, Any]:
             scrubbed[name] = entry
     return scrubbed
 
+
+# The checkpoint of GET /api/v1/forensic/verify: SEQ:HASH.
+_CHECKPOINT = re.compile(r"([0-9]+):([0-9a-f]{64})")
 
 #: ``source`` of every record written through ``POST /api/v1/audit``.
 AUDIT_SOURCE = "api_v1_audit"
@@ -246,19 +250,39 @@ def create_integration_endpoints(
     @router.get(
         "/forensic/verify", tags=["integration"], summary="Forensic hash-chain integrity check"
     )
-    async def forensic_verify() -> dict[str, Any]:
+    async def forensic_verify(
+        from_seq: int | None = Query(default=None, ge=1),
+        checkpoint: str | None = Query(default=None, description="SEQ:HASH"),
+    ) -> dict[str, Any]:
         """Verify the forensic hash-chain integrity.
 
-        Reads every persisted record back from the configured backend
-        and checks that each record's hash links correctly to the
-        previous one.  An invalid chain is a successful *report*
-        (HTTP 200 with ``"valid": false``) — it is not a server error.
-        Only an unexpected exception produces a 500 response.
+        Reads the persisted records back from the configured backend, one
+        at a time, and checks them (see
+        :mod:`admina.domains.compliance.forensic_integrity`). An invalid
+        chain is a successful *report* (HTTP 200 with ``"valid": false``) —
+        it is not a server error. Only an unexpected exception produces a
+        500 response.
+
+        ``from_seq``: verify from that sequence number on; ``checkpoint``
+        (``SEQ:HASH``, the ``checkpoint`` of an earlier result): verify only
+        the records after it. Not both (400).
 
         Returns a dict with at least:
             ``valid`` (bool), ``records`` (int), ``last_hash`` (str),
             ``backend`` (str — the store_name of the forensic box).
         """
+        resume: tuple[int, str] | None = None
+        if checkpoint is not None:
+            match = _CHECKPOINT.fullmatch(checkpoint.strip())
+            if match is None or int(match.group(1)) < 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="checkpoint must be SEQ:HASH (SEQ >= 1, 64 lowercase hex characters)",
+                )
+            resume = (int(match.group(1)), match.group(2))
+        if resume is not None and from_seq is not None:
+            raise HTTPException(status_code=400, detail="pass from_seq or checkpoint, not both")
+
         fbox = get_forensic_box()
         if fbox is None:
             return {
@@ -269,7 +293,12 @@ def create_integration_endpoints(
                 "detail": "Forensic black box not available (no storage backend configured)",
             }
 
-        result = await fbox.verify_chain()
+        options: dict[str, Any] = {}
+        if from_seq is not None:
+            options["from_seq"] = from_seq
+        if resume is not None:
+            options["checkpoint"] = resume
+        result = await fbox.verify_chain(**options)
         if getattr(fbox, "boto3_client", None) is not None:
             backend = "s3"
         elif getattr(fbox, "filesystem_dir", None) is not None:
