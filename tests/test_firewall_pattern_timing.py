@@ -21,7 +21,10 @@ within the time budget
 (``pattern_timing.DEFAULT_BUDGET_MS``) on the long inputs of
 ``pattern_timing.timing_inputs``: 64k characters of spaces, tabs, commas,
 newlines or a mix after each trigger word, and each trigger repeated. The
-PII and egress matching, and the e-mail category of the PII redactor and of
+Italian patterns also finish within it on 64k-character runs of places
+where an instruction starts (table cells, brackets, quotes, tags, sentence
+and line ends), each followed by an imperative, markup or addressing words.
+The PII and egress matching, and the e-mail category of the PII redactor and of
 the spaCy + regex PII engine, also finish within it on 64k-character runs
 of e-mail local-part characters. The sentences of the ``omissis`` mask style
 (the sentence splitter, ``mask_omissis``, a plugin engine through
@@ -191,6 +194,85 @@ def test_firewall_check_per_pattern_on_long_whitespace(index, trigger, run):
     )
     ms = _best_ms(fw.check, trigger + " " * run)
     assert ms <= BUDGET_MS, f"{ms:.1f} ms"
+
+
+# ── Italian patterns on runs of starts ───────────────────────
+#
+# The Italian patterns that match where an instruction starts are tried at
+# each sentence end, line break, opening quote, bracket or tag, table cell
+# and end of an HTML comment. Runs of such starts, each followed by an
+# imperative, markup or addressing words: with an imperative such as "fai",
+# a clause of it_instruction_override.3 may start at each of them.
+
+_IT_INDICES = [
+    index
+    for index, pattern_id in enumerate(_IDS)
+    if pattern_id.startswith(("it_", "multilang_evasion.it."))
+]
+
+_START_UNITS = {
+    "cell": "|fai, ",
+    "cell-words": "|fai a a ",
+    "cell-address": "| ok, ok, fai ",
+    "cell-emphasis": "|**fai ",
+    "cell-list": "|- fai ",
+    "bracket": "(fai ",
+    "square-bracket": "[fai ",
+    "brace": "{fai ",
+    "guillemet": "«fai ",
+    "curly-quote": "“fai ",
+    "double-quote": ' "fai, ',
+    "single-quote": " 'fai, ",
+    "single-quote-after-dash": "x-'fai, ",
+    "backtick": "`fai ",
+    "opening-tag": "<b>fai ",
+    "comment-start": "<!--fai ",
+    "comment-end": "-->fai ",
+    "closing-tag": ":</b> fai ",
+    "speaker": "\nUtente> fai ",
+    "sentence": ". fai ",
+    "sentence-address": ". ok, ok, traduci a e ",
+    "line": "\nfai ",
+    "line-clause": "\ntraduci a a a a a a a a a a a a e",
+    "line-letter": "\na",
+    "line-bullet-emphasis": "\n- **",
+    "cell-override": "|ignora le ",
+    "cell-extraction": "|rivela il tuo ",
+    "cell-role": "|parla come un ",
+}
+
+
+@functools.cache
+def _start_inputs(size: int) -> dict[str, str]:
+    return {label: (unit * (size // len(unit) + 1))[:size] for label, unit in _START_UNITS.items()}
+
+
+@functools.cache
+def _start_times(index: int) -> dict[str, float]:
+    compiled = _BUILTINS[index][0]
+    return {
+        label: pt.search_ms(compiled, text, budget_ms=BUDGET_MS)
+        for label, text in _start_inputs(SIZE).items()
+    }
+
+
+@pytest.mark.parametrize("index", _IT_INDICES, ids=[_IDS[i] for i in _IT_INDICES])
+def test_italian_pattern_on_runs_of_starts(index):
+    times = _start_times(index)
+    label = max(times, key=times.__getitem__)
+    assert times[label] <= BUDGET_MS, f"{times[label]:.1f} ms on {label}"
+
+
+@pytest.mark.parametrize("index", _IT_INDICES, ids=[_IDS[i] for i in _IT_INDICES])
+def test_italian_pattern_time_grows_linearly_on_runs_of_starts(index):
+    """time(64k) / time(16k) stays at most 8 on the slowest run."""
+    times = _start_times(index)
+    label = max(times, key=times.__getitem__)
+    compiled = _BUILTINS[index][0]
+    small = pt.search_ms(compiled, _start_inputs(SIZE // 4)[label])
+    large = pt.search_ms(compiled, _start_inputs(SIZE)[label])
+    ratio = large / max(small, 0.05)
+    assert ratio <= 8.0, f"{label}: {small:.3f} ms at 16k, {large:.3f} ms at 64k"
 
 
 # ── Matching results across whitespace layouts ───────────────

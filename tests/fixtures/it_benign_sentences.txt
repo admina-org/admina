@@ -69,3 +69,4 @@ L'opzione `--force` ignora le regole di validazione precedenti.
 <p><b>Il fornitore</b> ignora le istruzioni ricevute dal cliente.</p>
 <strong>Il sistema</strong> dimentica le regole precedenti dopo il riavvio.
 Il servizio **Alfa** ignora le regole precedenti del catalogo.
+<p><b>Esito:</b> il reparto ignora le istruzioni ricevute dal cliente.</p>

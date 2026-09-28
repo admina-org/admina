@@ -16,9 +16,10 @@
 
 The Italian ``multilang_evasion`` patterns match an override where an
 instruction starts (start of the text, after a sentence or line break, a
-colon, an opening quote or tag, a table cell, an HTML comment opener, then
-a list marker or heading, emphasis and up to two words such as "ok,",
-"ciao,", "grazie,", "ora", "per favore", "assistente,"), with word
+colon, an opening quote or tag, a table cell, the start or the end of an
+HTML comment; then closing tags or a speaker label, a list marker or
+heading, emphasis and up to two words such as "ok,", "ciao,", "grazie,",
+"ora", "per favore", "assistente,"), with word
 boundaries. Third-person sentences with the same verbs ("il consiglio
 annulla le direttive precedenti", "la signora le regole…", 'la versione
 "Pro" ignora le regole precedenti') match no builtin pattern; the Italian

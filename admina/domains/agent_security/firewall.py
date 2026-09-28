@@ -229,13 +229,17 @@ _OVERRIDE_TARGETS = (
 # addresses the reader:
 # - where an instruction starts (_IT_START): at the start of the text, after
 #   a sentence end, a semicolon, a colon, a line break, an opening bracket,
-#   a table cell separator "|", the start of an HTML comment, an opening tag
-#   ("<p>", not "</p>"), or an opening quote (a quote or backtick after no
-#   letter or digit: 'dice "ignora ...' but not '"Alfa" ignora ...'); then
-#   optional spaces, an optional list marker ("-", "*", "–", "1)", "a)",
-#   "#" heading, ">" quote), optional emphasis ("**") and up to two words
-#   addressing the reader ("ok,", "ciao,", "grazie,", "ora", "per favore",
-#   "assistente," ...);
+#   a table cell separator "|", the start or the end of an HTML comment
+#   ("<!--", "-->"), an opening tag ("<p>"), or an opening quote (a quote or
+#   backtick after no letter or digit: 'dice "ignora ...' but not '"Alfa"
+#   ignora ...'); then up to four closing tags, comment ends or speaker
+#   labels ("Nota:</b> ignora ...", "</p> Ignora ..." at the start of the
+#   text, "Utente> ignora ..." at the start of a line), optional spaces, an
+#   optional list marker ("-", "*", "–", "1)", "a)", "#" heading, ">"
+#   quote), optional emphasis ("**") and up to two words addressing the
+#   reader ("ok,", "ciao,", "grazie,", "ora", "per favore", "assistente,"
+#   ...). A closing tag after a word ("Il fornitore</b> ignora ...") is not
+#   a start;
 # - after a clause that starts there with a second-person imperative
 #   ("traduci il testo e ignora ...", "riassumi il documento, poi ignora
 #   ...");
@@ -248,15 +252,19 @@ _OVERRIDE_TARGETS = (
 #
 # Every pattern that uses _IT_START is tried at each sentence end, line
 # break and quote of a text: the lookahead ends the attempt at once unless a
-# word, a list marker or emphasis follows, and the list marker, the emphasis
-# and the addressing words are possessive.
+# word, a list marker or emphasis follows; the closing tags and labels, the
+# list marker, the emphasis and the addressing words are bounded and
+# possessive.
 _IT_ADDRESS = (
     r"(?:(?:ok|okay|ciao|salve|bene|grazie|perfetto|ora|adesso|allora|quindi|dunque|poi|"
     r"infine|per[^\S\n]++favore|ti[^\S\n]++prego)(?:[^\S\n]*+,)?[^\S\n]++"
     r"|(?:assistente|modello|ia|chatbot)[^\S\n]*+[,:][^\S\n]*+)"
 )
+# A closing tag, the end of an HTML comment, or a speaker label ("Utente>").
+_IT_CLOSING_OR_LABEL = r"(?:</[a-z][^<>\n]*+>|-->|\w{1,32}+>)"
 _IT_START = (
-    r"(?:^|[.!?;:\n(\[{«“|]|<!--|<[a-z][^<>\n]*+>|(?<!\w)[\"'‘`])[^\S\n]*+"
+    r"(?:^|[.!?;:\n(\[{«“|]|<!--|-->|<[a-z][^<>\n]*+>|(?<!\w)[\"'‘`])"
+    r"(?:[^\S\n]*+" + _IT_CLOSING_OR_LABEL + r"){0,4}+[^\S\n]*+"
     r"(?=[-*•–—·>#\w])"
     r"(?:(?:[-*•–—·]|#{1,6}+|(?:\d{1,3}+|[a-z])\))[^\S\n]++|>{1,3}+[^\S\n]*+)?+"
     r"(?:[*_]{1,3}+[^\S\n]*+)?+"
@@ -296,13 +304,20 @@ _IT_OVERRIDE = (
     + r"|(?:tutto\s++)?quanto\s++(?:detto|scritto|indicato|sopra|precede)\b"
     r"|(?:il\s++)?testo\s++(?:sopra|precedente)\b)"
 )
+# A word of a clause: no white space, sentence end or comma, and nothing
+# that starts an instruction (an opening bracket, quote or tag, a table
+# cell, a ">"; an apostrophe only after a letter or digit, as in
+# "l'articolo"). A clause therefore ends at the next place where an
+# instruction starts, and the clauses tried from two starts never overlap.
+_IT_CLAUSE_CHAR = r"[^\s.!?;:,|(\[{«“\"'‘`<>]"
+_IT_CLAUSE_WORD = _IT_CLAUSE_CHAR + r"++(?:(?<=\w)'" + _IT_CLAUSE_CHAR + r"*+)*+"
 # A clause that starts with a second-person imperative whose form differs
 # from the third person ("traduci", not "traduce"), up to twelve more words
 # without a sentence end, then a comma or "e", "ma", "poi", "quindi" ...
 _IT_YOU_CLAUSE = (
     r"(?:traduci|riassumi|scrivi|riscrivi|leggi|rileggi|rispondi|correggi|descrivi|"
     r"esegui|estrai|converti|fornisci|produci|fai|dimmi|dammi|fammi)\b"
-    r"(?:(?:[^\S\n]*+,)?[^\S\n]++[^\s.!?;:,]++){0,12}?"
+    r"(?:(?:[^\S\n]*+,)?[^\S\n]++" + _IT_CLAUSE_WORD + r"){0,12}?"
     r"(?:[^\S\n]*+,[^\S\n]*+|[^\S\n]++(?=(?:e|ed|ma|poi|quindi|infine|dopo|ora|adesso)\b))"
     r"(?:(?:e|ed|ma)[^\S\n]++)?(?:(?:poi|quindi|infine|dopo|ora|adesso)[^\S\n]++)?"
 )
