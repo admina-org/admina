@@ -87,6 +87,17 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   detected span only outside the placeholders.
 - The `presidio` engine masks overlapping detections as one span, their
   union, with the category and mask of the first.
+- The `governance.decision` event of an `/mcp` request carries names,
+  counts and hashes (`admina.proxy.decisions.Decision`): its metadata is
+  `surface`, `event_id` (of the request's forensic record), `domain` (the
+  part of the pipeline that decided), `latency_us`, `categories` (firewall
+  category names), `pii_count`, `request_sha256` (the SHA-256 of the
+  JSON-RPC request as the proxy serialises it) and, in `observe` and
+  `dry-run` mode, `would_action`. The dashboard live feed, the OpenTelemetry
+  exporter (a span attribute `admina.meta.<key>` per key) and the alert
+  channels read this metadata.
+- A blocked `/mcp` request sends one alert to each alert channel, built from
+  its `governance.decision` event: `details` is the event's metadata.
 
 ### Added
 

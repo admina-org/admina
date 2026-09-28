@@ -1772,19 +1772,8 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
     decision = Decision.of(
         "mcp", event_id, pipeline_result, request_sha256=request_sha256, session_id=session_id
     )
+    # The alert channels read the event (BLOCK and CIRCUIT_BREAK): see lifespan.
     _spawn(governance_bus.emit(decision.event()))
-
-    # ── Fire alerts on block/circuit-break (non-blocking) ─────
-    if action in (GovernanceAction.BLOCK, GovernanceAction.CIRCUIT_BREAK) and state.alert_channels:
-        _alert = {
-            "level": gov_response.risk_level,
-            "domain": gov_response.domain,
-            "summary": f"{gov_response.action} — {method} from agent {agent_id}",
-            "details": {k: safe_serialize(v) for k, v in pipeline_result.checks.items()},
-            "event_id": event_id,
-            "session_id": session_id,
-        }
-        _spawn(_fire_alerts(state.alert_channels, _alert))
 
     # ─── Forensic Black Box (non-blocking) ─────────────────────
     # With ADMINA_FORENSIC_FAIL_MODE=closed a record that is not written

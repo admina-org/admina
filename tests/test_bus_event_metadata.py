@@ -185,3 +185,48 @@ def test_the_live_feed_serialises_the_same_metadata(events):
     (message,) = sent
     assert CANARY not in message
     assert json.loads(message)["metadata"] == json.loads(json.dumps(event.metadata))
+
+
+# ── Alerts ────────────────────────────────────────────────────
+
+
+class _Channel:
+    channel_name = "capture"
+
+    def __init__(self) -> None:
+        self.alerts: list[dict] = []
+
+    async def send_alert(self, alert: dict) -> bool:
+        self.alerts.append(alert)
+        return True
+
+
+def test_a_blocked_mcp_request_fires_one_alert_from_its_event(events, monkeypatch):
+    from admina.proxy import main as proxy_main
+
+    channel = _Channel()
+    monkeypatch.setattr(proxy_main, "instantiate_plugins", _only_alerts(channel))
+    serve([_mcp(BLOCKED, "s-alert")])
+    (event,) = _decisions(events)
+    (alert,) = channel.alerts
+    assert alert["details"] == event.metadata
+    assert CANARY not in json.dumps(alert, default=str)
+
+
+def test_an_allowed_mcp_request_fires_no_alert(events, monkeypatch):
+    from admina.proxy import main as proxy_main
+
+    channel = _Channel()
+    monkeypatch.setattr(proxy_main, "instantiate_plugins", _only_alerts(channel))
+    serve([_mcp(ALLOWED, "s-quiet")])
+    assert len(_decisions(events)) == 1
+    assert channel.alerts == []
+
+
+def _only_alerts(channel):
+    """instantiate_plugins with *channel* as the only alert channel."""
+
+    def instantiate(registry, category, plugin_config=None):
+        return [channel] if category == "alert_channel" else []
+
+    return instantiate
