@@ -271,15 +271,18 @@ class PresidioPIIEngine:
                 spans.append((start, end, category, mask))
 
         # Resolve overlaps deterministically: earliest start first, longest on
-        # ties; greedily drop any span overlapping an already-accepted one. This
-        # also dedupes the same span produced by two language passes.
+        # ties; a span that overlaps an accepted one extends it to their union,
+        # which keeps the category and mask of the accepted span. This also
+        # dedupes the same span produced by two language passes.
         spans.sort(key=lambda s: (s[0], -(s[1] - s[0])))
         accepted: list[tuple[int, int, str, str]] = []
-        last_end = -1
         for start, end, category, mask in spans:
-            if start >= last_end:
-                accepted.append((start, end, category, mask))
-                last_end = end
+            if accepted and start < accepted[-1][1]:
+                first_start, first_end, first_category, first_mask = accepted[-1]
+                if end > first_end:
+                    accepted[-1] = (first_start, end, first_category, first_mask)
+                continue
+            accepted.append((start, end, category, mask))
 
         entities = [
             {

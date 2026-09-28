@@ -171,3 +171,20 @@ def test_fiscal_code_with_a_blank_pipeline():
     engine = presidio.PresidioPIIEngine(nlp_models={"it": "blank"})
     out = engine.redact(FISCAL_CODE_TEXT)["redacted_text"]
     assert out == "Il codice fiscale è [CF], email [EMAIL]"
+
+
+def test_overlapping_detections_are_masked_as_one_span(monkeypatch):
+    presidio = _presidio()
+    from presidio_analyzer import RecognizerResult
+
+    engine = presidio.PresidioPIIEngine(nlp_models={"it": "blank"})
+    text = "chiamate il +39 333 123 4567 oggi"
+    found = [
+        RecognizerResult("ORGANIZATION", 0, 19, 0.85),  # "chiamate il +39 333"
+        RecognizerResult("PHONE_NUMBER", 12, 28, 0.75),  # "+39 333 123 4567"
+    ]
+    monkeypatch.setattr(engine._analyzer, "analyze", lambda text, language: list(found))
+    out = engine.redact(text)
+    assert out["redacted_text"] == "[ORG] oggi"
+    assert out["count"] == 1
+    assert out["entities"][0]["start"] == 0 and out["entities"][0]["end"] == 28
