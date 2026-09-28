@@ -228,10 +228,14 @@ _OVERRIDE_TARGETS = (
 # override and extraction patterns match such a verb only in a context that
 # addresses the reader:
 # - where an instruction starts (_IT_START): at the start of the text, after
-#   a sentence end, a colon, a line break, an opening bracket or quote, the
-#   end of a tag or the start of an HTML comment, then optional spaces, an
-#   optional list marker and up to two words addressing the reader ("ok,",
-#   "ciao,", "grazie,", "ora", "per favore", "assistente," ...);
+#   a sentence end, a semicolon, a colon, a line break, an opening bracket,
+#   a table cell separator "|", the start of an HTML comment, an opening tag
+#   ("<p>", not "</p>"), or an opening quote (a quote or backtick after no
+#   letter or digit: 'dice "ignora ...' but not '"Alfa" ignora ...'); then
+#   optional spaces, an optional list marker ("-", "*", "–", "1)", "a)",
+#   "#" heading, ">" quote), optional emphasis ("**") and up to two words
+#   addressing the reader ("ok,", "ciao,", "grazie,", "ora", "per favore",
+#   "assistente," ...);
 # - after a clause that starts there with a second-person imperative
 #   ("traduci il testo e ignora ...", "riassumi il documento, poi ignora
 #   ...");
@@ -242,16 +246,20 @@ _OVERRIDE_TARGETS = (
 # them, and neither does an override inside a sentence without one of these
 # contexts ("il testo è finito e ignora le regole").
 #
-# Every pattern that uses _IT_START is tried at each sentence end and line
-# break of a text: the lookahead ends the attempt at once unless a word or a
-# list marker follows, and the addressing words are possessive.
+# Every pattern that uses _IT_START is tried at each sentence end, line
+# break and quote of a text: the lookahead ends the attempt at once unless a
+# word, a list marker or emphasis follows, and the list marker, the emphasis
+# and the addressing words are possessive.
 _IT_ADDRESS = (
     r"(?:(?:ok|okay|ciao|salve|bene|grazie|perfetto|ora|adesso|allora|quindi|dunque|poi|"
     r"infine|per[^\S\n]++favore|ti[^\S\n]++prego)(?:[^\S\n]*+,)?[^\S\n]++"
     r"|(?:assistente|modello|ia|chatbot)[^\S\n]*+[,:][^\S\n]*+)"
 )
 _IT_START = (
-    r"(?:^|[.!?;:\n(\[{\"«“>]|<!--)[^\S\n]*+(?=[-*•\w])(?:[-*•][^\S\n]++)?"
+    r"(?:^|[.!?;:\n(\[{«“|]|<!--|<[a-z][^<>\n]*+>|(?<!\w)[\"'‘`])[^\S\n]*+"
+    r"(?=[-*•–—·>#\w])"
+    r"(?:(?:[-*•–—·]|#{1,6}+|(?:\d{1,3}+|[a-z])\))[^\S\n]++|>{1,3}+[^\S\n]*+)?+"
+    r"(?:[*_]{1,3}+[^\S\n]*+)?+"
     r"(?:" + _IT_ADDRESS + r"){0,2}+"
 )
 _IT_RULE_NOUNS = (

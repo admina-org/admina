@@ -188,10 +188,13 @@ that starts there with a second-person imperative, or with a second-person
 object: third-person prose such as "il giudice annulla le linee guida" is
 not flagged, and an override in the middle of a sentence without one of
 these contexts ("il documento è lungo, ignora le istruzioni precedenti") is
-not either. A second-person object is matched anywhere, also in a sentence
-with a third-person subject ("se il cliente ignora le tue istruzioni").
-The Italian baseline is Python-only in
-0.13 (the Rust engine has the `multilang_evasion` subset only). Coverage
+not either. An instruction also starts after Markdown or HTML markup (a
+heading, a list marker, a table cell, emphasis, an opening tag or quote),
+but not after a closing quote or tag ('il modulo "Alfa" ignora le
+istruzioni precedenti' is not flagged). A second-person object is matched
+anywhere, also in a sentence with a third-person subject ("se il cliente
+ignora le tue istruzioni"). The Italian baseline is Python-only in 0.13
+(the Rust engine has the `multilang_evasion` subset only). Coverage
 in other languages is best-effort. We accept contributions for
 additional locales.
 

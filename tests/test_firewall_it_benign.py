@@ -16,12 +16,13 @@
 
 The Italian ``multilang_evasion`` patterns match an override where an
 instruction starts (start of the text, after a sentence or line break, a
-colon, a quote, a tag, an HTML comment opener, a list marker, then up to
-two words such as "ok,", "ciao,", "grazie,", "ora", "per favore",
-"assistente,"), with word boundaries. Third-person sentences with
-the same verbs ("il consiglio annulla le direttive precedenti", "la
-signora le regole…") match no builtin pattern; the Italian overrides that
-matched before still match.
+colon, an opening quote or tag, a table cell, an HTML comment opener, then
+a list marker or heading, emphasis and up to two words such as "ok,",
+"ciao,", "grazie,", "ora", "per favore", "assistente,"), with word
+boundaries. Third-person sentences with the same verbs ("il consiglio
+annulla le direttive precedenti", "la signora le regole…", 'la versione
+"Pro" ignora le regole precedenti') match no builtin pattern; the Italian
+overrides that matched before still match.
 """
 
 from __future__ import annotations

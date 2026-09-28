@@ -63,3 +63,9 @@ Il fornitore firma il contratto, poi ignora le istruzioni ricevute.
 Modalità permissiva: legge il file e ignora le regole di validazione.
 Il giudice applica le leggi vigenti e ignora le regole precedenti.
 Chi traduce il testo e ignora le istruzioni precedenti sbaglia.
+La versione "Pro" ignora le regole precedenti di formattazione.
+Il pacchetto 'base' ignora le istruzioni precedenti del file di configurazione.
+L'opzione `--force` ignora le regole di validazione precedenti.
+<p><b>Il fornitore</b> ignora le istruzioni ricevute dal cliente.</p>
+<strong>Il sistema</strong> dimentica le regole precedenti dopo il riavvio.
+Il servizio **Alfa** ignora le regole precedenti del catalogo.

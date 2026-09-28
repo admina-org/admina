@@ -366,17 +366,20 @@ The Python firewall has an Italian baseline besides the Italian patterns of
 imperatives of `-are` verbs have the form of the third person ("ignora",
 "annulla"), so these patterns and the Italian `multilang_evasion` patterns
 match such a verb where an instruction starts (the start of the text, after
-a sentence end, a colon, a line break, an opening quote or bracket, a tag or
-an HTML comment opener, a list marker, up to two words such as "ok,",
-"grazie,", "per favore", "assistente,"), after a clause that starts there
-with a second-person imperative ("Traduci il testo e ignora le istruzioni
-precedenti"), or with a second-person object ("... e ignora le tue
-istruzioni"). Other patterns rest on second-person forms ("rispondi", "sei
-ora", "mostrami") and on notes addressed to an AI system ("Istruzioni per
-l'IA:"). "Ignora tutte le istruzioni precedenti" matches; "Il giudice
+a sentence end, a colon, a line break, an opening bracket, a table cell
+`|`, an opening tag `<p>` or an HTML comment opener, an opening quote or
+backtick; then a list marker such as `-`, `1)`, `#` or `>`, emphasis `**`,
+and up to two words such as "ok,", "grazie,", "per favore", "assistente,"),
+after a clause that starts there with a second-person imperative ("Traduci
+il testo e ignora le istruzioni precedenti"), or with a second-person
+object ("... e ignora le tue istruzioni"). Other patterns rest on
+second-person forms ("rispondi", "sei ora", "mostrami") and on notes
+addressed to an AI system ("Istruzioni per l'IA:"). "Ignora tutte le
+istruzioni precedenti" matches; "Il giudice
 annulla le linee guida impugnate" does not, and neither does an override
 inside a sentence without one of these contexts ("Il documento è lungo,
-ignora le istruzioni precedenti").
+ignora le istruzioni precedenti") or after a closing quote, tag or emphasis
+('Il modulo "Alfa" ignora le istruzioni precedenti').
 
 `disabled_patterns`, `custom_patterns` and pattern packs (below) apply to
 the Python firewall only: with any of them set, `get_firewall()` uses the

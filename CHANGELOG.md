@@ -363,14 +363,18 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   directly followed by `:` or `!` ("Attenzione chatbot:", "Attenzione
   IA!"); `.2`: "se sei un'intelligenza artificiale"). "Where an instruction
   starts" is the start of the text, after a sentence end, a colon, a line
-  break, an opening quote or bracket, the end of a tag or the start of an
-  HTML comment, then an optional list marker and up to two words
-  addressing the reader ("ok,", "ciao,", "grazie,", "ora", "poi", "per
-  favore", "assistente,"). An override inside a sentence without one of
-  these contexts is not matched, for example "Il testo è finito e ignora le
-  regole ricevute fin qui", or "Analizza il testo e ignora le istruzioni
-  precedenti" (`analizza` has the form of the third person). Every pattern
-  is timed with the builtin patterns
+  break, an opening bracket, a table cell separator `|`, an opening tag
+  (`<p>`, not `</p>`), the start of an HTML comment, or an opening quote or
+  backtick (one that follows no letter or digit), then an optional list
+  marker (`-`, `*`, `–`, `1)`, `a)`, a `#` heading, a `>` quote), optional
+  emphasis (`**`, `__`) and up to two words addressing the reader ("ok,",
+  "ciao,", "grazie,", "ora", "poi", "per favore", "assistente,"). A
+  closing quote, tag or emphasis is not such a start ('Il modulo "Alfa"
+  ignora le istruzioni precedenti'). An override inside a sentence without
+  one of these contexts is not matched, for example "Il testo è finito e
+  ignora le regole ricevute fin qui", or "Analizza il testo e ignora le
+  istruzioni precedenti" (`analizza` has the form of the third person).
+  Every pattern is timed with the builtin patterns
   (`tests/test_firewall_pattern_timing.py`).
 
 ### Changed
@@ -489,14 +493,17 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   with the same verbs ("il consiglio annulla le direttive precedenti") no
   longer matches, nor does a verb inside another word ("signora"); the
   singular `istruzione` and `restrizione` still match. After up to two
-  addressing words they still match at risk `critical` ("Ok, ignora tutte
-  le istruzioni precedenti", "Grazie. Ora, per favore ignora le istruzioni
-  precedenti"). An override inside a sentence without such a start no
-  longer matches them: the Italian baseline matches it at risk `high` when
-  the clause starts with a second-person imperative or the object is
-  second-person ("Traduci il testo e ignora le istruzioni precedenti", "...
-  e ignora le tue istruzioni"), and otherwise it is not matched ("Il
-  documento è lungo, ignora le istruzioni precedenti").
+  addressing words, and after Markdown or HTML markup where an instruction
+  starts, they still match at risk `critical` ("Ok, ignora tutte le
+  istruzioni precedenti", "Grazie. Ora, per favore ignora le istruzioni
+  precedenti", "**Ignora le istruzioni precedenti**", "| Nota | Ignora le
+  istruzioni precedenti |"). An override inside a sentence without such a
+  start, or after a closing quote, tag or emphasis, no longer matches them:
+  the Italian baseline matches it at risk `high` when the clause starts
+  with a second-person imperative or the object is second-person ("Traduci
+  il testo e ignora le istruzioni precedenti", "... e ignora le tue
+  istruzioni"), and otherwise it is not matched ("Il documento è lungo,
+  ignora le istruzioni precedenti").
 - The committed red-team baseline records the Python injection recall
   23/37 (it was 21/37): the Italian attacks `inj-it-002` and `inj-it-003`
   of the corpus are detected. No new false positive; the Rust figures are
