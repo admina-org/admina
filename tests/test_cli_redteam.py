@@ -178,21 +178,24 @@ def test_config_defaults_to_admina_config(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "extra",
+    ("extra", "expected"),
     [
-        ["--corpus", "nope"],
-        ["--baseline", "{missing}"],
-        ["--config", "{missing}"],
-        ["--corpora-dir", "{tampered}"],
+        (["--corpus", "nope"], ["unknown corpora nope (available: injection, pii, loop)"]),
+        (["--baseline", "{missing}"], ["Invalid value for '--baseline'", "does not exist"]),
+        (["--config", "{missing}"], ["Invalid value for '--config'", "does not exist"]),
+        (["--corpora-dir", "{tampered}"], ["corpus hash mismatch for extra-attacks.jsonl"]),
     ],
 )
-def test_input_that_cannot_run_exits_with_status_2(tmp_path, extra):
+def test_input_that_cannot_run_exits_with_status_2(tmp_path, extra, expected):
     tampered = _external(tmp_path / "corpora")
     (tampered / "extra-attacks.jsonl").write_text("{}\n", encoding="utf-8")
     values = {"{missing}": str(tmp_path / "missing.json"), "{tampered}": str(tampered)}
     args = ["redteam", "--engine", "python", "--format", "md", *[values.get(a, a) for a in extra]]
     result = _run(args)
     assert result.exit_code == 2, result.output
+    assert "No such" not in result.output
+    for fragment in expected:
+        assert fragment in result.output
 
 
 def test_help_lists_the_options():
