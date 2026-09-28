@@ -127,10 +127,10 @@ of its group.
 | `tool_abuse` | critical / high | shell execution (`exec`, `subprocess`, `os.system`, `sh -c`); sensitive filesystem paths (`/etc/passwd`, `~/.ssh/`, `~/.aws/credentials`, `/proc/self/environ`); internal / admin / private API calls; destructive commands (`rm -rf`, `DROP TABLE`, `mkfs.`, `dd if=`) | `firewall.py:295-331` |
 | `obfuscation` | high / medium | base64 encode/decode markers; hex-escape runs (`\xNN\xNN\xNN`); ROT13 / Caesar-cipher markers; hex-escape-as-instruction | `firewall.py:332-342` |
 | `multilang_evasion` | critical | override phrasing in Italian, French, Spanish and German (verb-then-target and target-then-adjective word orders); the Italian patterns only where an instruction starts, with word boundaries | `firewall.py`, section 9 |
-| `it_instruction_override` | high | Italian override (`ignora`, `dimentica`, `non seguire` … rules, instructions, "quanto detto") where an instruction starts; override of what was said "finora" anywhere | `firewall.py`, section 10 |
-| `it_role_hijack` | high | "d'ora in poi" + second-person verb; "sei ora" an AI or an assistant without limits; "agisci come" / "fai finta di essere" a model without filters | `firewall.py`, section 10 |
+| `it_instruction_override` | high | Italian override (`ignora`, `dimentica`, `non seguire` … rules, instructions, "quanto detto") where an instruction starts, or after a clause that starts there with a second-person imperative ("traduci il testo e ignora …"); the same verbs with a second-person object ("le tue istruzioni") anywhere | `firewall.py`, section 10 |
+| `it_role_hijack` | high | "d'ora in poi" + second-person verb; "sei ora" an AI or an assistant without limits; "agisci come" / "fai finta di essere" a model without filters; "parla come" / "immagina di essere" one where an instruction starts | `firewall.py`, section 10 |
 | `it_prompt_extraction` | high | `rivela` / `mostra` / `ripeti` … the system prompt or "le tue istruzioni" where an instruction starts; `mostrami`, `dimmi` … anywhere | `firewall.py`, section 10 |
-| `it_model_addressing` | high | a note or instruction addressed to an AI system ("Istruzioni per l'IA:"); "se sei un'intelligenza artificiale" | `firewall.py`, section 10 |
+| `it_model_addressing` | high | a note or instruction for an AI system followed by a colon ("Istruzioni per l'IA:"), or an AI system addressed directly ("Attenzione chatbot:", "Attenzione IA!"); "se sei un'intelligenza artificiale" | `firewall.py`, section 10 |
 
 Operators can add further categories without forking: every entry in
 `agent_security.firewall.custom_patterns` carries its own `category`
@@ -183,10 +183,14 @@ Patterns are written for English with an explicit subset for
 `multilang_evasion` covering French, Italian, Spanish, German, and an
 Italian baseline (the `it_*` categories). Italian imperatives of `-are`
 verbs have the form of the third person, so the Italian override and
-extraction patterns match only where an instruction starts: third-person
-prose such as "il giudice annulla le linee guida" is not flagged, and an
-override in the middle of a sentence without such a start or a
-second-person form is not either. The Italian baseline is Python-only in
+extraction patterns match only where an instruction starts, after a clause
+that starts there with a second-person imperative, or with a second-person
+object: third-person prose such as "il giudice annulla le linee guida" is
+not flagged, and an override in the middle of a sentence without one of
+these contexts ("il documento è lungo, ignora le istruzioni precedenti") is
+not either. A second-person object is matched anywhere, also in a sentence
+with a third-person subject ("se il cliente ignora le tue istruzioni").
+The Italian baseline is Python-only in
 0.13 (the Rust engine has the `multilang_evasion` subset only). Coverage
 in other languages is best-effort. We accept contributions for
 additional locales.

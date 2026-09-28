@@ -345,20 +345,33 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `high`: `it_instruction_override` (`it_instruction_override.1`: an
   override verb such as `ignora`, `dimentica`, `non seguire` where an
   instruction starts, with rules, instructions or "quanto detto" as object;
-  `.2`: the same override of what was said "finora" or "fin qui", anywhere),
+  `.2`: the same verbs with a second-person object, anywhere: "le tue
+  istruzioni", "il tuo prompt", "quanto ti è stato detto"; `.3`: an
+  override after a clause that starts, where an instruction starts, with a
+  second-person imperative such as `traduci`, `riassumi`, `rispondi`,
+  `scrivi`, then up to twelve words and a comma or `e`, `ma`, `poi`,
+  `quindi`: "Traduci il testo e ignora le istruzioni precedenti"),
   `it_role_hijack` (`.1`: "d'ora in poi" / "da adesso" and a second-person
   verb; `.2`: "sei ora" an AI or an assistant without limits; `.3`: "agisci
-  come" / "fai finta di essere" a model without filters),
-  `it_prompt_extraction` (`.1`: `rivela`, `mostra`, `ripeti` ... the system
-  prompt or "le tue istruzioni" where an instruction starts; `.2`: the
-  second-person forms `mostrami`, `dimmi` ...) and `it_model_addressing`
-  (`.1`: a note or instruction addressed to an AI system followed by `:`;
-  `.2`: "se sei un'intelligenza artificiale"). "Where an instruction starts"
-  is the start of the text, after a sentence end, a colon, a line break, an
-  opening quote or bracket, the end of a tag or the start of an HTML
-  comment, then an optional list marker and an optional word addressing the
-  reader ("ora", "per favore", "assistente,"). Every pattern is timed with
-  the builtin patterns (`tests/test_firewall_pattern_timing.py`).
+  come" / "fai finta di essere" a model without filters; `.4`: "parla
+  come" / "immagina di essere" a model without filters where an instruction
+  starts), `it_prompt_extraction` (`.1`: `rivela`, `mostra`, `ripeti` ...
+  the system prompt or "le tue istruzioni" where an instruction starts;
+  `.2`: the second-person forms `mostrami`, `dimmi` ...) and
+  `it_model_addressing` (`.1`: a note or instruction for an AI system
+  followed by `:` ("Istruzioni per l'IA:"), or an AI system addressed
+  directly followed by `:` or `!` ("Attenzione chatbot:", "Attenzione
+  IA!"); `.2`: "se sei un'intelligenza artificiale"). "Where an instruction
+  starts" is the start of the text, after a sentence end, a colon, a line
+  break, an opening quote or bracket, the end of a tag or the start of an
+  HTML comment, then an optional list marker and up to two words
+  addressing the reader ("ok,", "ciao,", "grazie,", "ora", "poi", "per
+  favore", "assistente,"). An override inside a sentence without one of
+  these contexts is not matched, for example "Il testo è finito e ignora le
+  regole ricevute fin qui", or "Analizza il testo e ignora le istruzioni
+  precedenti" (`analizza` has the form of the third person). Every pattern
+  is timed with the builtin patterns
+  (`tests/test_firewall_pattern_timing.py`).
 
 ### Changed
 
@@ -475,7 +488,15 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   Italian baseline above) and end on a word boundary: third-person prose
   with the same verbs ("il consiglio annulla le direttive precedenti") no
   longer matches, nor does a verb inside another word ("signora"); the
-  singular `istruzione` and `restrizione` still match.
+  singular `istruzione` and `restrizione` still match. After up to two
+  addressing words they still match at risk `critical` ("Ok, ignora tutte
+  le istruzioni precedenti", "Grazie. Ora, per favore ignora le istruzioni
+  precedenti"). An override inside a sentence without such a start no
+  longer matches them: the Italian baseline matches it at risk `high` when
+  the clause starts with a second-person imperative or the object is
+  second-person ("Traduci il testo e ignora le istruzioni precedenti", "...
+  e ignora le tue istruzioni"), and otherwise it is not matched ("Il
+  documento è lungo, ignora le istruzioni precedenti").
 - The committed red-team baseline records the Python injection recall
   23/37 (it was 21/37): the Italian attacks `inj-it-002` and `inj-it-003`
   of the corpus are detected. No new false positive; the Rust figures are

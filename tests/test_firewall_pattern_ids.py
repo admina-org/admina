@@ -78,9 +78,11 @@ _IDS_0_12 = [
 _IDS_0_13 = [
     "it_instruction_override.1",
     "it_instruction_override.2",
+    "it_instruction_override.3",
     "it_role_hijack.1",
     "it_role_hijack.2",
     "it_role_hijack.3",
+    "it_role_hijack.4",
     "it_prompt_extraction.1",
     "it_prompt_extraction.2",
     "it_model_addressing.1",
