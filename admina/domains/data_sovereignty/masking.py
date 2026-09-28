@@ -28,7 +28,9 @@ splitter: a sentence ends at a line break, or at ``.``, ``!``, ``?`` or
 ``…`` followed by white space and an upper-case letter (after opening quotes
 or brackets); so an abbreviation followed by a number or a lower-case word
 (``art. 9``) does not end a sentence. A sentence span leaves out the white
-space around it and its final punctuation.
+space around it and its final punctuation. Splitting a text takes time
+linear in its length, and extending a span to its sentences time
+logarithmic in their number.
 
 A placeholder is a mask already in the text: an upper-case name in square
 brackets, such as ``[EMAIL]``, ``[IBAN]``, ``[IP_ADDR]`` or ``[OMISSIS]``. The
@@ -40,7 +42,10 @@ reduced to the parts of it outside the placeholders
 from __future__ import annotations
 
 import re
+from bisect import bisect_left, bisect_right
 from collections.abc import Collection, Iterable
+from itertools import accumulate
+from operator import itemgetter
 
 MASK_STYLES = ("typed", "omissis")
 """The values of ``ADMINA_PII_MASK_STYLE``; the first is the default."""
@@ -51,15 +56,25 @@ OMISSIS = "[OMISSIS]"
 PLACEHOLDER_RX = re.compile(r"\[[A-Z][A-Z0-9_]*\]")
 """A mask already in the text."""
 
-# The end of a sentence: final punctuation with any closing quotes and
-# brackets, then white space; or a line break.
-_SENTENCE_END_RX = re.compile(r"[.!?…]+[\"'»”’)\]]*\s+|\n")
-_OPENING = "\"'«“‘(["
+# The end of a sentence: a line break, with the white space after it; or a
+# run of final punctuation with any closing quotes and brackets, then white
+# space with a line break, or white space before a character that is not
+# white space (group 1, after any opening quotes and brackets), where the
+# caller ends the sentence when that character is upper case. A run of final
+# punctuation is matched from its first character only and every quantifier
+# is possessive, so matching takes time linear in the length of the text.
+_SENTENCE_END_RX = re.compile(
+    r"\n\s*+"
+    r"|(?<![.!?…])[.!?…]++[\"'»”’)\]]*+"
+    r"(?:[^\S\n]*+\n\s*+|\s++(?=[\"'«“‘(\[]*+(\S)))"
+)
 _FINAL_PUNCTUATION = ".!?…"
 
 _WORD_RX = re.compile(r"\w")
 
 Span = tuple[int, int]
+
+_END = itemgetter(1)
 
 
 def placeholder_spans(text: str) -> list[Span]:
@@ -70,7 +85,8 @@ def placeholder_spans(text: str) -> list[Span]:
 
 
 def outside_placeholders(start: int, end: int, placeholders: list[Span], text: str) -> list[Span]:
-    """The parts of ``text[start:end]`` outside *placeholders*, in order.
+    """The parts of ``text[start:end]`` outside *placeholders* (the spans of
+    :func:`placeholder_spans`: in order, not overlapping), in order.
 
     Each part is trimmed of surrounding whitespace, and a part without a
     word character is left out: a span that lies inside a placeholder gives
@@ -78,13 +94,15 @@ def outside_placeholders(start: int, end: int, placeholders: list[Span], text: s
     """
     parts: list[Span] = []
     position = start
-    for p_start, p_end in placeholders:
-        if p_end <= position:
-            continue
+    # From the first placeholder that ends after start.
+    index = bisect_right(placeholders, start, key=_END)
+    while index < len(placeholders):
+        p_start, p_end = placeholders[index]
         if p_start >= end:
             break
         parts.append((position, min(p_start, end)))
         position = max(position, p_end)
+        index += 1
     if position < end:
         parts.append((position, end))
     kept: list[Span] = []
@@ -118,13 +136,11 @@ def sentence_spans(text: str) -> list[Span]:
     spans: list[Span] = []
     start = 0
     for end_mark in _SENTENCE_END_RX.finditer(text):
-        after = end_mark.end()
-        if end_mark.group() != "\n":
-            following = text[after:].lstrip(_OPENING)[:1]
-            if not following.isupper():
-                continue
+        following = end_mark.group(1)
+        if following is not None and not following.isupper():
+            continue
         _add_sentence(spans, text, start, end_mark.start())
-        start = after
+        start = end_mark.end()
     _add_sentence(spans, text, start, len(text))
     return spans
 
@@ -157,19 +173,17 @@ def mask_omissis(
 ) -> str:
     """*text* with each ``(start, end, category)`` span replaced by
     :data:`OMISSIS`; a span of one of *sentence_categories* extends to the
-    sentences it overlaps (*sentences*, by default :func:`sentence_spans`,
-    each trimmed of white space). Overlapping spans become one mask."""
+    sentences it overlaps (*sentences*, in any order, by default
+    :func:`sentence_spans`, each trimmed of white space): from the first
+    start to the last end among them. Overlapping spans become one mask."""
     ranges: list[Span] = []
-    sentence_list: list[Span] | None = None
+    index: _SentenceIndex | None = None
     for start, end, category in spans:
         if category in sentence_categories:
-            if sentence_list is None:
+            if index is None:
                 source = sentence_spans(text) if sentences is None else sentences
-                sentence_list = [t for s in source if (t := _trimmed(text, *s)) is not None]
-            covering = [(a, b) for a, b in sentence_list if a < end and start < b]
-            if covering:
-                start = min(start, covering[0][0])
-                end = max(end, covering[-1][1])
+                index = _SentenceIndex([t for s in source if (t := _trimmed(text, *s)) is not None])
+            start, end = index.extended(start, end)
         ranges.append((start, end))
     out: list[str] = []
     position = 0
@@ -179,6 +193,24 @@ def mask_omissis(
         position = end
     out.append(text[position:])
     return "".join(out)
+
+
+class _SentenceIndex:
+    """Sentences sorted by start, searched in logarithmic time."""
+
+    def __init__(self, sentences: list[Span]) -> None:
+        ordered = sorted(sentences)
+        self._starts = [a for a, _b in ordered]
+        # The furthest end among the sentences up to each one.
+        self._reach = list(accumulate((b for _a, b in ordered), max))
+
+    def extended(self, start: int, end: int) -> Span:
+        """``(start, end)`` extended to the sentences it overlaps."""
+        first = bisect_right(self._reach, start)  # the first that ends after start
+        stop = bisect_left(self._starts, end)  # the sentences before it start before end
+        if first >= stop:
+            return start, end
+        return min(start, self._starts[first]), max(end, self._reach[stop - 1])
 
 
 def _merged(ranges: list[Span]) -> list[Span]:

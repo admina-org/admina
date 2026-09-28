@@ -196,10 +196,52 @@ def test_sentence_spans():
     ]
 
 
+def test_sentence_spans_with_runs_of_punctuation_quotes_and_brackets():
+    text = "Uno... Due?! «Tre» quattro. (Cinque) sei.” Sette"
+    parts = [text[a:b] for a, b in sentence_spans(text)]
+    assert parts == ["Uno", "Due", "«Tre» quattro", "(Cinque) sei", "Sette"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Ha una diagnosi di diabete.\nla terapia prosegue",
+        "Ha una diagnosi di diabete.) \n la terapia prosegue",
+        "Ha una diagnosi di diabete!\r\n2 visite in programma",
+    ],
+)
+def test_a_line_break_ends_a_sentence_after_final_punctuation(text):
+    parts = [text[a:b] for a, b in sentence_spans(text)]
+    assert len(parts) == 2
+    assert parts[0].startswith("Ha una diagnosi di diabete")
+    assert parts[0].rstrip(".!) ") == "Ha una diagnosi di diabete"
+
+
+def test_a_sentence_goes_on_after_final_punctuation_and_a_lower_case_word():
+    text = "Ha una diagnosi di diabete. la terapia prosegue"
+    assert sentence_spans(text) == [(0, len(text))]
+
+
 def test_mask_omissis_merges_overlaps():
     text = "abc def ghi"
     assert mask_omissis(text, [(0, 3, "A"), (2, 7, "B")]) == f"{OMISSIS} ghi"
     assert mask_omissis(text, []) == text
+
+
+def test_mask_omissis_extends_a_span_to_every_sentence_it_overlaps():
+    text = "Uno due. Tre quattro. Cinque sei"
+    # The engine's sentences, in any order.
+    sentences = [(22, 32), (9, 20), (0, 7)]
+    span = (4, 12, "HEALTH")  # from "due" into "Tre"
+    out = mask_omissis(text, [span], sentence_categories={"HEALTH"}, sentences=sentences)
+    assert out == f"{OMISSIS}. Cinque sei"
+    inside = (13, 16, "HEALTH")  # "qua", inside the second sentence
+    out = mask_omissis(text, [inside], sentence_categories={"HEALTH"}, sentences=sentences)
+    assert out == f"Uno due. {OMISSIS}. Cinque sei"
+    other = (13, 16, "EMAIL")  # not a sentence category
+    assert mask_omissis(text, [other], sentence_categories={"HEALTH"}) == (
+        f"Uno due. Tre {OMISSIS}ttro. Cinque sei"
+    )
 
 
 # ── Through the gateway ───────────────────────────────────────

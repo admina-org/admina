@@ -21,22 +21,32 @@ the PII and egress regexes finish within the time budget
 newlines or a mix after each trigger word, and each trigger repeated. The
 PII and egress matching, and the e-mail category of the PII redactor and of
 the spaCy + regex PII engine, also finish within it on 64k-character runs
-of e-mail local-part characters. Each time is the best of up to three runs.
+of e-mail local-part characters. The sentences of the ``omissis`` mask style
+(the sentence splitter, ``mask_omissis``, a plugin engine through
+``PIIEngineBridge`` and ``StreamRedactor``) finish within it on 64k-character
+runs of final punctuation, quotes, brackets, white space and line breaks,
+and their time grows linearly with a sentence, a masked term or a
+placeholder every few characters. Each time is the best of up to three runs.
 """
 
 from __future__ import annotations
 
 import asyncio
 import functools
+import re
+import time
 from types import SimpleNamespace
 
 import pytest
 
 from admina.domains.agent_security import egress, firewall
 from admina.domains.agent_security import pattern_timing as pt
-from admina.domains.data_sovereignty import iban, pii
+from admina.domains.data_sovereignty import iban, masking, pii
 from admina.domains.data_sovereignty.email_matching import iter_email_matches
+from admina.engines.pii_plugins import PIIEngineBridge
+from admina.plugins.base import BasePIIEngine
 from admina.plugins.builtin.pii import spacy_regex
+from admina.sdk.streaming import StreamRedactor
 
 BUDGET_MS = pt.DEFAULT_BUDGET_MS
 SIZE = pt.DEFAULT_SIZE
@@ -209,6 +219,8 @@ _OTHER_REGEXES = {
     **{f"pii-{name.lower()}": regex for name, regex in pii.REGEX_PII_PATTERNS.items()},
     "pii-version-prefix": pii._VERSION_PREFIX_RX,
     "pii-version-suffix": pii._VERSION_SUFFIX_RX,
+    "masking-placeholder": masking.PLACEHOLDER_RX,
+    "masking-sentence-end": masking._SENTENCE_END_RX,
     "egress-host": egress._HOST_RX,
     "egress-single-label": egress._SINGLE_LABEL_RX,
 }
@@ -327,3 +339,136 @@ def test_pii_engine_detect_email_on_long_runs(label):
         _run_inputs(SIZE)[label],
     )
     assert ms <= BUDGET_MS, f"{ms:.1f} ms"
+
+
+# ── Sentences of the omissis mask style ──────────────────────
+#
+# The sentence splitter, mask_omissis, a plugin engine in the omissis style
+# (PIIEngineBridge) and StreamRedactor: on runs of final punctuation, quotes,
+# brackets, white space and line breaks, alone or after a term of a sentence
+# category; and on texts with a sentence, a term or a placeholder every few
+# characters.
+
+_TERM = "diabete"
+
+_SENTENCE_RUN_UNITS = {
+    "dot": ".",
+    "bang": "!",
+    "ellipsis": "…",
+    "question-closing": "?»",
+    "dot-space": ". ",
+    "dot-bracket-space": ".) (",
+    "newline": "\n",
+    "space-newline": " \n",
+}
+
+_SENTENCE_DENSE_UNITS = {
+    "sentences-upper": f". {_TERM.capitalize()}",
+    "sentences-lower": f". {_TERM}",
+    "lines": f"{_TERM}\n",
+    "placeholders": f"[ID] {_TERM}. ",
+}
+
+
+@functools.cache
+def _sentence_run_inputs(size: int) -> dict[str, str]:
+    """Runs: at most one term and one sentence end before the run."""
+    inputs: dict[str, str] = {}
+    head = f"{_TERM} "
+    for label, unit in _SENTENCE_RUN_UNITS.items():
+        inputs[f"{label}-run"] = _fill(unit, size)
+        inputs[f"term-{label}-run"] = head + _fill(unit, size - len(head))
+    third = size // 3
+    inputs["term-bang-run-quote-run"] = head + "!" * third + '"' * (size - third - len(head))
+    inputs["term-dot-space-run-upper"] = f"{_TERM}." + " " * (size - len(_TERM) - 2) + "A"
+    inputs["term-dot-space-opening-run"] = f"{_TERM}. " + "(" * (size - len(_TERM) - 2)
+    return inputs
+
+
+@functools.cache
+def _sentence_inputs(size: int) -> dict[str, str]:
+    """The runs, and texts with a sentence, a term or a placeholder every
+    few characters."""
+    dense = {label: _fill(unit, size) for label, unit in _SENTENCE_DENSE_UNITS.items()}
+    return {**_sentence_run_inputs(size), **dense}
+
+
+_SENTENCE_RUN_LABELS = list(_sentence_run_inputs(SIZE))
+_SENTENCE_LABELS = list(_sentence_inputs(SIZE))
+
+
+class _TermEngine(BasePIIEngine):
+    """Detects each ``diabete``, in any case, as a sentence category."""
+
+    name = "term-engine"
+    sentence_categories = frozenset({"HEALTH"})
+    special_categories = frozenset({"HEALTH"})
+    rx = re.compile(_TERM, re.IGNORECASE)
+
+    @property
+    def supported_languages(self) -> list[str]:
+        return ["it"]
+
+    async def detect(self, text: str, categories: list[str] | None = None) -> list[dict]:
+        return [
+            {"type": "HEALTH", "start": m.start(), "end": m.end()} for m in self.rx.finditer(text)
+        ]
+
+    async def redact(self, text: str, matches: list[dict]) -> str:
+        return text
+
+
+@functools.cache
+def _omissis_bridge() -> PIIEngineBridge:
+    return PIIEngineBridge(_TermEngine(), mask_style="omissis")
+
+
+def _mask_sentences(text: str) -> str:
+    """``mask_omissis`` with a sentence-category span on each term (on the
+    first character when there is none)."""
+    spans = [(m.start(), m.end(), "HEALTH") for m in _TermEngine.rx.finditer(text)]
+    return masking.mask_omissis(text, spans or [(0, 1, "HEALTH")], sentence_categories={"HEALTH"})
+
+
+_SENTENCE_FUNCTIONS = {
+    "sentence-spans": masking.sentence_spans,
+    "mask-omissis": _mask_sentences,
+    "bridge-omissis": lambda text: _omissis_bridge().redact(text),
+}
+
+
+@pytest.mark.parametrize("label", _SENTENCE_RUN_LABELS)
+@pytest.mark.parametrize("function", list(_SENTENCE_FUNCTIONS))
+def test_omissis_sentences_on_long_runs(function, label):
+    ms = _best_ms(_SENTENCE_FUNCTIONS[function], _sentence_run_inputs(SIZE)[label])
+    assert ms <= BUDGET_MS, f"{ms:.1f} ms"
+
+
+@pytest.mark.parametrize("label", _SENTENCE_LABELS)
+@pytest.mark.parametrize("function", list(_SENTENCE_FUNCTIONS))
+def test_omissis_sentences_time_grows_linearly(function, label):
+    """time(64k) / time(16k) stays at most 8."""
+    timed = SimpleNamespace(search=_SENTENCE_FUNCTIONS[function])
+    small = pt.search_ms(timed, _sentence_inputs(SIZE // 4)[label])
+    large = pt.search_ms(timed, _sentence_inputs(SIZE)[label])
+    # Below 0.05 ms the timer and cache noise dominate the ratio.
+    ratio = large / max(small, 0.05)
+    assert ratio <= 8.0, f"{small:.3f} ms at 16k, {large:.3f} ms at 64k"
+
+
+@pytest.mark.parametrize("label", _SENTENCE_RUN_LABELS)
+def test_stream_redactor_sentences_on_long_runs(label):
+    """Each 4096-character delta of a 64k run, and the end of the stream,
+    within the budget."""
+    text = _sentence_run_inputs(SIZE)[label]
+    redactor = StreamRedactor(_omissis_bridge())
+    assert redactor._sentences
+    times = []
+    for start in range(0, len(text), 4096):
+        began = time.perf_counter()
+        redactor.feed(text[start : start + 4096])
+        times.append((time.perf_counter() - began) * 1000)
+    began = time.perf_counter()
+    redactor.finish()
+    times.append((time.perf_counter() - began) * 1000)
+    assert max(times) <= BUDGET_MS, f"{max(times):.1f} ms"
