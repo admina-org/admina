@@ -21,6 +21,13 @@ accumulate in a recomposition window and are redacted through any
 boundary (e.g. ``john.doe@`` + ``example.com``) is still caught. Emission
 lags by roughly one window on the trailing edge; the caller must size
 ``window_chars`` above the longest expected entity (see module tests).
+
+With a redactor that masks whole sentences (``masks_sentences``, such as a
+:class:`~admina.engines.PIIEngineBridge` in the ``omissis`` mask style with
+sentence categories), text is released only up to the start of the sentence
+that the window reaches, so no part of a sentence is sent before a term that
+masks it arrives; past ``max_hold_chars`` of held text, the window alone
+decides again.
 """
 
 from __future__ import annotations
@@ -42,13 +49,22 @@ class StreamRedactor:
         window_chars: Number of trailing raw characters held back so an
             entity forming across a delta boundary is not emitted early.
             Must exceed the longest expected entity.
+        max_hold_chars: With a redactor that masks whole sentences, the most
+            raw characters held back while a sentence is not complete
+            (at least ``window_chars``).
     """
 
-    def __init__(self, pii_redactor: PIIBridge, window_chars: int = 64) -> None:
+    def __init__(
+        self, pii_redactor: PIIBridge, window_chars: int = 64, max_hold_chars: int = 4096
+    ) -> None:
         if window_chars < 1:
             raise ValueError("window_chars must be >= 1")
+        if max_hold_chars < window_chars:
+            raise ValueError("max_hold_chars must be >= window_chars")
         self._redactor = pii_redactor
         self._window = window_chars
+        self._max_hold = max_hold_chars
+        self._sentences = bool(getattr(pii_redactor, "masks_sentences", False))
         self._buf = ""
         self._pii_count = 0
 
@@ -59,9 +75,16 @@ class StreamRedactor:
         self._buf += delta
         if len(self._buf) <= self._window:
             return []
+        cut = len(self._buf) - self._window
+        if self._sentences and len(self._buf) <= self._max_hold:
+            # Release whole sentences only: the one the window reaches may
+            # still get a term that masks all of it.
+            cut = self._redactor.sentence_start(self._buf, cut)
+            if cut <= 0:
+                return []
         red = self._redactor.redact(self._buf)
         red_text = red["redacted_text"]
-        tail_raw = self._buf[-self._window :]
+        tail_raw = self._buf[cut:]
         tail_red = self._redactor.redact(tail_raw)
         if not red_text.endswith(tail_red["redacted_text"]):
             # A PII entity straddles the emit boundary — hold everything and

@@ -16,7 +16,9 @@
 
 Presidio performs *detection*; Admina performs the *masking*, so the output
 format is identical to the spaCy+regex engine (the per-category mask from
-``PII_CATEGORIES``, e.g. ``[EMAIL]`` / ``[PERSON]``). Registered on the
+``PII_CATEGORIES``, e.g. ``[EMAIL]`` / ``[PERSON]``, or ``[OMISSIS]`` in the
+``omissis`` mask style). A detected span is masked only outside the
+placeholders already in the text. Registered on the
 synchronous ``PIIBridge`` factory path (admina/engines/__init__.py), NOT the
 async ``BasePIIEngine`` plugin ABC.
 
@@ -34,6 +36,12 @@ import logging
 from functools import lru_cache
 from typing import Any
 
+from admina.domains.data_sovereignty.masking import (
+    OMISSIS,
+    normalize_mask_style,
+    outside_placeholders,
+    placeholder_spans,
+)
 from admina.domains.data_sovereignty.pii import PII_CATEGORIES
 
 logger = logging.getLogger("admina.engines.presidio")
@@ -79,7 +87,8 @@ def _build_analyzer(languages: tuple[str, ...]):
 class PresidioPIIEngine:
     """Synchronous ``PIIBridge`` backed by Microsoft Presidio (analyzer-only)."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, mask_style: str = "typed") -> None:
+        self.mask_style = normalize_mask_style(mask_style)
         try:
             import presidio_analyzer  # noqa: F401
         except ImportError as exc:
@@ -115,6 +124,7 @@ class PresidioPIIEngine:
         for lang in self.languages:
             raw.extend(self._analyzer.analyze(text=text, language=lang))
 
+        placeholders = placeholder_spans(text)
         spans: list[tuple[int, int, str, str]] = []
         for r in raw:
             category = _PRESIDIO_TO_ADMINA.get(r.entity_type)
@@ -123,7 +133,9 @@ class PresidioPIIEngine:
             cfg = PII_CATEGORIES.get(category, {})
             if not cfg.get("enabled", False):
                 continue
-            spans.append((r.start, r.end, category, cfg.get("mask", f"[{category}]")))
+            mask = OMISSIS if self.mask_style == "omissis" else cfg.get("mask", f"[{category}]")
+            for start, end in outside_placeholders(r.start, r.end, placeholders, text):
+                spans.append((start, end, category, mask))
 
         # Resolve overlaps deterministically: earliest start first, longest on
         # ties; greedily drop any span overlapping an already-accepted one. This
@@ -175,7 +187,16 @@ class PresidioPIIEngine:
         }
 
 
-@lru_cache(maxsize=1)
-def get_presidio_pii_engine() -> PresidioPIIEngine:
-    """Return a process-wide cached Presidio engine (analyzer construction is costly)."""
-    return PresidioPIIEngine()
+def get_presidio_pii_engine(mask_style: str | None = None) -> PresidioPIIEngine:
+    """Return a process-wide cached Presidio engine (analyzer construction is
+    costly), one per mask style (default: :func:`admina.engines.pii_mask_style`)."""
+    if mask_style is None:
+        from admina.engines import pii_mask_style
+
+        mask_style = pii_mask_style()
+    return _cached_engine(normalize_mask_style(mask_style))
+
+
+@lru_cache(maxsize=4)
+def _cached_engine(mask_style: str) -> PresidioPIIEngine:
+    return PresidioPIIEngine(mask_style=mask_style)

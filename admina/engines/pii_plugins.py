@@ -40,7 +40,12 @@ from collections.abc import Coroutine
 from importlib import metadata
 from typing import Any, TypeVar
 
-from admina.domains.data_sovereignty.masking import outside_placeholders, placeholder_spans
+from admina.domains.data_sovereignty.masking import (
+    mask_omissis,
+    normalize_mask_style,
+    outside_placeholders,
+    placeholder_spans,
+)
 from admina.plugins.base import BasePIIEngine
 
 logger = logging.getLogger("admina.engines.pii_plugins")
@@ -62,9 +67,12 @@ def plugin_engine_names() -> list[str]:
     return sorted({ep.name for ep in _entry_points()})
 
 
-def load_plugin_engine(name: str, *, config: Any = None) -> PIIEngineBridge | None:
+def load_plugin_engine(
+    name: str, *, mask_style: str = "typed", config: Any = None
+) -> PIIEngineBridge | None:
     """The engine registered as *name* in :data:`PII_ENGINES_GROUP`, wrapped
-    in a :class:`PIIEngineBridge`; None when no entry point has that name.
+    in a :class:`PIIEngineBridge` with *mask_style*; None when no entry
+    point has that name.
 
     *config* goes to an engine whose class (or factory) has a ``config``
     parameter.
@@ -89,7 +97,7 @@ def load_plugin_engine(name: str, *, config: Any = None) -> PIIEngineBridge | No
         ) from exc
     engine = _instantiate(name, target, config)
     logger.info("[OK] PII engine %r loaded from %s", name, entry_point.value)
-    return PIIEngineBridge(engine, name=name)
+    return PIIEngineBridge(engine, mask_style=mask_style, name=name)
 
 
 def _instantiate(name: str, target: Any, config: Any) -> BasePIIEngine:
@@ -151,23 +159,31 @@ class PIIEngineBridge:
     """The synchronous ``PIIBridge`` of an asynchronous
     :class:`~admina.plugins.base.BasePIIEngine`.
 
-    ``redact(text)`` runs the engine's ``detect`` and ``redact`` on the
-    engine's own event loop and returns ``{"redacted_text", "entities",
-    "categories", "count"}``. Each entity has ``type``, ``start``, ``end``,
-    ``original_length`` and ``method`` (the engine's name), never the text
-    it covers. A placeholder already in the text (``[EMAIL]``, …) is never
-    masked again: a detected span is reduced to its parts outside the
-    placeholders before the engine's ``redact`` receives it. A span outside
-    the text, or without a string ``type``, raises ``ValueError``.
+    ``redact(text)`` runs the engine's ``detect`` on the engine's own event
+    loop and returns ``{"redacted_text", "entities", "categories",
+    "count"}``. In the ``typed`` mask style the text is the engine's own
+    ``redact``; in the ``omissis`` style Admina masks each span with
+    ``[OMISSIS]`` and, for the engine's ``sentence_categories``, the
+    sentences (the engine's ``sentences``) that the span overlaps. Each
+    entity has ``type``, ``start``, ``end``, ``original_length`` and
+    ``method`` (the engine's name), never the text it covers. A placeholder
+    already in the text (``[EMAIL]``, ``[OMISSIS]``, …) is never masked
+    again: a detected span is reduced to its parts outside the
+    placeholders. A span outside the text, or without a string ``type``,
+    raises ``ValueError``.
 
     Args:
         engine: The engine.
+        mask_style: ``typed`` (default) or ``omissis``.
         name: Its name (default: the engine's ``name`` attribute, else its
             class name).
     """
 
-    def __init__(self, engine: BasePIIEngine, *, name: str | None = None) -> None:
+    def __init__(
+        self, engine: BasePIIEngine, *, mask_style: str = "typed", name: str | None = None
+    ) -> None:
         self.engine = engine
+        self.mask_style = normalize_mask_style(mask_style)
         self.name = name or str(getattr(engine, "name", "") or type(engine).__name__)
         self.total_redacted = 0
         self.redactions_by_type: dict[str, int] = {}
@@ -179,13 +195,24 @@ class PIIEngineBridge:
         """The special categories of personal data the engine declares."""
         return frozenset(self.engine.special_categories)
 
+    @property
+    def masks_sentences(self) -> bool:
+        """True when whole sentences are masked (``omissis`` and an engine
+        with ``sentence_categories``): a stream is then released at the
+        start of a sentence (:meth:`sentence_start`)."""
+        return self.mask_style == "omissis" and bool(self.engine.sentence_categories)
+
+    def sentence_start(self, text: str, position: int) -> int:
+        """The start of the sentence of *text* that holds *position*: the
+        text before it is made of whole sentences; 0 when there is none."""
+        starts = [start for start, _end in self.engine.sentences(text) if start <= position]
+        return max(starts, default=0)
+
     def redact(self, text: str) -> dict[str, Any]:
         if not text:
             return {"redacted_text": text, "entities": [], "categories": [], "count": 0}
         matches = self._matches(text, self._loop.run(self.engine.detect(text)))
-        redacted = self._loop.run(self.engine.redact(text, matches)) if matches else text
-        if not isinstance(redacted, str):
-            raise TypeError(f"PII engine {self.name!r} returned {type(redacted).__name__}")
+        redacted = self._masked(text, matches)
         entities = [
             {
                 "type": m["type"],
@@ -203,6 +230,23 @@ class PIIEngineBridge:
             "categories": sorted({e["type"] for e in entities}),
             "count": len(entities),
         }
+
+    def _masked(self, text: str, matches: list[dict]) -> str:
+        if not matches:
+            return text
+        if self.mask_style == "omissis":
+            sentence_categories = frozenset(self.engine.sentence_categories)
+            needs_sentences = any(m["type"] in sentence_categories for m in matches)
+            return mask_omissis(
+                text,
+                [(m["start"], m["end"], m["type"]) for m in matches],
+                sentence_categories=sentence_categories,
+                sentences=self.engine.sentences(text) if needs_sentences else None,
+            )
+        redacted = self._loop.run(self.engine.redact(text, matches))
+        if not isinstance(redacted, str):
+            raise TypeError(f"PII engine {self.name!r} returned {type(redacted).__name__}")
+        return redacted
 
     def get_stats(self) -> dict[str, Any]:
         with self._stats_lock:

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -240,10 +241,10 @@ class _RustFirewallBridge:
 class _PythonPiiBridge:
     """Wraps the Python PIIRedactor."""
 
-    def __init__(self):
+    def __init__(self, mask_style: str = "typed"):
         from admina.domains.data_sovereignty.pii import PIIRedactor
 
-        self._impl = PIIRedactor()
+        self._impl = PIIRedactor(mask_style=mask_style)
 
     def redact(self, text: str) -> dict:
         return self._impl.redact(text)
@@ -258,16 +259,26 @@ class _RustPiiBridge:
     """Wraps Rust RustPiiScanner, returns dicts for compatibility.
 
     Stats normalization: Rust tracks ``total_scans``/``total_redactions``
-    with no per-type breakdown; mapped to the Python key set.
+    with no per-type breakdown; mapped to the Python key set. In the
+    ``omissis`` mask style the scanner's masks (``[EMAIL_REDACTED]``, …)
+    become ``[OMISSIS]``.
     """
 
-    def __init__(self):
+    def __init__(self, mask_style: str = "typed"):
+        from admina.domains.data_sovereignty.masking import normalize_mask_style
+
         self._impl = admina_core.RustPiiScanner()
+        self._omissis = normalize_mask_style(mask_style) == "omissis"
 
     def redact(self, text: str) -> dict:
         result = self._impl.redact(text)
+        redacted = result.redacted_text
+        if self._omissis and result.count:
+            from admina.domains.data_sovereignty.masking import OMISSIS
+
+            redacted = _RUST_PII_MASK_RX.sub(OMISSIS, redacted)
         return {
-            "redacted_text": result.redacted_text,
+            "redacted_text": redacted,
             "count": result.count,
             "categories": result.categories,
             "entities": [{"type": cat, "method": "rust_regex"} for cat in result.categories],
@@ -284,6 +295,10 @@ class _RustPiiBridge:
             "spacy_available": False,
             "engine": "rust",
         }
+
+
+# Masks of the Rust PII scanner (admina_core).
+_RUST_PII_MASK_RX = re.compile(r"\[(?:EMAIL|CC|SSN|PHONE|IBAN|IP)_REDACTED\]")
 
 
 # ── Loop breaker bridges ────────────────────────────────────────────────────
@@ -414,9 +429,10 @@ _PII_ENGINE_FACTORIES: dict[str, Callable[[], PIIBridge]] = {}
 
 
 def _spacy_regex_pii() -> PIIBridge:
+    style = pii_mask_style()
     if _resolve_pii_engine() == "rust":
-        return _RustPiiBridge()
-    return _PythonPiiBridge()
+        return _RustPiiBridge(mask_style=style)
+    return _PythonPiiBridge(mask_style=style)
 
 
 _PII_ENGINE_FACTORIES["spacy-regex"] = _spacy_regex_pii
@@ -446,6 +462,22 @@ def _admina_config() -> AdminaConfig | None:
         return None
 
 
+def pii_mask_style() -> str:
+    """The mask style of the PII engines: ``ADMINA_PII_MASK_STYLE`` env >
+    admina.yaml ``pii_mask_style`` > ``typed``.
+
+    Raises:
+        ValueError: the value is not ``typed`` or ``omissis``.
+    """
+    from admina.domains.data_sovereignty.masking import normalize_mask_style
+
+    value = os.environ.get("ADMINA_PII_MASK_STYLE")
+    if not (value or "").strip():
+        config = _admina_config()
+        value = config.pii_mask_style if config is not None else None
+    return normalize_mask_style(value)
+
+
 def get_pii_engine(name: str | None = None) -> PIIBridge:
     """Get the configured PII engine.
 
@@ -458,12 +490,14 @@ def get_pii_engine(name: str | None = None) -> PIIBridge:
     ``presidio``) first, then among the entry points of the
     ``admina.pii_engines`` group (see :mod:`admina.engines.pii_plugins`),
     whose engine runs through a :class:`PIIEngineBridge` and receives its
-    ``plugin_config`` block of admina.yaml.
+    ``plugin_config`` block of admina.yaml. Every engine masks in the style
+    of :func:`pii_mask_style`.
 
     Raises:
         ValueError: no engine has that name (the message lists the names
             available).
     """
+    mask_style = pii_mask_style()
     config = None
     if name is None:
         name = os.environ.get("ADMINA_PII_ENGINE") or None
@@ -476,7 +510,7 @@ def get_pii_engine(name: str | None = None) -> PIIBridge:
     if config is None:
         config = _admina_config()
     plugin_config = (config.plugin_config or {}) if config is not None else {}
-    bridge = load_plugin_engine(name, config=plugin_config.get(name))
+    bridge = load_plugin_engine(name, mask_style=mask_style, config=plugin_config.get(name))
     if bridge is None:
         available = sorted({*_PII_ENGINE_FACTORIES, *plugin_engine_names()})
         raise ValueError(f"Unknown pii_engine {name!r}. Available: {available}.")
@@ -515,4 +549,5 @@ __all__ = [
     "get_loop_breaker",
     "get_pii_engine",
     "get_pii_scanner",
+    "pii_mask_style",
 ]

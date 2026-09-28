@@ -309,6 +309,7 @@ class AdminaConfig:
     forensic_store: str = "filesystem"
     auth_provider: str = "apikey"
     pii_engine: str = "spacy-regex"
+    pii_mask_style: str = "typed"
     alert_channels: list[AlertChannelConfig] = field(default_factory=list)
     plugins: list[str] = field(default_factory=list)
     plugin_config: dict[str, Any] = field(default_factory=dict)
@@ -561,6 +562,7 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
         forensic_store=data.get("forensic_store", "filesystem"),
         auth_provider=data.get("auth_provider", "apikey"),
         pii_engine=data.get("pii_engine", "spacy-regex"),
+        pii_mask_style=str(data.get("pii_mask_style") or "typed"),
         alert_channels=alerts,
         plugins=data.get("plugins", []),
         plugin_config=data.get("plugin_config", {}),

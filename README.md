@@ -412,6 +412,17 @@ of the engine lists the special categories of personal data (GDPR art. 9 and
 10) among its types: `DataClassifier(special_categories=...)` classifies them
 `restricted`, like the built-in `SPECIAL_CATEGORIES`.
 
+`ADMINA_PII_MASK_STYLE` (or `pii_mask_style` in `admina.yaml`) chooses the
+masks: `typed` (default) replaces each span with its type (`[EMAIL]`,
+`[PERSON]`, …); `omissis` replaces each span with `[OMISSIS]`, in requests,
+responses and streamed responses alike, so no type is left in the text. In
+`omissis`, the categories an engine lists in `sentence_categories` (such as
+health or judicial data) have their whole sentence replaced; the sentences
+come from the engine's `sentences(text)`, by default a simple splitter (a
+line break, or `.`, `!`, `?` followed by an upper-case word, ends a
+sentence). A streamed response from such an engine is then released a whole
+sentence at a time (at most 4096 characters held back).
+
 Every engine masks text values only, never the keys of a JSON object: the
 gateway redacts the text of each message (`content`, as a string or the
 `text` of each part, reasoning and refusal text, tool call `arguments`) and

@@ -23,7 +23,12 @@ import re
 
 from admina.domains.data_sovereignty.email_matching import EMAIL_RX, iter_email_matches
 from admina.domains.data_sovereignty.iban import IBAN_RX, iter_iban_matches
-from admina.domains.data_sovereignty.masking import outside_placeholders, placeholder_spans
+from admina.domains.data_sovereignty.masking import (
+    OMISSIS,
+    normalize_mask_style,
+    outside_placeholders,
+    placeholder_spans,
+)
 
 # spaCy is part of the [nlp] extra. When absent, PIIRedactor falls back
 # to regex-only mode (still covers EMAIL/PHONE/SSN/IBAN/IP/credit-card/EU IDs).
@@ -187,9 +192,13 @@ class PIIRedactor:
         config: Optional PIIConfig (or any object with `.ner_model` / `.categories`
                 attributes) loaded from admina.yaml.  When supplied, its values
                 take precedence over the module-level defaults and env vars.
+        mask_style: ``typed`` (default): each span is replaced by the mask of
+                its category (``[EMAIL]``, ``[PERSON]``, …); ``omissis``: by
+                ``[OMISSIS]`` (see :mod:`admina.domains.data_sovereignty.masking`).
     """
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, *, mask_style: str = "typed"):
+        self.mask_style = normalize_mask_style(mask_style)
         # Resolve NLP model: config.ner_model > ADMINA_SPACY_MODEL env var > default
         model_name = getattr(config, "ner_model", None) or SPACY_MODEL
         if _spacy is None:
@@ -241,7 +250,7 @@ class PIIRedactor:
             cat_config = active_categories.get(cat_name, {})
             if not cat_config.get("enabled", True):
                 continue
-            mask = cat_config.get("mask", f"[{cat_name}]")
+            mask = self._mask(cat_name, cat_config)
 
             # Find all matches; for IP_ADDRESS, drop version-string matches
             # (e.g. "version 1.2.3.4 released") to reduce false positives.
@@ -286,7 +295,7 @@ class PIIRedactor:
                 cat_config = active_categories.get(ent.label_, {})
                 if not cat_config.get("enabled", False):
                     continue
-                mask = cat_config.get("mask", f"[{ent.label_}]")
+                mask = self._mask(ent.label_, cat_config)
                 parts = outside_placeholders(ent.start_char, ent.end_char, placeholders, redacted)
                 for start, end in reversed(parts):
                     entities_found.append(
@@ -315,6 +324,11 @@ class PIIRedactor:
             "entities": entities_found,
             "count": count,
         }
+
+    def _mask(self, category: str, cat_config: dict) -> str:
+        if self.mask_style == "omissis":
+            return OMISSIS
+        return cat_config.get("mask", f"[{category}]")
 
     def get_stats(self) -> dict:
         return {

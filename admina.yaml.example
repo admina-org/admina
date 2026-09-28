@@ -256,6 +256,9 @@ auth_provider: apikey
 # spacy-regex (default) | presidio | an engine of the admina.pii_engines
 # entry-point group (its plugin_config block below is passed to it).
 pii_engine: spacy-regex
+# typed (default: [EMAIL], [PERSON], ...) | omissis ([OMISSIS] for every span,
+# the whole sentence for the sentence categories of an engine).
+pii_mask_style: typed
 alert_channels:
   - type: log
   - type: webhook

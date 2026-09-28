@@ -611,6 +611,18 @@ class BasePIIEngine(ABC):
     #: classifies them ``restricted``.
     special_categories: frozenset[str] = frozenset()
 
+    #: Types whose whole sentence is masked in the ``omissis`` mask style
+    #: (``ADMINA_PII_MASK_STYLE``), such as health or judicial data.
+    sentence_categories: frozenset[str] = frozenset()
+
+    def sentences(self, text: str) -> list[tuple[int, int]]:
+        """The ``(start, end)`` of each sentence of *text*, for the
+        ``sentence_categories``. Default: the simple splitter of
+        :func:`admina.domains.data_sovereignty.masking.sentence_spans`."""
+        from admina.domains.data_sovereignty.masking import sentence_spans
+
+        return sentence_spans(text)
+
     @abstractmethod
     async def detect(
         self,
