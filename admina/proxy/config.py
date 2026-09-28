@@ -174,6 +174,16 @@ class Settings(BaseSettings):
     # A disabled surface answers 404 (before authentication) and its routes
     # are not mounted. /health and /metrics are always served.
     ADMINA_ENABLED_SURFACES: str = ""
+    # Configuration check at startup. A value of the wrong type in
+    # admina.yaml always stops the proxy. Unknown keys of admina.yaml and
+    # ADMINA_* variables (environment or .env) that nothing reads are:
+    #   false (default): logged as a warning;
+    #   true: an error, and the proxy does not start.
+    ADMINA_CONFIG_STRICT: bool = False
+    # Comma-separated prefixes of ADMINA_* variables that belong to other
+    # components sharing the environment (e.g. ADMINA_MYAPP_): not reported.
+    # A plugin's entry point name gives one too (ADMINA_<NAME>_).
+    ADMINA_ENV_ALLOW_PREFIXES: str = ""
 
     # Rate limiting (per session, requires Redis)
     RATE_LIMIT_MAX_REQUESTS: int = 100  # requests per window

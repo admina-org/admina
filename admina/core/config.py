@@ -18,6 +18,12 @@ Reads ``admina.yaml`` if present, falls back to ``.env`` variables for
 backward compatibility.  Exposes a typed :class:`AdminaConfig` object.
 The ``ADMINA_CONFIG`` environment variable names the file to read instead
 of searching for it (see :func:`load_config`).
+
+The file is checked against its schema (:mod:`admina.core.config_schema`):
+a value of the wrong type is a :class:`ConfigSchemaError` whenever it is
+loaded; :func:`check_config` also reports the keys the schema does not
+know (the proxy logs them at startup, or refuses to start with
+``ADMINA_CONFIG_STRICT=true``).
 """
 
 from __future__ import annotations
@@ -28,6 +34,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from admina.core.config_schema import find_problems
 
 logger = logging.getLogger("admina.config")
 
@@ -45,7 +53,11 @@ __all__ = [
     "GATEWAY_STREAM_MODES",
     "PRESCAN_TAG_NAME",
     "AdminaConfig",
+    "ConfigCheck",
     "ConfigFileError",
+    "ConfigSchemaError",
+    "check_config",
+    "config_path",
     "load_config",
 ]
 
@@ -60,6 +72,26 @@ class ConfigFileError(Exception):
     configuration that fall back to the defaults on those errors must not do
     so for a file that was named explicitly.
     """
+
+
+class ConfigSchemaError(ValueError):
+    """admina.yaml does not match its schema: values of the wrong type
+    (or, for :func:`check_config` in strict mode, unknown keys). The message
+    names the file and the path of each key; ``problems`` lists them."""
+
+    def __init__(self, path: Path | str, problems: list[str]) -> None:
+        self.path = Path(path)
+        self.problems = list(problems)
+        super().__init__(f"admina.yaml {path}: " + "; ".join(self.problems))
+
+
+@dataclass(frozen=True)
+class ConfigCheck:
+    """What :func:`check_config` found: the file checked (None when there
+    is none) and the paths of its unknown keys."""
+
+    path: Path | None
+    unknown: tuple[str, ...] = ()
 
 
 # How the gateway relays streamed responses (``gateway.stream_mode`` and
@@ -764,7 +796,7 @@ def load_config(
         named = os.environ.get(CONFIG_ENV, "")
         if named:
             return _load_named(named)
-        search_paths = [Path.cwd(), Path(__file__).resolve().parent.parent]
+        search_paths = _default_search_paths()
     for base in search_paths:
         candidate = Path(base) / "admina.yaml"
         if candidate.is_file() and _HAS_YAML:
@@ -773,6 +805,58 @@ def load_config(
     # 3. Fallback to environment / .env
     logger.info("No admina.yaml found — using .env fallback")
     return _build_from_env()
+
+
+def _default_search_paths() -> list[Path]:
+    """Where :func:`load_config` looks for admina.yaml without
+    ``ADMINA_CONFIG``: the current directory, then the package directory."""
+    return [Path.cwd(), Path(__file__).resolve().parent.parent]
+
+
+def config_path() -> Path | None:
+    """The admina.yaml that :func:`load_config` reads when called without
+    arguments: the file named by ``ADMINA_CONFIG`` when it is set and not
+    empty, else the first ``admina.yaml`` found in the current directory,
+    then in the package directory; None without one."""
+    named = os.environ.get(CONFIG_ENV, "")
+    if named:
+        return Path(named)
+    if not _HAS_YAML:  # pragma: no cover — PyYAML is a core dependency
+        return None
+    for base in _default_search_paths():
+        candidate = base / "admina.yaml"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def check_config(path: str | Path | None = None, *, strict: bool = False) -> ConfigCheck:
+    """Check admina.yaml against its schema.
+
+    Args:
+        path: The file; default :func:`config_path` (nothing to check when
+            there is none).
+        strict: Unknown keys are an error instead of being returned.
+
+    Returns:
+        The file checked and the paths of its unknown keys, sorted.
+
+    Raises:
+        ConfigSchemaError: a value has the wrong type, or *strict* and a key
+            is unknown.
+        OSError, yaml.YAMLError, ValueError: the file cannot be read, parsed,
+            or is not a YAML mapping.
+    """
+    file = Path(path) if path is not None else config_path()
+    if file is None:
+        return ConfigCheck(path=None)
+    problems = find_problems(_read_yaml(file))
+    if problems.errors:
+        raise ConfigSchemaError(file, problems.errors)
+    unknown = tuple(sorted(problems.unknown))
+    if strict and unknown:
+        raise ConfigSchemaError(file, [f"unknown keys: {', '.join(unknown)}"])
+    return ConfigCheck(path=file, unknown=unknown)
 
 
 def _load_named(value: str) -> AdminaConfig:
@@ -790,10 +874,23 @@ def _load_named(value: str) -> AdminaConfig:
 
 
 def _load_yaml(path: Path) -> AdminaConfig:
-    """Parse a YAML file and return :class:`AdminaConfig`."""
+    """Parse a YAML file and return :class:`AdminaConfig`.
+
+    Raises:
+        ConfigSchemaError: a value has the wrong type.
+    """
     logger.info("Loading config from %s", path)
+    data = _read_yaml(path)
+    errors = find_problems(data).errors
+    if errors:
+        raise ConfigSchemaError(path, errors)
+    return _build_from_yaml(data)
+
+
+def _read_yaml(path: Path) -> dict[str, Any]:
+    """The parsed YAML mapping of *path* (an empty file is ``{}``)."""
     with open(path) as fh:
         data = yaml.safe_load(fh) or {}
     if not isinstance(data, dict):
         raise ValueError(f"admina.yaml must be a YAML mapping, got {type(data).__name__}")
-    return _build_from_yaml(data)
+    return data

@@ -384,8 +384,38 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   istruzioni precedenti" (`analizza` has the form of the third person).
   Every pattern is timed with the builtin patterns
   (`tests/test_firewall_pattern_timing.py`).
+- admina.yaml is checked against its schema (`schema_version: 1`,
+  `admina.core.config_schema`). `check_config(path=None, *, strict=False)`
+  and `config_path()` of `admina.core.config` return the file checked and
+  the paths of its unknown keys (`domains.agent_security.firewal`,
+  `alert_channels[0].uri`). At startup the proxy logs them as a warning,
+  `admina.yaml <path>: unknown keys, not read: <paths> (...)`.
+- At startup the proxy logs, as a warning, the `ADMINA_*` variables of its
+  environment and `.env` file that nothing reads (`ADMINA_* variables not
+  read by Admina: <names> (...)`; values are never logged). Known
+  are the proxy settings, the variables of the engines, the SDK, the
+  builtin plugins and the other containers of the stack, and
+  `ADMINA_GATEWAY_UPSTREAM_<NAME>_API_KEY[_FILE]`. Not reported:
+  `ADMINA_<NAME>_...` for each entry point `<name>` of `admina.plugins`,
+  `admina.pii_engines` and `admina.pattern_packs` (upper case, other
+  characters than letters and digits as `_`), and the prefixes of
+  `ADMINA_ENV_ALLOW_PREFIXES` (comma-separated).
+- `ADMINA_CONFIG_STRICT` (default `false`): `true` makes unknown admina.yaml
+  keys (`ConfigSchemaError`) and unknown `ADMINA_*` variables
+  (`UnknownVariablesError`, a `ValueError`) stop the proxy at startup.
 
 ### Changed
+
+- A value of the wrong type in admina.yaml is an error naming the key:
+  `load_config()` raises `ConfigSchemaError` (a `ValueError`; a file named
+  by `ADMINA_CONFIG` gives a `ConfigFileError`, as for other invalid files),
+  for example "admina.yaml /etc/admina/admina.yaml:
+  domains.agent_security.loop_breaker.window_size: must be an integer", and
+  the proxy does not start. The values of `gateway` and `presidio` are
+  checked by their readers, as before; empty values (null) and the
+  free-form blocks (`plugin_config`, `integrations`,
+  `agent_security.domains`, the entries of `custom_patterns`) are not
+  checked. Migration: fix the value the error names.
 
 - `admina_requests_total` has the labels `surface` (`gateway`, `mcp`,
   `integration`) and `action` (`ALLOW`, `BLOCK`, `REDACT`, `CIRCUIT_BREAK`,

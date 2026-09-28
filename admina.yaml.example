@@ -8,6 +8,12 @@
 #
 # schema_version is an incremental integer bumped only on breaking
 # config-format changes; unrelated to the Admina product version.
+#
+# The file is checked against its schema: a value of the wrong type stops
+# the proxy (the error names the key); an unknown key, such as a typo, is
+# logged as a warning at startup, or stops the proxy with
+# ADMINA_CONFIG_STRICT=true. An empty value (key: with nothing after it) is
+# not checked.
 
 schema_version: 1
 

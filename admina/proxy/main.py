@@ -40,6 +40,7 @@ from fastapi.responses import JSONResponse
 
 import admina.plugins.builtin.transports.mcp as mcp_transport
 from admina import __version__
+from admina.core.config import check_config
 from admina.core.event_bus import GovernanceEvent as BusGovernanceEvent
 from admina.core.event_bus import bus as governance_bus
 from admina.core.exception_log import log_frames
@@ -71,6 +72,7 @@ from admina.proxy.api.integration import create_integration_endpoints
 from admina.proxy.body_limit import BodyLimitMiddleware
 from admina.proxy.config import GovernanceEvent, settings
 from admina.proxy.decisions import Decision, text_sha256
+from admina.proxy.env_check import UnknownVariablesError, plugin_prefixes, unknown_variables
 from admina.proxy.forensic_backend import build_forensic_store
 from admina.proxy.gateway_scan import (
     RulesetHeaderMiddleware,
@@ -78,7 +80,7 @@ from admina.proxy.gateway_scan import (
     scan_config_of,
 )
 from admina.proxy.gateway_transport import build_gateway_http_client, resolve_stream_mode
-from admina.proxy.gateway_upstreams import build_gateway_upstreams
+from admina.proxy.gateway_upstreams import build_gateway_upstreams, settings_environment
 from admina.proxy.log_format import configure_logging
 from admina.proxy.multi_upstream import MultiUpstreamRouter
 from admina.proxy.pipeline_executor import PipelineExecutor
@@ -245,6 +247,9 @@ def build_coordination_detector(redis: Any, egress_cfg: Any, quarantine: Any) ->
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     logger.info("Admina Proxy starting...")
+    # admina.yaml and the ADMINA_* variables: a wrong type (or, with
+    # ADMINA_CONFIG_STRICT, an unknown key or variable) stops the proxy here.
+    _check_configuration()
     # Before any engine is built: libraries read these variables on import.
     offline = apply_offline_environment()
 
@@ -486,6 +491,43 @@ def _build_loop_breaker() -> Any:
             "admina-framework[proxy] (or admina-framework[rust]), or serve only the "
             "gateway: ADMINA_ENABLED_SURFACES=gateway."
         ) from exc
+
+
+def _check_configuration() -> None:
+    """Check admina.yaml against its schema and look for ADMINA_* variables
+    that nothing reads. Unknown keys and variables are logged as a warning,
+    or raised with ADMINA_CONFIG_STRICT.
+
+    Raises:
+        ConfigSchemaError: a value of admina.yaml has the wrong type, or an
+            unknown key with ADMINA_CONFIG_STRICT.
+        UnknownVariablesError: unknown variables with ADMINA_CONFIG_STRICT.
+    """
+    strict = settings.ADMINA_CONFIG_STRICT
+    check = check_config(strict=strict)
+    if check.unknown:
+        logger.warning(
+            "admina.yaml %s: unknown keys, not read: %s (ADMINA_CONFIG_STRICT=true makes "
+            "them an error)",
+            check.path,
+            ", ".join(check.unknown),
+        )
+    allowed = (
+        *plugin_prefixes(),
+        *(p for p in settings.ADMINA_ENV_ALLOW_PREFIXES.split(",") if p.strip()),
+    )
+    unknown = unknown_variables(settings_environment(settings), allow_prefixes=allowed)
+    if not unknown:
+        return
+    if strict:
+        raise UnknownVariablesError(
+            f"ADMINA_CONFIG_STRICT: ADMINA_* variables not read by Admina: {', '.join(unknown)}"
+        )
+    logger.warning(
+        "ADMINA_* variables not read by Admina: %s (ADMINA_CONFIG_STRICT=true makes them an "
+        "error; ADMINA_ENV_ALLOW_PREFIXES lists the prefixes of other components)",
+        ", ".join(unknown),
+    )
 
 
 async def _connect_redis(url: str) -> Any:

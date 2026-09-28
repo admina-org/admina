@@ -59,6 +59,7 @@ __all__ = [
     "GatewayUpstreamError",
     "GatewayUpstreams",
     "build_gateway_upstreams",
+    "settings_environment",
 ]
 
 UPSTREAM_HEADER = "X-Admina-Upstream"
@@ -137,7 +138,7 @@ def build_gateway_upstreams(
         GatewayUpstreamError: A route, the default route or a key is
             misconfigured, or a key file cannot be used.
     """
-    environ = _environment(settings) if environ is None else environ
+    environ = settings_environment(settings) if environ is None else environ
     gateway = gateway or GatewayConfig()
     if gateway.errors:
         raise GatewayUpstreamError("; ".join(gateway.errors))
@@ -175,8 +176,9 @@ def build_gateway_upstreams(
     return GatewayUpstreams(routes=routes, default=default)
 
 
-def _environment(settings: Any) -> dict[str, str]:
-    """The process environment over the ``.env`` file of *settings*."""
+def settings_environment(settings: Any) -> dict[str, str]:
+    """The process environment over the ``.env`` file of *settings*, as the
+    settings read them."""
     config = getattr(settings, "model_config", None) or {}
     env_file = config.get("env_file")
     values: dict[str, str] = {}
