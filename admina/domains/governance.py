@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -91,6 +92,7 @@ async def run_pipeline(
     egress_mode: str = "observe",
     scan_texts: list[str] | None = None,
     scan_truncated: bool = False,
+    redact_params: Callable[[dict, Any], tuple[dict, dict]] | None = None,
 ) -> GovernanceResult:
     """Execute the full governance pipeline and return a GovernanceResult.
 
@@ -119,6 +121,11 @@ async def run_pipeline(
     that the caller left text out of ``scan_texts`` because it lies deeper
     than the caller's depth limit: with the firewall on, the request is then
     blocked (risk HIGH, ``checks["scan_depth"]``), in ``enforce`` mode.
+
+    ``redact_params`` builds the redacted ``params`` and the PII result
+    from ``params`` and the PII engine; ``None`` (default) redacts every
+    string value of ``params``, never a key (:func:`_redact_params`). The
+    gateway passes :func:`redact_chat_params`.
     """
     start_time = time.perf_counter()
     result = GovernanceResult()
@@ -155,7 +162,7 @@ async def run_pipeline(
     # 3. PII Redaction
     pii_count = 0
     if result.action == GovernanceAction.ALLOW and pii_enabled:
-        redacted_params, pii_result = _redact_params(params, pii_redactor)
+        redacted_params, pii_result = (redact_params or _redact_params)(params, pii_redactor)
         result.checks["pii_redaction"] = pii_result
         pii_count = pii_result["count"]
         if pii_count > 0:
@@ -303,9 +310,13 @@ def _extract_text_fields(obj: Any, depth: int = 0) -> list[str]:
     return texts
 
 
+def _pii_accumulator() -> dict[str, Any]:
+    return {"redacted_text": "", "entities": [], "count": 0}
+
+
 def _redact_params(params: dict, pii_redactor: Any) -> tuple[dict, dict]:
-    """Redact PII from all string values in params."""
-    total_result: dict[str, Any] = {"redacted_text": "", "entities": [], "count": 0}
+    """Redact PII from all string values in params; keys are kept."""
+    total_result = _pii_accumulator()
     redacted = _deep_redact(params, total_result, pii_redactor)
     return redacted, total_result
 
@@ -314,30 +325,41 @@ def redact_response_result(result: Any, pii_redactor: Any) -> tuple[Any, int]:
     """Recursively PII-redact an MCP tool result (str | dict | list).
 
     Returns (redacted_result, pii_count). Mirrors the request-side deep
-    redaction so dict-shaped results are not leaked.
+    redaction: every string value is redacted, keys are kept.
     """
-    acc: dict[str, Any] = {"redacted_text": "", "entities": [], "count": 0}
+    acc = _pii_accumulator()
     redacted = _deep_redact(result, acc, pii_redactor)
     return redacted, acc["count"]
 
 
-def _deep_redact(obj: Any, result: dict, pii_redactor: Any, depth: int = 0) -> Any:
+def _redact_string(text: str, result: dict, pii_redactor: Any) -> str:
+    r = pii_redactor.redact(text)
+    result["entities"].extend(r["entities"])
+    result["count"] += r["count"]
+    return r["redacted_text"]
+
+
+def _deep_redact(
+    obj: Any, result: dict, pii_redactor: Any, depth: int = 0, *, redact_keys: bool = False
+) -> Any:
+    """*obj* with every string value redacted, down to the scan depth limit.
+
+    Dict keys are kept as they are, unless *redact_keys* is set: then they
+    are redacted too, and two keys that redact to the same text are told
+    apart with a numeric suffix (``[EMAIL]``, ``[EMAIL]#2``) so no value is
+    dropped. Non-string keys are kept either way.
+    """
     if depth > _MAX_SCAN_DEPTH:
         return obj
     if isinstance(obj, str):
-        r = pii_redactor.redact(obj)
-        result["entities"].extend(r["entities"])
-        result["count"] += r["count"]
-        return r["redacted_text"]
+        return _redact_string(obj, result, pii_redactor)
     elif isinstance(obj, dict):
-        # Redact keys as well as values: injection or PII in a field name is not skipped.
-        # Non-string keys (int, tuple, …) pass through _deep_redact unchanged (final return obj).
-        # When two distinct keys redact to the same placeholder, disambiguate with a numeric
-        # suffix so no value is silently dropped (data-loss guard).
+        if not redact_keys:
+            return {k: _deep_redact(v, result, pii_redactor, depth + 1) for k, v in obj.items()}
         out: dict = {}
         for k, v in obj.items():
-            rk = _deep_redact(k, result, pii_redactor, depth + 1)
-            rv = _deep_redact(v, result, pii_redactor, depth + 1)
+            rk = _deep_redact(k, result, pii_redactor, depth + 1, redact_keys=True)
+            rv = _deep_redact(v, result, pii_redactor, depth + 1, redact_keys=True)
             if isinstance(rk, str) and rk in out:
                 base, suffix = rk, 2
                 while f"{base}#{suffix}" in out:
@@ -346,8 +368,77 @@ def _deep_redact(obj: Any, result: dict, pii_redactor: Any, depth: int = 0) -> A
             out[rk] = rv
         return out
     elif isinstance(obj, list):
-        return [_deep_redact(item, result, pii_redactor, depth + 1) for item in obj]
+        return [
+            _deep_redact(item, result, pii_redactor, depth + 1, redact_keys=redact_keys)
+            for item in obj
+        ]
     return obj
+
+
+# Fields of a chat message whose string value is text written by a person or
+# a model. ``content`` may also be a list of parts, each a string or an object
+# with a string ``text``.
+_CHAT_TEXT_FIELDS = ("content", "reasoning_content", "reasoning", "refusal")
+
+
+def redact_chat_params(params: dict, pii_redactor: Any) -> tuple[dict, dict]:
+    """*params* (``{"messages": [...]}`` of a chat completion) with the text
+    of each message redacted, and the PII result.
+
+    Redacted: the string of each text field (``content``, reasoning and
+    refusal text), the ``text`` of each content part and tool call
+    ``arguments`` (``tool_calls[].function.arguments`` and
+    ``function_call.arguments``). Everything else is kept as it is: keys,
+    ``role``, ``name``, ``tool_call_id``, ids, image and audio parts. Items of
+    ``messages`` that are not objects are kept; *params* without a list of
+    messages is returned unchanged.
+    """
+    result = _pii_accumulator()
+    messages = params.get("messages")
+    if not isinstance(messages, list):
+        return params, result
+    redacted = [_redact_chat_message(m, result, pii_redactor) for m in messages]
+    return {**params, "messages": redacted}, result
+
+
+def _redact_chat_message(message: Any, result: dict, pii_redactor: Any) -> Any:
+    if not isinstance(message, dict):
+        return message
+    out = dict(message)
+    for name in _CHAT_TEXT_FIELDS:
+        value = out.get(name)
+        if isinstance(value, str):
+            out[name] = _redact_string(value, result, pii_redactor)
+        elif name == "content" and isinstance(value, list):
+            out[name] = [_redact_content_part(part, result, pii_redactor) for part in value]
+    tool_calls = out.get("tool_calls")
+    if isinstance(tool_calls, list):
+        out["tool_calls"] = [_redact_tool_call(call, result, pii_redactor) for call in tool_calls]
+    function_call = out.get("function_call")
+    if isinstance(function_call, dict):
+        out["function_call"] = _redact_arguments(function_call, result, pii_redactor)
+    return out
+
+
+def _redact_content_part(part: Any, result: dict, pii_redactor: Any) -> Any:
+    if isinstance(part, str):
+        return _redact_string(part, result, pii_redactor)
+    if isinstance(part, dict) and isinstance(part.get("text"), str):
+        return {**part, "text": _redact_string(part["text"], result, pii_redactor)}
+    return part
+
+
+def _redact_tool_call(call: Any, result: dict, pii_redactor: Any) -> Any:
+    if not isinstance(call, dict) or not isinstance(call.get("function"), dict):
+        return call
+    return {**call, "function": _redact_arguments(call["function"], result, pii_redactor)}
+
+
+def _redact_arguments(function: dict, result: dict, pii_redactor: Any) -> dict:
+    arguments = function.get("arguments")
+    if not isinstance(arguments, str):
+        return function
+    return {**function, "arguments": _redact_string(arguments, result, pii_redactor)}
 
 
 def safe_serialize(obj: Any) -> Any:

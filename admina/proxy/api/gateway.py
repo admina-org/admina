@@ -137,6 +137,7 @@ from admina.domains.agent_security.scan_policy import (
 from admina.domains.compliance.forensic import ForensicWriteError
 from admina.domains.governance import (
     GovernanceResult,
+    redact_chat_params,
     run_pipeline,
     safe_serialize,
     unfinished_pipeline_result,
@@ -1187,6 +1188,22 @@ async def _chat_completion(
     return response, call
 
 
+def _forwarded_messages(pre: GovernanceResult, messages: list) -> list:
+    """The messages to forward: those of the PII redaction when it masked
+    something, else *messages* as received. A redacted body without a list
+    of messages is logged as an error and *messages* are forwarded."""
+    if not pre.checks.get("pii_redaction", {}).get("count", 0):
+        return messages
+    params = (pre.redacted_body or {}).get("params")
+    redacted = params.get("messages") if isinstance(params, dict) else None
+    if not isinstance(redacted, list):
+        logger.error(
+            "Gateway PII redaction returned no list of messages: forwarding them as received"
+        )
+        return messages
+    return redacted
+
+
 async def _governed_call(
     request: Request,
     state: Any,
@@ -1234,6 +1251,7 @@ async def _governed_call(
             egress_mode=resolve_egress_mode(cfg.GOVERNANCE_MODE),
             scan_texts=scanned.texts,
             scan_truncated=scanned.truncated,
+            redact_params=redact_chat_params,
         )
 
     pre = await _govern(state, cfg, pipeline, event_id)
@@ -1243,8 +1261,7 @@ async def _governed_call(
     if pre.would_action is not None:
         call.would_action = str(safe_serialize(pre.would_action)).upper()
 
-    pii_count = pre.checks.get("pii_redaction", {}).get("count", 0)
-    fwd_messages = pre.redacted_body["params"]["messages"] if pii_count > 0 else messages
+    fwd_messages = _forwarded_messages(pre, messages)
     call.record_hash = await _record_forensic(
         state.forensic_box,
         call,

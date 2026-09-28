@@ -22,6 +22,7 @@ import os
 import re
 
 from admina.domains.data_sovereignty.email_matching import EMAIL_RX, iter_email_matches
+from admina.domains.data_sovereignty.masking import outside_placeholders, placeholder_spans
 
 # spaCy is part of the [nlp] extra. When absent, PIIRedactor falls back
 # to regex-only mode (still covers EMAIL/PHONE/SSN/IBAN/IP/credit-card/EU IDs).
@@ -255,9 +256,12 @@ class PIIRedactor:
             for match in sorted(matches, key=lambda m: m.start(), reverse=True):
                 redacted = redacted[: match.start()] + mask + redacted[match.end() :]
 
-        # Step 2 — spaCy NER-based detection
+        # Step 2 — spaCy NER-based detection. An entity is masked outside the
+        # placeholders already in the text (the masks of step 1 included),
+        # which are never masked again.
         if self.nlp:
             doc = self.nlp(redacted)
+            placeholders = placeholder_spans(redacted)
             # Process entities in reverse order to maintain positions
             ner_entities = sorted(doc.ents, key=lambda e: e.start_char, reverse=True)
             for ent in ner_entities:
@@ -265,16 +269,18 @@ class PIIRedactor:
                 if not cat_config.get("enabled", False):
                     continue
                 mask = cat_config.get("mask", f"[{ent.label_}]")
-                entities_found.append(
-                    {
-                        "type": ent.label_,
-                        "start": ent.start_char,
-                        "end": ent.end_char,
-                        "original_length": ent.end_char - ent.start_char,
-                        "method": "spacy_ner",
-                    }
-                )
-                redacted = redacted[: ent.start_char] + mask + redacted[ent.end_char :]
+                parts = outside_placeholders(ent.start_char, ent.end_char, placeholders, redacted)
+                for start, end in reversed(parts):
+                    entities_found.append(
+                        {
+                            "type": ent.label_,
+                            "start": start,
+                            "end": end,
+                            "original_length": end - start,
+                            "method": "spacy_ner",
+                        }
+                    )
+                    redacted = redacted[:start] + mask + redacted[end:]
 
         count = len(entities_found)
         if count > 0:

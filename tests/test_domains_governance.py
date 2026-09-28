@@ -72,8 +72,8 @@ def test_deep_redact_redacts_dict_keys():
             red = text.replace("a@b.com", "[EMAIL]")
             return {"redacted_text": red, "entities": [], "count": 1 if "a@b.com" in text else 0}
 
-    out = _deep_redact({"a@b.com": "v"}, acc, _FakePII())
-    assert "a@b.com" not in out  # key must be redacted
+    out = _deep_redact({"a@b.com": "v"}, acc, _FakePII(), redact_keys=True)
+    assert "a@b.com" not in out  # key must be redacted when asked for
     assert "[EMAIL]" in out
 
 
@@ -117,7 +117,7 @@ def test_deep_redact_key_collision_preserves_all_values():
                 return {"redacted_text": "[EMAIL]", "entities": [], "count": 1}
             return {"redacted_text": text, "entities": [], "count": 0}
 
-    out = _deep_redact({"a@b.com": 1, "c@d.com": 2}, acc, _FakePII())
+    out = _deep_redact({"a@b.com": 1, "c@d.com": 2}, acc, _FakePII(), redact_keys=True)
     # both values survive (no silent drop); both keys redacted to [EMAIL]-ish
     assert sorted(out.values()) == [1, 2]
     assert all("@" not in k for k in out)
