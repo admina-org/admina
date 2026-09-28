@@ -16,7 +16,8 @@
 
 The vectors pin ``admina_version`` so they do not move with a version bump;
 the Python-engine vectors change when a builtin pattern changes, which is
-the point of the hash.
+the point of the hash. The Rust-engine vectors do not depend on the builtin
+patterns; one of them has a pattern pack (``fixtures/pattern_packs``).
 """
 
 from __future__ import annotations
@@ -29,16 +30,21 @@ import subprocess
 import sys
 import textwrap
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
+import yaml
 
 import admina
 from admina.core.config import AdminaConfig, FirewallConfig, load_config
 from admina.core.jcs import canonicalize
 from admina.domains.agent_security import firewall as firewall_module
+from admina.domains.agent_security.pattern_packs import PATTERN_PACK_DIRS_ENV, PatternPackError
 from admina.domains.agent_security.ruleset import ruleset_object, ruleset_sha256
 
 _VERSION = "0.13.0"
+_PACKS = Path(__file__).parent / "fixtures" / "pattern_packs"
+_EXAMPLE_PACK = yaml.safe_load((_PACKS / "example-pack.yaml").read_text(encoding="utf-8"))
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
 _CUSTOM = {
@@ -48,12 +54,29 @@ _CUSTOM = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _no_pack_dirs_env(monkeypatch):
+    monkeypatch.delenv(PATTERN_PACK_DIRS_ENV, raising=False)
+
+
 def _custom_config() -> FirewallConfig:
     return FirewallConfig(
         custom_patterns=[dict(_CUSTOM)],
         disabled_categories=["tool_abuse"],
         pattern_packs=["example-pack"],
+        pattern_pack_dirs=[str(_PACKS)],
     )
+
+
+def _pack_object(data: dict) -> dict:
+    """A pack as the hashed object holds it."""
+    return {
+        "name": data["name"],
+        "version": data["version"],
+        "patterns": [
+            {k: p[k] for k in ("id", "regex", "category", "risk_level")} for p in data["patterns"]
+        ],
+    }
 
 
 # ── Test vectors ──────────────────────────────────────────────
@@ -66,7 +89,7 @@ _RUST_CANONICAL = (
 )
 _RUST_VECTOR = "e69d13465ec5a301c5a291a4b4be8856a4f7b89c61a4692e50efa573a78985c6"
 _PYTHON_VECTOR = "d9a221bc1cc441065b1977e2de48ea883bec45da29de6573da083618958bc589"
-_PYTHON_CUSTOM_VECTOR = "9e8fe37762bb499db8360a6871c7e349ebc84acf34e18421956871bbad7c65ea"
+_PYTHON_CUSTOM_VECTOR = "526da15ffffad22fb648e197035849161de1b3103d98efebf6c5be6d6e6a2ecb"
 
 
 def test_rust_vector_canonical_bytes():
@@ -109,9 +132,53 @@ def test_python_vector_with_custom_patterns():
     obj = ruleset_object(_custom_config(), admina_version=_VERSION)
     assert obj["custom_patterns"] == [_CUSTOM]
     assert obj["disabled_categories"] == ["tool_abuse"]
-    assert obj["pattern_packs"] == ["example-pack"]
+    assert [pack["name"] for pack in obj["pattern_packs"]] == ["example-pack"]
     assert all(entry["category"] != "tool_abuse" for entry in obj["builtin"])
     assert ruleset_sha256(_custom_config(), admina_version=_VERSION) == _PYTHON_CUSTOM_VECTOR
+
+
+def _rust_pack_config() -> FirewallConfig:
+    return FirewallConfig(
+        pattern_packs=["example-pack"],
+        pattern_pack_dirs=[str(_PACKS)],
+        disabled_patterns=["role_hijack.en.1", "example-pack:admin_role"],
+        allowed_tags=["Source"],
+        heuristic_threshold=0.7,
+    )
+
+
+_RUST_PACK_CANONICAL = (
+    b'{"admina_version":"0.13.0","allowed_tags":["source"],'
+    b'"builtin":{"admina_core_version":"0.9.3"},"custom_patterns":[],"disabled_categories":[],'
+    b'"disabled_patterns":["example-pack:admin_role","role_hijack.en.1"],"engine":"rust",'
+    b'"heuristic_threshold_milli":700,"pattern_packs":[{"name":"example-pack","patterns":['
+    b'{"category":"example_disclosure","id":"internal_notes",'
+    b'"regex":"\\\\b(?:show|reveal|print)\\\\s++(?:me\\\\s++)?(?:the\\\\s++)?internal'
+    b'\\\\s++(?:ticket\\\\s++)?notes\\\\b","risk_level":"high"},'
+    b'{"category":"example_role","id":"admin_role",'
+    b'"regex":"\\\\byou\\\\s++are\\\\s++(?:now\\\\s++)?(?:the\\\\s++)?(?:system'
+    b'\\\\s++)?administrator\\\\b","risk_level":"medium"}],"version":"1.0.0"}]}'
+)
+_RUST_PACK_VECTOR = "360cf11e00dca4888b7542e7bbf4570746206bfb90aeb411dec51337e6d83081"
+
+
+def test_rust_vector_with_a_pack_canonical_bytes():
+    obj = ruleset_object(
+        _rust_pack_config(), engine="rust", admina_core_version="0.9.3", admina_version=_VERSION
+    )
+    assert canonicalize(obj) == _RUST_PACK_CANONICAL
+
+
+def test_rust_vector_with_a_pack():
+    digest = ruleset_sha256(
+        _rust_pack_config(), engine="rust", admina_core_version="0.9.3", admina_version=_VERSION
+    )
+    assert digest == hashlib.sha256(_RUST_PACK_CANONICAL).hexdigest() == _RUST_PACK_VECTOR
+
+
+def test_packs_are_hashed_by_content():
+    obj = ruleset_object(_custom_config(), admina_version=_VERSION)
+    assert obj["pattern_packs"] == [_pack_object(_EXAMPLE_PACK)]
 
 
 def test_digest_is_sha256_of_the_canonical_object():
@@ -186,6 +253,7 @@ def test_changes_with_a_builtin_pattern(monkeypatch):
         {"disabled_patterns": ["role_hijack.en.1", "role_hijack.en.2"]},
         {"pattern_packs": []},
         {"pattern_packs": ["example-pack", "second-pack"]},
+        {"pattern_packs": ["second-pack", "example-pack"]},
         {"heuristic_threshold": 0.7},
         {"allowed_tags": ["source"]},
         {"allowed_tags": ["source", "document"]},
@@ -201,6 +269,7 @@ def test_changes_with_a_builtin_pattern(monkeypatch):
         "more-disabled-ids",
         "no-packs",
         "more-packs",
+        "pack-order",
         "threshold",
         "allowed-tag",
         "more-allowed-tags",
@@ -215,6 +284,45 @@ def test_disabled_patterns_are_sorted_without_duplicates():
     b = replace(_custom_config(), disabled_patterns=["jailbreak.en.1", "tool_abuse.en.2"])
     assert ruleset_object(a)["disabled_patterns"] == ["jailbreak.en.1", "tool_abuse.en.2"]
     assert ruleset_sha256(a) == ruleset_sha256(b)
+
+
+_PACK_CHANGES = [
+    ("version", lambda d: d.update(version="1.0.1")),
+    ("regex", lambda d: d["patterns"][0].update(regex=r"\binternal\s++notes\b")),
+    ("category", lambda d: d["patterns"][0].update(category="example_other")),
+    ("risk", lambda d: d["patterns"][0].update(risk_level="critical")),
+    ("id", lambda d: d["patterns"][0].update(id="notes")),
+    ("pattern-order", lambda d: d["patterns"].reverse()),
+    ("more-patterns", lambda d: d["patterns"].append(dict(d["patterns"][0], id="copy"))),
+]
+
+
+@pytest.mark.parametrize("change", [c for _, c in _PACK_CHANGES], ids=[i for i, _ in _PACK_CHANGES])
+def test_changes_with_the_content_of_a_pack_file(tmp_path, change):
+    data = json.loads(json.dumps(_EXAMPLE_PACK))
+    change(data)
+    (tmp_path / "example-pack.json").write_text(json.dumps(data), encoding="utf-8")
+    edited = replace(_custom_config(), pattern_pack_dirs=[str(tmp_path)])
+    assert ruleset_sha256(edited) != ruleset_sha256(_custom_config())
+    assert ruleset_object(edited)["pattern_packs"] == [_pack_object(data)]
+
+
+def test_description_of_a_pack_is_not_hashed(tmp_path):
+    data = dict(_EXAMPLE_PACK, description="Another description.")
+    (tmp_path / "example-pack.json").write_text(json.dumps(data), encoding="utf-8")
+    edited = replace(_custom_config(), pattern_pack_dirs=[str(tmp_path)])
+    assert ruleset_sha256(edited) == ruleset_sha256(_custom_config())
+
+
+def test_pack_dirs_of_the_environment(monkeypatch):
+    moved = replace(_custom_config(), pattern_pack_dirs=[])
+    monkeypatch.setenv(PATTERN_PACK_DIRS_ENV, str(_PACKS))
+    assert ruleset_sha256(moved) == ruleset_sha256(_custom_config())
+
+
+def test_unknown_pack_is_an_error():
+    with pytest.raises(PatternPackError, match="missing-pack"):
+        ruleset_sha256(replace(_custom_config(), pattern_packs=["missing-pack"]))
 
 
 def test_allowed_tags_are_lowercase_sorted_without_duplicates():
@@ -311,6 +419,7 @@ def test_threshold_must_be_a_number(threshold):
         {"disabled_categories": [None]},
         {"disabled_patterns": [2]},
         {"allowed_tags": [3]},
+        {"pattern_pack_dirs": [4]},
     ],
 )
 def test_names_must_be_strings(change):
@@ -332,13 +441,14 @@ def test_same_hash_whatever_the_yaml_key_order(tmp_path):
                 firewall:
                   heuristic_threshold: 0.5
                   pattern_packs: [example-pack]
+                  pattern_pack_dirs: ["{dirs}"]
                   disabled_categories: [tool_abuse]
                   custom_patterns:
                     - regex: "\\\\bexample\\\\s+secret\\\\s+phrase\\\\b"
                       category: example_custom
                       risk_level: high
             """
-        ),
+        ).replace("{dirs}", str(_PACKS)),
         encoding="utf-8",
     )
     second.write_text(
@@ -353,10 +463,11 @@ def test_same_hash_whatever_the_yaml_key_order(tmp_path):
                       category: example_custom
                       regex: "\\\\bexample\\\\s+secret\\\\s+phrase\\\\b"
                   disabled_categories: [tool_abuse]
+                  pattern_pack_dirs: ["{dirs}"]
                   pattern_packs: [example-pack]
                   heuristic_threshold: 0.5
             """
-        ),
+        ).replace("{dirs}", str(_PACKS)),
         encoding="utf-8",
     )
     one = ruleset_sha256(load_config(first))
@@ -374,6 +485,7 @@ _SNIPPET = textwrap.dedent(
         custom_patterns=[{CUSTOM}],
         disabled_categories=["tool_abuse"],
         pattern_packs=["example-pack"],
+        pattern_pack_dirs=[{DIRS}],
     )
     print(json.dumps({{
         "digest": ruleset_sha256(cfg, admina_version="0.13.0"),
@@ -386,7 +498,7 @@ _SNIPPET = textwrap.dedent(
 
 def _run_snippet(hash_seed: str) -> dict:
     env = {**os.environ, "PYTHONHASHSEED": hash_seed}
-    code = _SNIPPET.format(CUSTOM=repr(_CUSTOM))
+    code = _SNIPPET.format(CUSTOM=repr(_CUSTOM), DIRS=repr(str(_PACKS)))
     out = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, check=True, env=env
     )

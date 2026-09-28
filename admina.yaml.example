@@ -70,10 +70,33 @@ domains:
       # Single patterns you want SILENCED, by id (Python engine). Each
       # match reports its pattern's id in `patterns[].id` of the firewall
       # check (and of the forensic record): builtin ids such as
-      # instruction_override.en.1 or multilang_evasion.it.2, and custom.1,
-      # custom.2, ... for custom_patterns in their order. An unknown id is
-      # logged as a warning.
+      # instruction_override.en.1 or multilang_evasion.it.2, pack ids such
+      # as example-pack:internal_notes, and custom.1, custom.2, ... for
+      # custom_patterns in their order. An unknown id is logged as a warning.
       disabled_patterns: []
+      # Pattern packs: named, versioned pattern files added to the builtin
+      # patterns (Python engine). Each name is looked up among the entry
+      # points of the admina.pattern_packs group of installed packages, then
+      # in pattern_pack_dirs as <name>.yaml, <name>.yml or <name>.json
+      # (ADMINA_PATTERN_PACK_DIRS, separated by ":", replaces the list). A
+      # pack that is missing, found twice or invalid stops the proxy at
+      # startup. A pack pattern over 50 ms on long inputs is logged as a
+      # warning, or stops the proxy with strict_pack_timing: true.
+      pattern_packs: []
+      pattern_pack_dirs: []
+      strict_pack_timing: false
+      # Example (examples/pattern_packs/example-pack.yaml):
+      # pattern_pack_dirs: [examples/pattern_packs]
+      # pattern_packs: [example-pack]
+      # where the pack file is:
+      #   name: example-pack
+      #   version: "1.0.0"
+      #   description: Requests to disclose internal ticket notes.
+      #   patterns:
+      #     - id: internal_notes      # known as example-pack:internal_notes
+      #       regex: "\\binternal\\s++(?:ticket\\s++)?notes\\b"
+      #       category: example_disclosure
+      #       risk_level: high        # low | medium | high | critical
       # Add domain-specific rules here without forking. Each entry:
       #   - regex: a Python regex (case-insensitive)
       #     category: short label shown in dashboards/logs

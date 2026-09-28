@@ -28,7 +28,9 @@ strings and integers only::
       "admina_version": "<admina.__version__>",
       "engine": "python" | "rust",
       "builtin": [{"regex": "...", "category": "...", "risk_level": "..."}, ...],
-      "pattern_packs": ["<name>", ...],
+      "pattern_packs": [{"name": "...", "version": "...",
+                         "patterns": [{"id": "...", "regex": "...",
+                                       "category": "...", "risk_level": "..."}, ...]}, ...],
       "custom_patterns": [{"regex": "...", "category": "...", "risk_level": "..."}, ...],
       "disabled_categories": ["<category>", ...],
       "disabled_patterns": ["<pattern id>", ...],
@@ -41,8 +43,14 @@ strings and integers only::
   their order, without those of a disabled category; ``risk_level`` is the
   lowercase level name. For the ``rust`` engine, whose patterns are compiled
   into ``admina-core``, the object ``{"admina_core_version": "<version>"}``.
-- ``pattern_packs``: the names under ``agent_security.firewall.pattern_packs``
-  in ``admina.yaml``, in their order.
+- ``pattern_packs``: the packs named by ``agent_security.firewall.pattern_packs``,
+  in their order, as loaded from their sources
+  (:mod:`~admina.domains.agent_security.pattern_packs`, directories from
+  ``pattern_pack_dirs`` or ``ADMINA_PATTERN_PACK_DIRS``): the pack's
+  ``name``, ``version`` and every pattern in its order with its ``id`` (as
+  written in the pack, not qualified), ``regex``, ``category`` and
+  ``risk_level``. The ``description`` is left out. A changed pack file
+  changes the hash.
 - ``custom_patterns``: the entries of ``agent_security.firewall.custom_patterns``
   as the firewall loads them (:func:`~admina.domains.agent_security.firewall.
   parse_custom_patterns`): in their order, ``category`` defaulted to
@@ -72,6 +80,7 @@ import admina
 from admina.core.config import AdminaConfig, FirewallConfig
 from admina.core.jcs import canonicalize
 from admina.domains.agent_security import firewall as _firewall
+from admina.domains.agent_security.pattern_packs import PatternPack, load_pattern_packs, pack_dirs
 
 __all__ = ["RULESET_ENGINES", "ruleset_object", "ruleset_sha256"]
 
@@ -100,7 +109,9 @@ def ruleset_object(
     Raises:
         ValueError: Unknown engine; ``rust`` without a version and without
             ``admina-core``; a threshold that is not a finite number; a
-            pack or category name that is not a string.
+            pack or category name that is not a string; a pack that cannot
+            be loaded
+            (:class:`~admina.domains.agent_security.pattern_packs.PatternPackError`).
     """
     if engine not in RULESET_ENGINES:
         raise ValueError(f"engine must be one of {', '.join(RULESET_ENGINES)} (got {engine!r})")
@@ -118,7 +129,12 @@ def ruleset_object(
         "admina_version": admina_version or admina.__version__,
         "engine": engine,
         "builtin": builtin,
-        "pattern_packs": _names(fw.pattern_packs, "pattern_packs"),
+        "pattern_packs": [
+            _pack(pack)
+            for pack in load_pattern_packs(
+                _names(fw.pattern_packs, "pattern_packs"), pack_dirs(fw.pattern_pack_dirs)
+            )
+        ],
         "custom_patterns": [
             _pattern(regex, category, level)
             for regex, category, level in _firewall.parse_custom_patterns(fw.custom_patterns)
@@ -160,6 +176,16 @@ def _firewall_section(config: AdminaConfig | FirewallConfig | None) -> FirewallC
 
 def _pattern(regex: Any, category: Any, level: Any) -> dict[str, Any]:
     return {"regex": regex, "category": category, "risk_level": getattr(level, "value", level)}
+
+
+def _pack(pack: PatternPack) -> dict[str, Any]:
+    return {
+        "name": pack.name,
+        "version": pack.version,
+        "patterns": [
+            {"id": p.id, **_pattern(p.regex, p.category, p.risk_level)} for p in pack.patterns
+        ],
+    }
 
 
 def _names(values: Any, key: str) -> list[str]:

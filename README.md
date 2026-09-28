@@ -346,9 +346,10 @@ Every firewall pattern has a stable id, reported with each match in
 `patterns[].id` of the firewall check and of the forensic record:
 `<category>.<language>.<n>` for the builtin categories written in English or
 in several languages (`instruction_override.en.1`, `multilang_evasion.it.2`),
-`<category>.<n>` for the `it_*` categories, and `custom.<n>` for the entries
-of `custom_patterns`, in their order. An id never changes and is never
-reused. `agent_security.firewall.disabled_patterns` leaves out single
+`<category>.<n>` for the `it_*` categories, `<pack>:<id>` for the patterns
+of a [pattern pack](#firewall-pattern-packs) and `custom.<n>` for the
+entries of `custom_patterns`, in their order. A builtin id never changes and
+is never reused. `agent_security.firewall.disabled_patterns` leaves out single
 patterns by id, where `disabled_categories` leaves out whole categories; an
 unknown id is logged as a warning:
 
@@ -359,9 +360,68 @@ domains:
       disabled_patterns: [tool_abuse.en.4]
 ```
 
-`disabled_patterns` and `custom_patterns` apply to the Python firewall only:
-with either set, `get_firewall()` uses the Python firewall even when the
-Rust engine is selected.
+`disabled_patterns`, `custom_patterns` and pattern packs (below) apply to
+the Python firewall only: with any of them set, `get_firewall()` uses the
+Python firewall even when the Rust engine is selected.
+
+#### Firewall pattern packs
+
+A pattern pack is a named, versioned set of firewall patterns in a YAML or
+JSON file, added to the builtin patterns when
+`agent_security.firewall.pattern_packs` names it
+([`examples/pattern_packs/example-pack.yaml`](examples/pattern_packs/example-pack.yaml)):
+
+```yaml
+name: example-pack              # [a-z0-9][a-z0-9-]*, the file name without suffix
+version: "1.0.0"                # a string
+description: Example patterns.  # optional
+patterns:                       # at least one
+  - id: internal_notes          # [a-z0-9][a-z0-9_.-]*, unique in the pack
+    regex: "\\b(?:show|reveal|print)\\s++(?:me\\s++)?(?:the\\s++)?internal\\s++(?:ticket\\s++)?notes\\b"
+    category: example_disclosure  # [a-z0-9][a-z0-9_]*
+    risk_level: high            # low | medium | high | critical
+```
+
+No other key is accepted. The firewall knows each pattern as
+`<pack>:<id>` (`example-pack:internal_notes`): check results report it and
+`disabled_patterns` accepts it. Pack patterns follow the builtin ones and
+precede `custom_patterns`; `disabled_categories` applies to their
+categories too.
+
+```yaml
+domains:
+  agent_security:
+    firewall:
+      pattern_pack_dirs: [/etc/admina/packs]   # or ADMINA_PATTERN_PACK_DIRS
+      pattern_packs: [example-pack]
+      strict_pack_timing: false
+```
+
+Admina looks for each listed name among the entry points of the group
+`admina.pattern_packs`, then in each directory of `pattern_pack_dirs`, in
+order (`<name>.yaml`, `<name>.yml`, `<name>.json`; relative directories
+from the working directory). `ADMINA_PATTERN_PACK_DIRS`, directories
+separated by `:` (`;` on Windows), replaces `pattern_pack_dirs` when set.
+An installed distribution provides a pack with an entry point whose loader
+returns the pack mapping or the path of a pack file in its package data:
+
+```toml
+[project.entry-points."admina.pattern_packs"]
+example-pack = "example_pkg.packs:example_pack"
+```
+
+A name must come from exactly one source. The firewall is not built, and
+the proxy does not start, when a listed pack is not found (the error lists
+the available packs), comes from two sources, is listed twice, or does not
+validate (the error names the file or entry point and the key path, such as
+`patterns[1].risk_level`), and when a pack directory is missing. Each pack
+pattern is timed on 64k-character inputs when the firewall is built
+([pattern timing](#pattern-timing)): a pattern over 50 ms is logged as a
+warning naming its id, or stops the firewall with
+`strict_pack_timing: true`. Admina ships no pack of its own besides the
+example.
+
+#### Firewall deep path
 
 The deep path scores five heuristic signals (imperative words, special
 characters, context switches, length, escape sequences) and flags a text
@@ -385,6 +445,8 @@ domains:
 `heuristic_threshold` and `allowed_tags` apply to the Python firewall; the
 Rust engine scores with signals and a threshold of its own, and follows
 `INJECTION_DEEP_PATH_ENABLED`.
+
+#### Pattern timing
 
 Custom firewall rules (`agent_security.firewall.custom_patterns`) run on
 Python's backtracking `re` engine. Check each one on long inputs before

@@ -1,0 +1,13 @@
+{
+  "name": "second-pack",
+  "version": "0.1.0",
+  "description": "Second pattern pack used by the tests.",
+  "patterns": [
+    {
+      "id": "marker",
+      "regex": "\\bsecond\\s++pack\\s++marker\\b",
+      "category": "example_marker",
+      "risk_level": "critical"
+    }
+  ]
+}

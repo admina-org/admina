@@ -188,6 +188,11 @@ class FirewallConfig:
     disabled_patterns: list[str] = field(default_factory=list)
     # Names of the pattern packs listed in admina.yaml, in order.
     pattern_packs: list[str] = field(default_factory=list)
+    # Directories holding pack files <name>.yaml|.yml|.json
+    # (ADMINA_PATTERN_PACK_DIRS replaces them when set).
+    pattern_pack_dirs: list[str] = field(default_factory=list)
+    # True: a pack pattern over the time budget stops the firewall.
+    strict_pack_timing: bool = False
     # Tag names the deep path does not count as context switches.
     allowed_tags: list[str] = field(default_factory=list)
 
@@ -462,6 +467,18 @@ def _firewall_strings(raw: dict, key: str) -> list[str]:
     return list(values)
 
 
+def _firewall_bool(raw: dict, key: str, default: bool) -> bool:
+    """``agent_security.firewall.<key>``: true or false (missing: *default*).
+
+    Raises:
+        ValueError: the value is not a boolean.
+    """
+    value = raw.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"admina.yaml: agent_security.firewall.{key} must be true or false")
+    return value
+
+
 def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
     """Build an :class:`AdminaConfig` from a parsed YAML dict."""
     domains = data.get("domains", {})
@@ -550,7 +567,9 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
             custom_patterns=list(fw_raw.get("custom_patterns") or []),
             disabled_categories=list(fw_raw.get("disabled_categories") or []),
             disabled_patterns=_firewall_strings(fw_raw, "disabled_patterns"),
-            pattern_packs=list(fw_raw.get("pattern_packs") or []),
+            pattern_packs=_firewall_strings(fw_raw, "pattern_packs"),
+            pattern_pack_dirs=_firewall_strings(fw_raw, "pattern_pack_dirs"),
+            strict_pack_timing=_firewall_bool(fw_raw, "strict_pack_timing", False),
             allowed_tags=_firewall_strings(fw_raw, "allowed_tags"),
         ),
         loop_breaker=LoopBreakerConfig(

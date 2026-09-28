@@ -14,8 +14,9 @@
 
 """Pattern timing: regular expressions applied to request text on long inputs.
 
-Every builtin firewall pattern, the text normalisation, the deep path, and
-the PII and egress regexes finish within the time budget
+Every builtin firewall pattern, the patterns of the pattern packs of the
+tests and of ``examples/pattern_packs``, the text normalisation, the deep
+path, and the PII and egress regexes finish within the time budget
 (``pattern_timing.DEFAULT_BUDGET_MS``) on the long inputs of
 ``pattern_timing.timing_inputs``: 64k characters of spaces, tabs, commas,
 newlines or a mix after each trigger word, and each trigger repeated. The
@@ -36,12 +37,14 @@ import functools
 import re
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from admina.domains.agent_security import egress, firewall
 from admina.domains.agent_security import pattern_timing as pt
+from admina.domains.agent_security.pattern_packs import load_pattern_packs
 from admina.domains.data_sovereignty import iban, masking, pii
 from admina.domains.data_sovereignty.email_matching import iter_email_matches
 from admina.engines.pii_plugins import PIIEngineBridge
@@ -128,6 +131,45 @@ def test_builtin_pattern_time_grows_linearly(index):
         small = pt.search_ms(compiled, small_inputs[label])
         large = pt.search_ms(compiled, large_inputs[label])
         # Below 0.05 ms the timer and cache noise dominate the ratio.
+        ratio = large / max(small, 0.05)
+        assert ratio <= 8.0, f"{label}: {small:.3f} ms at 16k, {large:.3f} ms at 64k"
+
+
+# ── Pattern packs of the tests and of the examples ───────────
+
+_PACK_SOURCES = [
+    (
+        "tests",
+        Path(__file__).parent / "fixtures" / "pattern_packs",
+        ["example-pack", "second-pack"],
+    ),
+    ("examples", Path(__file__).parent.parent / "examples" / "pattern_packs", ["example-pack"]),
+]
+_PACK_PATTERNS = {
+    f"{label}/{pattern.qualified_id}": pattern.regex
+    for label, directory, names in _PACK_SOURCES
+    for pack in load_pattern_packs(names, [directory])
+    for pattern in pack.patterns
+}
+
+
+@pytest.mark.parametrize("name", list(_PACK_PATTERNS))
+def test_pack_pattern_on_long_inputs(name):
+    timing = pt.measure_pattern(_PACK_PATTERNS[name], size=SIZE)
+    assert timing.worst_ms <= BUDGET_MS, _describe(timing)
+
+
+@pytest.mark.parametrize("name", list(_PACK_PATTERNS))
+def test_pack_pattern_time_grows_linearly(name):
+    """time(64k) / time(16k) stays at most 8 on the three slowest inputs."""
+    compiled = re.compile(_PACK_PATTERNS[name], pt.DEFAULT_FLAGS)
+    timing = pt.measure_pattern(compiled, size=SIZE)
+    slowest = sorted(timing.timings, key=timing.timings.__getitem__, reverse=True)[:3]
+    small_inputs = dict(pt.timing_inputs(compiled, size=SIZE // 4))
+    large_inputs = dict(pt.timing_inputs(compiled, size=SIZE))
+    for label in slowest:
+        small = pt.search_ms(compiled, small_inputs[label])
+        large = pt.search_ms(compiled, large_inputs[label])
         ratio = large / max(small, 0.05)
         assert ratio <= 8.0, f"{label}: {small:.3f} ms at 16k, {large:.3f} ms at 64k"
 

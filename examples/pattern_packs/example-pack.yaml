@@ -1,0 +1,28 @@
+# Example firewall pattern pack.
+#
+# Load it by name from a directory:
+#
+#   domains:
+#     agent_security:
+#       firewall:
+#         pattern_pack_dirs: [examples/pattern_packs]
+#         pattern_packs: [example-pack]
+#
+# The file name is the pack name (<name>.yaml, <name>.yml or <name>.json).
+# Each pattern is known to the firewall as <pack name>:<id>, for example
+# example-pack:internal_notes, in check results and in disabled_patterns.
+# Patterns are compiled case-insensitively and must stay linear in the
+# length of the input: Admina times each one on 64k-character inputs when
+# it loads the pack (see "Firewall pattern packs" in the README).
+name: example-pack
+version: "1.0.0"
+description: Requests to disclose internal ticket notes or to take an administrator role.
+patterns:
+  - id: internal_notes
+    regex: "\\b(?:show|reveal|print)\\s++(?:me\\s++)?(?:the\\s++)?internal\\s++(?:ticket\\s++)?notes\\b"
+    category: example_disclosure
+    risk_level: high
+  - id: admin_role
+    regex: "\\byou\\s++are\\s++(?:now\\s++)?(?:the\\s++)?(?:system\\s++)?administrator\\b"
+    category: example_role
+    risk_level: medium

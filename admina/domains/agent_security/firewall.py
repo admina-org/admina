@@ -24,9 +24,12 @@ import re
 import time
 import unicodedata
 from collections.abc import Callable, Iterable
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from admina.core.types import RiskLevel
+
+if TYPE_CHECKING:
+    from admina.domains.agent_security.pattern_packs import PatternPack
 
 logger = logging.getLogger("admina.firewall")
 
@@ -598,6 +601,7 @@ class InjectionFirewall:
         disabled_categories: list[str] | set[str] | None = None,
         *,
         disabled_patterns: Iterable[str] | None = None,
+        pattern_packs: "Iterable[PatternPack] | None" = None,
         heuristic_threshold: float = DEFAULT_HEURISTIC_THRESHOLD,
         allowed_tags: Iterable[str] | None = None,
         deep_path_enabled: bool = True,
@@ -619,6 +623,10 @@ class InjectionFirewall:
             disabled_patterns: Ids of patterns left out of the pattern set
                 (``agent_security.firewall.disabled_patterns``). An id that
                 names no pattern is logged as a warning and ignored.
+            pattern_packs: Loaded pattern packs
+                (:mod:`~admina.domains.agent_security.pattern_packs`), whose
+                patterns follow the builtin ones, in order, with their
+                qualified ids ``<pack>:<id>``.
             heuristic_threshold: Deep-path score from which a text is
                 flagged (``agent_security.firewall.heuristic_threshold``).
             allowed_tags: Tag names (any case) left out of the deep path's
@@ -640,9 +648,12 @@ class InjectionFirewall:
         self._allowed_tags = frozenset(tag.lower() for tag in allowed_tags or ())
         self._deep_path_enabled = bool(deep_path_enabled)
 
-        # Compile per-instance pattern list. Builtins first, then user
-        # extras (so user rules can match what builtins miss).
+        # Compile per-instance pattern list. Builtins first, then the
+        # packs, then user extras (so user rules can match what builtins
+        # miss).
         patterns = list(BUILTIN_PATTERNS)
+        for pack in pattern_packs or ():
+            patterns.extend(pack.firewall_patterns())
         for number, entry in enumerate(extra_patterns or (), start=1):
             if not isinstance(entry, (list, tuple)) or len(entry) != 3:
                 logger.warning(

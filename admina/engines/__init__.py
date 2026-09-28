@@ -34,6 +34,7 @@ from admina.engines.pii_plugins import PIIEngineBridge, load_plugin_engine, plug
 if TYPE_CHECKING:
     from admina.core.config import AdminaConfig, FirewallConfig
     from admina.domains.agent_security.egress import EgressPolicy
+    from admina.domains.agent_security.pattern_packs import PatternPack
 
 logger = logging.getLogger("admina.engines")
 
@@ -163,18 +164,27 @@ class _FirewallSettings:
     extras: list = field(default_factory=list)
     disabled_categories: list[str] = field(default_factory=list)
     disabled_patterns: list[str] = field(default_factory=list)
+    packs: tuple[PatternPack, ...] = ()
     heuristic_threshold: float = 0.5
     allowed_tags: list[str] = field(default_factory=list)
 
     @property
     def python_only(self) -> bool:
         """True when a setting only the Python firewall applies is set."""
-        return bool(self.extras or self.disabled_categories or self.disabled_patterns)
+        return bool(self.extras or self.disabled_categories or self.disabled_patterns or self.packs)
 
 
 def _firewall_settings() -> _FirewallSettings:
     """The :class:`_FirewallSettings` of admina.yaml (none when the file
-    cannot be read, as :func:`_firewall_config`)."""
+    cannot be read, as :func:`_firewall_config`), with its pattern packs
+    loaded and timed.
+
+    Raises:
+        PatternPackError: a pattern pack cannot be loaded, or is too slow
+            with ``strict_pack_timing``.
+    """
+    from admina.domains.agent_security.pattern_packs import configured_packs
+
     fw_cfg = _firewall_config()
     if fw_cfg is None:
         return _FirewallSettings()
@@ -182,6 +192,7 @@ def _firewall_settings() -> _FirewallSettings:
         extras=_custom_patterns(fw_cfg),
         disabled_categories=list(fw_cfg.disabled_categories),
         disabled_patterns=list(fw_cfg.disabled_patterns),
+        packs=tuple(configured_packs(fw_cfg)),
         heuristic_threshold=fw_cfg.heuristic_threshold,
         allowed_tags=list(fw_cfg.allowed_tags),
     )
@@ -239,9 +250,10 @@ class _PythonFirewallBridge:
             settings = _firewall_settings()
         if settings.python_only:
             logger.info(
-                "Loaded %d custom firewall pattern(s); disabled categories: %s; "
-                "disabled patterns: %s",
+                "Loaded %d custom firewall pattern(s); pattern packs: %s; "
+                "disabled categories: %s; disabled patterns: %s",
                 len(settings.extras),
+                ", ".join(f"{p.name} {p.version}" for p in settings.packs) or "(none)",
                 settings.disabled_categories or "(none)",
                 settings.disabled_patterns or "(none)",
             )
@@ -249,6 +261,7 @@ class _PythonFirewallBridge:
             extra_patterns=settings.extras or None,
             disabled_categories=settings.disabled_categories or None,
             disabled_patterns=settings.disabled_patterns,
+            pattern_packs=settings.packs,
             heuristic_threshold=settings.heuristic_threshold,
             allowed_tags=settings.allowed_tags,
             deep_path_enabled=deep_path_enabled,
@@ -419,10 +432,10 @@ class _RustLoopBridge:
 def get_firewall(*, deep_path_enabled: bool | None = None) -> FirewallBridge:
     """Get the configured firewall engine.
 
-    If YAML overrides (custom_patterns, disabled_categories or
-    disabled_patterns) are present, the Python bridge is used even when Rust
-    is available — Rust cannot receive operator-defined patterns, so using
-    it would silently ignore them.
+    If YAML overrides (custom_patterns, disabled_categories,
+    disabled_patterns or pattern_packs) are present, the Python bridge is
+    used even when Rust is available — Rust cannot receive operator-defined
+    patterns, so using it would silently ignore them.
 
     *deep_path_enabled* switches the deep path (heuristic scoring) of either
     engine; ``None`` reads ``INJECTION_DEEP_PATH_ENABLED`` (default on).
@@ -431,7 +444,9 @@ def get_firewall(*, deep_path_enabled: bool | None = None) -> FirewallBridge:
 
     Raises:
         ValueError: ``heuristic_threshold`` is not a finite number greater
-            than 0.
+            than 0; a pattern pack cannot be loaded, or is too slow with
+            ``strict_pack_timing``
+            (:class:`~admina.domains.agent_security.pattern_packs.PatternPackError`).
     """
     if deep_path_enabled is None:
         deep_path_enabled = _deep_path_from_env()
@@ -441,7 +456,7 @@ def get_firewall(*, deep_path_enabled: bool | None = None) -> FirewallBridge:
         if resolved == "rust":
             logger.warning(
                 "YAML firewall overrides (custom_patterns/disabled_categories/"
-                "disabled_patterns) are set but the Rust engine cannot apply them — "
+                "disabled_patterns/pattern_packs) are set but the Rust engine cannot apply them — "
                 "falling back to the Python bridge so operator rules are enforced. "
                 "Remove overrides to use Rust acceleration."
             )

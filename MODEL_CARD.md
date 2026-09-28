@@ -133,10 +133,15 @@ Operators can add further categories without forking: every entry in
 label, which flows through to the same stats and Prometheus series
 (`admina/engines/__init__.py:125-131`, `admina.yaml.example:59-71`).
 
+Pattern packs (`agent_security.firewall.pattern_packs`, from installed
+packages or from directories) add patterns and categories the same way,
+in the Python engine.
+
 Each pattern also has a stable **id** (`instruction_override.en.1`,
-`multilang_evasion.it.2`, `custom.1`), reported with each match in
-`patterns[].id`; `agent_security.firewall.disabled_patterns` turns off
-single patterns by id. Categories remain the unit of the stats, the
+`multilang_evasion.it.2`, `example-pack:internal_notes`, `custom.1`),
+reported with each match in `patterns[].id`;
+`agent_security.firewall.disabled_patterns` turns off single patterns by
+id. Categories remain the unit of the stats, the
 Prometheus series and `X-Admina-Categories`.
 
 ### Rust engine labels differ from Python's

@@ -6,6 +6,11 @@
 ::: domains.agent_security.firewall
 
 
+## Pattern Packs
+
+::: domains.agent_security.pattern_packs
+
+
 ## Pattern Timing Probe
 
 ::: domains.agent_security.pattern_timing

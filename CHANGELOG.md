@@ -321,6 +321,26 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   path does not count as context switches, such as the tag an application
   puts around retrieved documents. Other tags, separators and code fences
   still count. Python engine; it does not select the Python firewall.
+- Firewall pattern packs (`admina.domains.agent_security.pattern_packs`):
+  named, versioned sets of patterns in YAML or JSON (`{name, version,
+  description, patterns: [{id, regex, category, risk_level}]}`; no other
+  key; `description` optional) that the Python firewall adds after its
+  builtin patterns when `agent_security.firewall.pattern_packs` lists them.
+  A pack pattern's id is `<pack>:<id>` in check results and
+  `disabled_patterns`. Each name is looked up among the entry points of the
+  group `admina.pattern_packs` (a loader that returns the pack mapping or
+  the path of a pack file in package data), then in the directories of
+  `agent_security.firewall.pattern_pack_dirs` (`<name>.yaml`, `.yml`,
+  `.json`), which `ADMINA_PATTERN_PACK_DIRS` (separated by `os.pathsep`)
+  replaces when set. A pack not found (the error lists the available
+  packs), found in two sources, listed twice or invalid (the error names
+  the file or entry point and the key path), and a missing pack directory,
+  raise `PatternPackError`: `get_firewall()` fails and the proxy does not
+  start. Pack patterns are timed on 64k-character inputs when the firewall
+  is built: one over 50 ms is logged as a warning with its id, or raises
+  `PatternPackError` with `agent_security.firewall.strict_pack_timing:
+  true`. A listed pack makes `get_firewall()` use the Python firewall.
+  Example pack: `examples/pattern_packs/example-pack.yaml`.
 
 ### Changed
 
@@ -421,9 +441,17 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 - The object `ruleset_sha256()` hashes also has `disabled_patterns`
   (`agent_security.firewall.disabled_patterns`, sorted without duplicates;
   `builtin` still leaves out only the patterns of a disabled category) and
-  `allowed_tags` (lower case, sorted without duplicates), so every ruleset
-  hash of 0.13.0rc1 changes. New test vectors are in
-  `tests/test_ruleset_sha256.py`.
+  `allowed_tags` (lower case, sorted without duplicates), and
+  `pattern_packs` holds the content of each listed pack, in order:
+  `{name, version, patterns: [{id, regex, category, risk_level}]}` (a
+  changed pack file changes the hash; the description is not hashed). Every
+  ruleset hash of 0.13.0rc1 changes; `ruleset_sha256()` raises
+  `PatternPackError` when a listed pack cannot be loaded. New test vectors
+  are in `tests/test_ruleset_sha256.py`.
+- `agent_security.firewall.pattern_packs`, `pattern_pack_dirs`,
+  `disabled_patterns` and `allowed_tags` must be lists of strings and
+  `strict_pack_timing` a boolean: another value is a configuration error
+  (`ValueError` from `load_config()`).
 - The default `agent_security.firewall.heuristic_threshold` of the
   configuration is `0.5` (it was `0.7`, which the firewall did not read), so
   the default `heuristic_threshold_milli` of the ruleset is `500`.
