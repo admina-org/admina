@@ -234,3 +234,28 @@ def test_the_directory_verification_uses_the_key_from_the_environment(tmp_path, 
     assert bad.exit_code == 1
     assert json.loads(bad.stdout)["reason"] == "signature_invalid"
     assert key not in bad.stdout
+
+
+def test_a_key_file_inside_the_store_directory_is_refused(tmp_path, monkeypatch):
+    from admina.core.secretfile import SecretFileError
+
+    base = tmp_path / "forensic"
+    (base / "keys").mkdir(parents=True)
+    key_file = base / "keys" / "state_key"
+    key_file.write_text(_key())
+    monkeypatch.setenv("ADMINA_FORENSIC_STATE_KEY_FILE", str(key_file))
+    monkeypatch.delenv("ADMINA_FORENSIC_STATE_KEY", raising=False)
+    with pytest.raises(SecretFileError, match="outside the forensic directory"):
+        ForensicBlackBox(filesystem_dir=str(base))
+
+
+def test_a_key_file_outside_the_store_directory_is_used(tmp_path, monkeypatch):
+    key = _key()
+    key_file = tmp_path / "secrets" / "state_key"
+    key_file.parent.mkdir()
+    key_file.write_text(key)
+    monkeypatch.setenv("ADMINA_FORENSIC_STATE_KEY_FILE", str(key_file))
+    monkeypatch.delenv("ADMINA_FORENSIC_STATE_KEY", raising=False)
+    box = ForensicBlackBox(filesystem_dir=str(tmp_path / "forensic"))
+    box.record({"event_id": "e1"})
+    assert _verify(box)["signed"] == 1

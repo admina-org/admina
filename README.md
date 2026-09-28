@@ -407,7 +407,8 @@ forensic chain-state key (for example `/run/secrets/admina_api_key`), as the
 upstream key files of the gateway do. Each file is read once at startup, with
 one trailing newline removed. A missing, unreadable or empty file, or a key
 set both directly and as a file, stops the proxy; the error names the
-setting and the path, never the key.
+setting and the path, never the key. `ADMINA_FORENSIC_STATE_KEY_FILE` inside
+the forensic directory stops it too: the key must be kept outside the store.
 
 **Forensic store.** `FORENSIC_BACKEND` (`memory`, `filesystem`, `s3`) and
 `FORENSIC_BASE_DIR` choose where the forensic records go. When they are not

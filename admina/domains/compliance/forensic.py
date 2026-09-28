@@ -55,7 +55,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from admina.core.secretfile import secret_from_env
+from admina.core.secretfile import SecretFileError, secret_from_env
 from admina.core.types import EventType
 from admina.domains.compliance.forensic_files import (
     FORMAT,
@@ -165,6 +165,8 @@ class ForensicBlackBox(BaseForensicStore):
         self._head_key: str | None = None
         # Result of the last record write (None before the first one).
         self._last_write_ok: bool | None = None
+        if state_signing_key is None:
+            _refuse_key_file_inside(self.filesystem_dir)
         self._state_signing_key = state_signing_key or secret_from_env("ADMINA_FORENSIC_STATE_KEY")
         # Key of the record signatures, derived from the state key.
         self._signing_key = (
@@ -880,6 +882,19 @@ class UnavailableForensicStore(ForensicBlackBox):
             "checkpoint": None,
             "last_hash": self.chain_head,
         }
+
+
+def _refuse_key_file_inside(directory: Path | None) -> None:
+    """Raise when ``ADMINA_FORENSIC_STATE_KEY_FILE`` is inside *directory*,
+    the forensic directory: the key must be kept outside the store."""
+    key_file = os.environ.get("ADMINA_FORENSIC_STATE_KEY_FILE", "")
+    if not key_file or directory is None:
+        return
+    resolved = Path(key_file).resolve()
+    if resolved == directory or directory in resolved.parents:
+        raise SecretFileError(
+            "ADMINA_FORENSIC_STATE_KEY_FILE: keep the key file outside the forensic directory"
+        )
 
 
 def _state_of(payload: bytes | None) -> dict[str, Any] | None:

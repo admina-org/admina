@@ -32,6 +32,9 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `signatures_verified`. Records written before a key was set are reported
   as unsigned. `record_signing_key()` and `sign_record_hash()` are in
   `admina.domains.compliance.forensic_integrity`.
+- `ADMINA_FORENSIC_STATE_KEY_FILE` inside the forensic directory is refused
+  (`SecretFileError`): the key that signs the chain state and the records is
+  kept outside the store.
 - The forensic chain state is rebuilt only from verified records. At
   startup a chain state that is missing (with records) or whose HMAC does
   not verify is rebuilt only when every stored record verifies with the key
