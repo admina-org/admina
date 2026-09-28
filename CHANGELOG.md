@@ -16,13 +16,17 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 ### Added
 
 - Governance outcome headers on the responses of `POST /v1/chat/completions`
-  once the request has its event id, streaming or not, upstream errors and
-  timeouts included: `X-Admina-Event-Id`, `X-Admina-Action` (`ALLOW` or
-  `BLOCK`), `X-Admina-Risk`, `X-Admina-Categories` (the names of the firewall
-  categories that matched, comma-separated; never text) and
-  `X-Admina-Record-Hash` (the `record_hash` of the request record, written
-  before the request is forwarded); `X-Admina-Would-Action` in `observe` and
-  `dry-run` mode. Every response of the route carries `X-Admina-Version`.
+  once the request has its event id, streaming or not, upstream errors,
+  timeouts and failures in the gateway included: `X-Admina-Event-Id`,
+  `X-Admina-Action` (`ALLOW` or `BLOCK`), `X-Admina-Risk`,
+  `X-Admina-Categories` (the names of the firewall categories that matched,
+  comma-separated; never text) and `X-Admina-Record-Hash` (the `record_hash`
+  of the request record, written before the request is forwarded);
+  `X-Admina-Would-Action` in `observe` and `dry-run` mode. Every response of
+  the route carries `X-Admina-Version`. A request body with a value JSON
+  cannot encode for the upstream request (`NaN`, an unpaired surrogate) is
+  answered `400` with `"code": "invalid_request_body"`; any other failure in
+  the gateway `500` with `"type": "server_error"`.
 - `ADMINA_GATEWAY_BLOCK_STATUS`: `200` (default: the block message as a
   completion) or `403` (`{"error": {"message", "type": "governance_blocked",
   "param", "code": "governance_blocked", "categories"}}`, streaming or not).
@@ -30,7 +34,8 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `ADMINA_GATEWAY_FORWARD_HEADERS`: the header recorded as `request_id`, the
   headers recorded in `context` and the headers forwarded upstream (all empty
   by default). Credentials cannot be listed; nor, for forwarding, connection
-  and body headers or `X-Admina-*`.
+  and body headers or `X-Admina-*`. Forwarded values outside ASCII are sent
+  as the bytes received.
 - W3C trace context on the gateway: a valid `traceparent` is recorded as
   `trace_id` and, when listed, forwarded with `tracestate`. With
   OpenTelemetry on, each chat completion has a `gateway.chat.completions`
@@ -57,6 +62,8 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 - A non-streaming completion blocked by the response scan, or whose PII
   redaction did not finish, is answered as `ADMINA_GATEWAY_BLOCK_STATUS`
   says, with `X-Admina-Action: BLOCK`.
+- A chat completion request whose JSON body is not an object is answered
+  `400` (`Invalid JSON body`).
 
 ## [0.13.0rc1] — 2026-09-27
 

@@ -217,6 +217,25 @@ def test_forward_headers_reach_the_upstream_and_nothing_else():
     assert "cookie" not in sent and "x-api-key" not in sent
 
 
+def test_header_values_outside_ascii_are_forwarded_as_received():
+    # ASGI servers give header values as bytes, which Starlette reads as
+    # ISO-8859-1: the upstream gets the same bytes.
+    upstream, record = _send(
+        {
+            "traceparent": TRACEPARENT,
+            "tracestate": "vendor1=caf\xe9".encode("latin-1"),
+            "X-Request-Id": "req-caf\xe9".encode("latin-1"),
+        },
+        ADMINA_GATEWAY_FORWARD_HEADERS=FORWARD,
+        ADMINA_GATEWAY_REQUEST_ID_HEADER="X-Request-Id",
+    )
+    sent = dict(upstream.requests[0].headers.raw)
+    assert sent[b"x-request-id"] == b"req-caf\xe9"
+    assert sent[b"tracestate"] == b"vendor1=caf\xe9"
+    assert sent[b"traceparent"] == TRACEPARENT.encode()
+    assert record["request_id"] == "req-caf\xe9"
+
+
 def test_no_client_header_is_forwarded_by_default(monkeypatch):
     monkeypatch.delenv("ADMINA_GATEWAY_FORWARD_HEADERS", raising=False)
     assert Settings().ADMINA_GATEWAY_FORWARD_HEADERS == ""
@@ -375,6 +394,34 @@ def test_gateway_span_without_an_incoming_trace_starts_one():
     (span,) = spans.get_finished_spans()
     assert span.parent is None
     assert record["trace_id"] == f"{span.context.trace_id:032x}"
+
+
+@pytest.mark.parametrize(
+    "raw, status, error",
+    [
+        (b'{"model":"m","stream":%s,"temperature":NaN,"messages":[]}', 400, "ValueError"),
+        (b'{"model":"m","stream":%s,"user":"\\ud800","messages":[]}', 400, "UnicodeEncodeError"),
+    ],
+    ids=["nan", "lone-surrogate"],
+)
+@pytest.mark.parametrize("stream", [False, True])
+def test_gateway_span_ends_when_the_call_fails(stream, raw, status, error):
+    exporter, spans = _otel()
+    recorder = _Recorder()
+    resp = through(
+        _upstream(),
+        None,
+        settings(),
+        state={"forensic_box": recorder, "otel_exporter": exporter},
+        headers={"traceparent": TRACEPARENT},
+        content=raw % (b"true" if stream else b"false"),
+    )
+    assert resp.status_code == status
+    (span,) = spans.get_finished_spans()
+    assert f"{span.parent.span_id:016x}" == PARENT_ID
+    assert span.attributes["admina.event_id"] == resp.headers["x-admina-event-id"]
+    assert span.attributes["http.response.status_code"] == status
+    assert span.attributes["error.type"] == error
 
 
 def test_no_span_when_opentelemetry_is_off():

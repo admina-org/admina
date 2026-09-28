@@ -742,7 +742,9 @@ counts the policies: `admina_prescan_accepted_total`,
 
 Once a request has passed the route, JSON and size checks it gets an event
 id, and every response to it carries the outcome of governance, streaming or
-not (response headers, sent before the first event):
+not (response headers, sent before the first event). The body must be a JSON
+object; any other body is answered `400` (`Invalid JSON body`) before the
+event id exists.
 
 | Header | Value |
 |---|---|
@@ -754,7 +756,11 @@ not (response headers, sent before the first event):
 | `X-Admina-Record-Hash` | the `record_hash` of the `gateway_request` record, written before the request is forwarded (64 hex characters) |
 
 Allowed and blocked requests, upstream errors (with their status), timeouts
-(504) and connection failures (502) all carry them. `X-Admina-Ruleset` (see
+(504), connection failures (502) and failures in the gateway all carry them.
+A request body with a value JSON cannot encode for the upstream request (a
+number that is not finite, such as `NaN`, or an unpaired surrogate) is
+answered `400` with `"code": "invalid_request_body"`; any other failure in
+the gateway `500` with `"type": "server_error"`. `X-Admina-Ruleset` (see
 [Firewall ruleset](#firewall-ruleset)) and `X-Admina-Version` (the Admina
 version, `admina.__version__`) are on these responses and on those the
 gateway sends before the event id exists (unknown route, invalid JSON,
@@ -791,7 +797,8 @@ header, or a credential (`Authorization`, `Proxy-Authorization`, `Cookie`,
 `X-API-Key`); the forward list cannot name connection or body headers
 (`Host`, `Content-Length`, `Transfer-Encoding`, …) or `X-Admina-*` either.
 The upstream receives the listed headers, the route's `Authorization` and
-`X-Admina-Event-Id`, and nothing else from the client. `X-Session-Id` and
+`X-Admina-Event-Id`, and nothing else from the client; a listed header value
+outside ASCII is forwarded as the bytes received. `X-Session-Id` and
 `X-Agent-Id` are still recorded as `session_id` and `agent_id`.
 
 **W3C trace context.** A valid `traceparent` (one header; lowercase hex; not
@@ -812,7 +819,8 @@ the governance decision (`action`, `risk_level`, `checks`, `categories`,
 `ruleset_sha256`, `session_id`, `agent_id`, `request_id`, `trace_id`,
 `context` and `request_sha256`: the SHA-256 of the RFC 8785 (JCS) canonical
 form of the `messages` array forwarded upstream (`null` when the array has
-none, for example with an unpaired surrogate). Test vectors for other
+none, for example with an unpaired surrogate, or is nested deeper than the
+interpreter's recursion limit). Test vectors for other
 implementations are in `tests/fixtures/jcs_vectors.json`.
 
 The `gateway_response` record is written once the response has ended: sent

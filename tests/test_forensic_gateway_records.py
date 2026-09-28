@@ -85,7 +85,9 @@ def _completion(content: str = "fine", *, finish: str = "stop", usage: dict | No
     return MockUpstream([json.dumps(body).encode()], content_type="application/json")
 
 
-def _send(tmp_path, upstream, body, *, headers=None, stream_mode="passthrough", **over):
+def _send(
+    tmp_path, upstream, body, *, headers=None, stream_mode="passthrough", content=None, **over
+):
     box = ForensicBlackBox(filesystem_dir=str(tmp_path))
     resp = through(
         upstream,
@@ -94,6 +96,7 @@ def _send(tmp_path, upstream, body, *, headers=None, stream_mode="passthrough", 
         stream_mode=stream_mode,
         state={"firewall": InjectionFirewall(), "forensic_box": box},
         headers=headers,
+        content=content,
     )
     return resp, box
 
@@ -330,6 +333,63 @@ def test_failure_during_the_stream_is_recorded(tmp_path):
     assert "reset" not in json.dumps(record)
 
 
+# Request bodies (JSON text) the parser reads but that have no strict JSON
+# encoding for the upstream request, with the error class recorded.
+UNENCODABLE = {
+    "nan": ('"temperature":NaN', '"hello"', "ValueError"),
+    "lone-surrogate": ("", '"a\\ud800b"', "UnicodeEncodeError"),
+}
+
+
+@pytest.mark.parametrize("case", UNENCODABLE)
+@pytest.mark.parametrize("stream", [False, True])
+def test_request_body_without_a_json_encoding_is_recorded(tmp_path, stream, case):
+    extra, content, error = UNENCODABLE[case]
+    raw = (
+        f'{{"model":"example-model","stream":{"true" if stream else "false"},'
+        f'"messages":[{{"role":"user","content":{content}}}]{"," + extra if extra else ""}}}'
+    ).encode()
+    upstream = _completion()
+    resp, _ = _send(tmp_path, upstream, None, content=raw)
+    assert resp.status_code == 400
+    assert upstream.requests == []
+    request, response = _stored(tmp_path)
+    assert [request["event"]["event_type"], response["event"]["event_type"]] == [
+        "gateway_request",
+        "gateway_response",
+    ]
+    assert request["event"]["event_id"] == response["event"]["event_id"]
+    assert request["event"]["event_id"] == resp.headers["x-admina-event-id"]
+    assert request["record_hash"] == resp.headers["x-admina-record-hash"]
+    record = response["event"]
+    assert record["status_code"] == 400
+    assert record["upstream_status_code"] is None
+    assert record["error"] == error
+    assert record["cancelled"] is False
+    assert record["response_sha256"] == hashlib.sha256(resp.content).hexdigest()
+    if case == "lone-surrogate":
+        # The messages have no RFC 8785 form.
+        assert request["event"]["request_sha256"] is None
+    else:
+        assert len(request["event"]["request_sha256"]) == 64
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_unexpected_failure_is_recorded(tmp_path, stream):
+    upstream = MockUpstream(error=lambda r: RuntimeError("unexpected at upstream.test"))
+    resp, box = _send(tmp_path, upstream, chat_body(stream=stream))
+    assert resp.status_code == 500
+    kinds = [r["event"]["event_type"] for r in _stored(tmp_path)]
+    assert kinds == ["gateway_request", "gateway_response"]
+    record = _response_record(tmp_path)
+    assert record["status_code"] == 500
+    assert record["error"] == "RuntimeError"
+    assert record["cancelled"] is False
+    assert record["response_sha256"] == hashlib.sha256(resp.content).hexdigest()
+    assert "upstream.test" not in json.dumps(record)
+    assert asyncio.run(box.verify_chain())["valid"] is True
+
+
 # ── Client going away ─────────────────────────────────────────
 
 
@@ -462,6 +522,23 @@ def test_no_prompt_or_completion_text_in_records_headers_or_logs(tmp_path, caplo
         ADMINA_GATEWAY_RECORD_HEADERS="X-Request-Id",
     )
     assert canary in resp.text
+    stored = b"".join(p.read_bytes() for p in tmp_path.rglob("*") if p.is_file())
+    assert canary.encode() not in stored
+    assert all(canary not in value for value in resp.headers.values())
+    assert canary not in caplog.text
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_no_prompt_text_when_the_request_body_has_no_json_encoding(tmp_path, caplog, stream):
+    caplog.set_level(logging.DEBUG)
+    canary = f"canary-{uuid.uuid4().hex}"
+    raw = (
+        f'{{"model":"example-model","stream":{"true" if stream else "false"},"temperature":NaN,'
+        f'"messages":[{{"role":"user","content":"Please repeat {canary} \\ud800"}}]}}'
+    ).encode()
+    resp, _ = _send(tmp_path, _completion(), None, content=raw)
+    assert resp.status_code == 400
+    assert canary not in resp.text
     stored = b"".join(p.read_bytes() for p in tmp_path.rglob("*") if p.is_file())
     assert canary.encode() not in stored
     assert all(canary not in value for value in resp.headers.values())

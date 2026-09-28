@@ -150,13 +150,20 @@ def trace_context_of(headers: Any) -> TraceContext | None:
     return parse_trace_context(headers.getlist("traceparent"), headers.getlist("tracestate"))
 
 
+def _as_sent(value: str) -> str | bytes:
+    """A header *value* of the request, as it is sent upstream: the HTTP
+    client encodes text values in ASCII, so any other value is sent as the
+    bytes received (header values are read as ISO-8859-1)."""
+    return value if value.isascii() else value.encode("latin-1")
+
+
 def forwarded_headers(
     headers: Any, names: Iterable[str], trace: TraceContext | None
-) -> dict[str, str]:
+) -> dict[str, str | bytes]:
     """The headers of *names* to send upstream: *trace* for ``traceparent``
     and ``tracestate`` (nothing without it), the request's values (without
-    CR and LF) for the others."""
-    out: dict[str, str] = {}
+    CR and LF) for the others. Values outside ASCII are the bytes received."""
+    out: dict[str, str | bytes] = {}
     for name in names:
         if name == "traceparent":
             value = trace.traceparent if trace is not None else None
@@ -166,5 +173,5 @@ def forwarded_headers(
             joined = _joined(headers, name)
             value = _LINE_BREAKS.sub("", joined) if joined is not None else None
         if value:
-            out[name] = value
+            out[name] = _as_sent(value)
     return out

@@ -229,14 +229,19 @@ async def post_through(
     path: str = "/v1/chat/completions",
     state: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
+    content: bytes | None = None,
 ) -> httpx.Response:
-    """The request sent through the gateway router to *upstream*."""
+    """The request sent through the gateway router to *upstream*: *body* as
+    JSON, or the raw JSON text *content* when given."""
     async with upstream.client() as client:
         app = gateway_app(client, cfg, stream_mode=stream_mode, state=state)
         transport = httpx.ASGITransport(app=app, raise_app_exceptions=True)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
             if method == "GET":
                 return await c.get(path, headers=headers)
+            if content is not None:
+                raw_headers = {"content-type": "application/json", **(headers or {})}
+                return await c.post(path, content=content, headers=raw_headers)
             return await c.post(path, json=body, headers=headers)
 
 

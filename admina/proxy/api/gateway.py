@@ -280,6 +280,17 @@ def _error_response(status: int, error: dict) -> JSONResponse:
     return JSONResponse(status_code=status, content={"error": error})
 
 
+def _json_encodable(value: Any) -> bool:
+    """True when *value* has a strict JSON encoding in UTF-8, the encoding
+    of an upstream request body and of a JSON response: the JSON parser
+    also reads ``NaN``, infinities and unpaired surrogates, which have none."""
+    try:
+        json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (ValueError, TypeError, RecursionError):
+        return False
+    return True
+
+
 def _unknown_upstream() -> JSONResponse:
     """400 in the OpenAI error format for an unknown route name."""
     return _error_response(
@@ -292,13 +303,16 @@ def _unknown_upstream() -> JSONResponse:
     )
 
 
-def _extract_prompt_text(messages: list) -> str:
+def _extract_prompt_text(messages: Any) -> str:
     """Concatenate the text of every chat message for governance scanning.
 
     Handles both string ``content`` and OpenAI vision-style content parts
     (a list of ``{"type": "text", "text": ...}`` dicts). Non-string,
-    non-list content and malformed entries are skipped.
+    non-list content and malformed entries are skipped, and *messages* that
+    are not a list have no text.
     """
+    if not isinstance(messages, list):
+        return ""
     parts: list[str] = []
     for msg in messages:
         if not isinstance(msg, dict):
@@ -394,6 +408,8 @@ def _block_response(cfg: Any, model: str, stream: bool, categories: Iterable[str
     if cfg.ADMINA_GATEWAY_BLOCK_STATUS == 403:
         error = _error(message, "governance_blocked", "governance_blocked")
         return _error_response(403, {**error, "categories": list(categories)})
+    if not _json_encodable(model):
+        model = "unknown"
     if stream:
         return StreamingResponse(
             _aiter_list(_synthetic_stream(model, message)), media_type="text/event-stream"
@@ -938,6 +954,32 @@ def _failure_response(
     return _error_response(*_failure(route, exc))
 
 
+# Error bodies (OpenAI format) for a chat completion that raised in the
+# gateway once it had its event id; they never carry the exception text.
+_BODY_NOT_ENCODABLE = _error(
+    "The request body has a value that JSON cannot encode "
+    "(a number that is not finite, or an unpaired surrogate).",
+    "invalid_request_error",
+    "invalid_request_body",
+)
+_GATEWAY_FAILED = _error(
+    "The gateway could not complete the request.", "server_error", "internal_error"
+)
+
+
+def _unexpected_failure(call: GatewayCall, exc: Exception, body: dict) -> JSONResponse:
+    """The response to *call*, which raised *exc* unexpectedly: 400 when
+    the request *body* has no strict JSON encoding (the upstream request
+    cannot be built), else 500. The call records the class of *exc*."""
+    call.failed(exc)
+    if isinstance(exc, (ValueError, TypeError, RecursionError)) and not _json_encodable(body):
+        logger.warning("Gateway request body has no JSON encoding: %s", type(exc).__name__)
+        return _error_response(400, _BODY_NOT_ENCODABLE)
+    logger.error("Gateway chat completion failed: %s", type(exc).__name__)
+    logger.debug("Gateway chat completion failure", exc_info=True)
+    return _error_response(500, _GATEWAY_FAILED)
+
+
 def _is_success(status: int) -> bool:
     return 200 <= status < 300
 
@@ -1039,7 +1081,10 @@ async def _chat_completion(
 
     Returns the response and, once the request has its event id, its call:
     the route handler adds the ruleset and version headers and, with
-    :func:`_finish`, the outcome headers and the end of the call.
+    :func:`_finish`, the outcome headers and the end of the call. Once the
+    call exists, an exception is answered by :func:`_unexpected_failure`,
+    so that response too gets the outcome headers, the completion record
+    and the end of the span.
     """
     arrived = time.perf_counter()
     route = _select_upstream(request, state, cfg)
@@ -1047,15 +1092,11 @@ async def _chat_completion(
         return _unknown_upstream(), None
     try:
         body = await request.json()
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        body = None
+    if not isinstance(body, dict):
         return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"}), None
-
-    messages = body.get("messages") or []
-    model = body.get("model", "unknown")
-    stream = bool(body.get("stream", False))
-    session_id = re.sub(r"[\r\n]", "", request.headers.get("X-Session-Id", "default"))[:128]
-    agent_id = re.sub(r"[\r\n]", "", request.headers.get("X-Agent-Id", "gateway"))[:128]
-    prompt_text = _extract_prompt_text(messages)
+    prompt_text = _extract_prompt_text(body.get("messages") or [])
     if 0 < cfg.ADMINA_GATEWAY_MAX_PROMPT_CHARS < len(prompt_text):
         too_long = _error(
             "The message text exceeds the length limit.",
@@ -1063,17 +1104,42 @@ async def _chat_completion(
             "prompt_too_long",
         )
         return _error_response(413, too_long), None
-    event_id = uuid.uuid4().hex
-    scope = _scan_scope(request, state, cfg, scan)
     call = GatewayCall(
-        event_id=event_id,
+        event_id=uuid.uuid4().hex,
         upstream=route.name,
-        stream=stream,
+        stream=bool(body.get("stream", False)),
         arrived=arrived,
         request_id=request_id_of(
             request.headers, request_id_header_name(cfg.ADMINA_GATEWAY_REQUEST_ID_HEADER)
         ),
     )
+    try:
+        response = await _governed_call(request, state, cfg, scan, route, call, body, prompt_text)
+    except Exception as exc:  # noqa: BLE001 — the call still ends with its outcome
+        response = _unexpected_failure(call, exc, body)
+    return response, call
+
+
+async def _governed_call(
+    request: Request,
+    state: Any,
+    cfg: Any,
+    scan: GatewayScanConfig,
+    route: GatewayUpstream,
+    call: GatewayCall,
+    body: dict,
+    prompt_text: str,
+) -> Response:
+    """The response to *call*, whose request has JSON *body* and message
+    text *prompt_text*: governed, recorded and, unless blocked, relayed to
+    *route*."""
+    event_id = call.event_id
+    messages = body.get("messages") or []
+    model = body.get("model", "unknown")
+    stream = call.stream
+    session_id = re.sub(r"[\r\n]", "", request.headers.get("X-Session-Id", "default"))[:128]
+    agent_id = re.sub(r"[\r\n]", "", request.headers.get("X-Agent-Id", "gateway"))[:128]
+    scope = _scan_scope(request, state, cfg, scan)
     trace = _open_trace(state, call, trace_context_of(request.headers))
 
     def pipeline() -> Coroutine[Any, Any, GovernanceResult]:
@@ -1122,7 +1188,7 @@ async def _chat_completion(
     )
 
     if call.action in ("BLOCK", "CIRCUIT_BREAK"):
-        return _block_response(cfg, model, stream, call.categories), call
+        return _block_response(cfg, model, stream, call.categories)
 
     url = f"{route.url}/chat/completions"
     forwarded = forward_header_names(cfg.ADMINA_GATEWAY_FORWARD_HEADERS)
@@ -1147,7 +1213,7 @@ async def _chat_completion(
             async with asyncio.timeout_at(deadline):
                 upstream = await stream_cm.__aenter__()
         except (TimeoutError, httpx.RequestError) as exc:
-            return _failure_response(route, exc, call), call
+            return _failure_response(route, exc, call)
         call.upstream_status = upstream.status_code
 
         if not _is_success(upstream.status_code):
@@ -1155,51 +1221,56 @@ async def _chat_completion(
                 async with asyncio.timeout_at(deadline):
                     content = await upstream.aread()
             except (TimeoutError, httpx.RequestError) as exc:
-                return _failure_response(route, exc, call), call
+                return _failure_response(route, exc, call)
             finally:
                 await stream_cm.__aexit__(None, None, None)
-            return _as_received(upstream.status_code, upstream.headers, content), call
+            return _as_received(upstream.status_code, upstream.headers, content)
 
-        passthrough = getattr(
-            state, "gateway_stream_mode", DEFAULT_STREAM_MODE
-        ) == "passthrough" and not _transforms_response(cfg)
-        if passthrough:
-            chunks: AsyncIterator[Any] = _sse_events(upstream.aiter_bytes())
-            content_type = upstream.headers.get("content-type") or "text/event-stream"
-        else:
-            pii = state.pii_redactor if cfg.PII_REDACTION_ENABLED else None
-            chunks = _governed_sse_stream(
-                upstream.aiter_lines(), pii, partial(_redacted, state, cfg)
+        try:
+            passthrough = getattr(
+                state, "gateway_stream_mode", DEFAULT_STREAM_MODE
+            ) == "passthrough" and not _transforms_response(cfg)
+            if passthrough:
+                chunks: AsyncIterator[Any] = _sse_events(upstream.aiter_bytes())
+                content_type = upstream.headers.get("content-type") or "text/event-stream"
+            else:
+                pii = state.pii_redactor if cfg.PII_REDACTION_ENABLED else None
+                chunks = _governed_sse_stream(
+                    upstream.aiter_lines(), pii, partial(_redacted, state, cfg)
+                )
+                content_type = "text/event-stream"
+            scan = None
+            if _scans_response(cfg):
+                # The text sent is scanned once the response is complete.
+                sent: list[Any] = []
+                chunks = _collected(chunks, sent)
+                scan = BackgroundTask(
+                    _scan_response,
+                    state,
+                    cfg,
+                    lambda: stream_texts(sent),
+                    request_event_id=event_id,
+                    agent_id=agent_id,
+                    session_id=session_id,
+                    upstream=route.name,
+                    stream=True,
+                )
+            return StreamingResponse(
+                _relay(chunks, stream_cm, deadline, route, call.failed),
+                status_code=upstream.status_code,
+                headers={"content-type": content_type},
+                background=scan,
             )
-            content_type = "text/event-stream"
-        scan = None
-        if _scans_response(cfg):
-            # The text sent is scanned once the response is complete.
-            sent: list[Any] = []
-            chunks = _collected(chunks, sent)
-            scan = BackgroundTask(
-                _scan_response,
-                state,
-                cfg,
-                lambda: stream_texts(sent),
-                request_event_id=event_id,
-                agent_id=agent_id,
-                session_id=session_id,
-                upstream=route.name,
-                stream=True,
-            )
-        return StreamingResponse(
-            _relay(chunks, stream_cm, deadline, route, call.failed),
-            status_code=upstream.status_code,
-            headers={"content-type": content_type},
-            background=scan,
-        ), call
+        except BaseException:
+            # No relay owns the upstream response: it is closed here.
+            await stream_cm.__aexit__(None, None, None)
+            raise
 
     try:
         async with asyncio.timeout_at(deadline):
             resp = await client.post(url, json=forward_body, headers=headers)
     except (TimeoutError, httpx.RequestError) as exc:
-        return _failure_response(route, exc, call), call
+        return _failure_response(route, exc, call)
     call.upstream_status = resp.status_code
     if _scans_response(cfg) and _is_success(resp.status_code):
         completion = _json_object(resp.content)
@@ -1218,18 +1289,18 @@ async def _chat_completion(
                 call.action = "BLOCK"
                 call.risk_level = str(safe_serialize(checked.risk_level)).upper()
                 call.categories = firewall_categories(checked.checks.get("response_firewall"))
-                return _block_response(cfg, model, False, call.categories), call
+                return _block_response(cfg, model, False, call.categories)
     if not (_transforms_response(cfg) and _is_success(resp.status_code)):
-        return _as_received(resp.status_code, resp.headers, resp.content), call
+        return _as_received(resp.status_code, resp.headers, resp.content)
     data = _json_object(resp.content)
     if data is None:
-        return _error_response(502, _UPSTREAM_INVALID), call
+        return _error_response(502, _UPSTREAM_INVALID)
     redacted = await _redacted(state, cfg, partial(_redacted_completion, data, state.pii_redactor))
     if redacted is None:
         # The completion could not be redacted: the block message instead.
         call.action = "BLOCK"
-        return _block_response(cfg, model, False, call.categories), call
-    return JSONResponse(content=redacted, status_code=resp.status_code), call
+        return _block_response(cfg, model, False, call.categories)
+    return JSONResponse(content=redacted, status_code=resp.status_code)
 
 
 def create_gateway_endpoints(

@@ -23,15 +23,19 @@ errors, timeouts, streaming or not.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import re
+import sys
 import uuid
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
 pytest.importorskip("fastapi")
 
-from _gateway_stream import MockUpstream, chat_body, fixture, settings, through
+from _gateway_stream import MockUpstream, chat_body, fixture, gateway_app, settings, through
 
 import admina
 from admina.domains.agent_security.firewall import InjectionFirewall
@@ -90,7 +94,15 @@ def _upstream(stream: bool, status: int = 200) -> MockUpstream:
 
 
 def _send(
-    upstream, body, *, headers=None, firewall=None, box="default", stream_mode="passthrough", **over
+    upstream,
+    body,
+    *,
+    headers=None,
+    firewall=None,
+    box="default",
+    stream_mode="passthrough",
+    content=None,
+    **over,
 ):
     box = _Box() if box == "default" else box
     resp = through(
@@ -100,8 +112,29 @@ def _send(
         stream_mode=stream_mode,
         state={"firewall": firewall or InjectionFirewall(), "forensic_box": box},
         headers=headers,
+        content=content,
     )
     return resp, box
+
+
+def raw_body(stream: bool, *, extra: str = "", content: str = '"hello"', model: str = '"m"'):
+    """A chat completion request as JSON text, for values ``json.dumps``
+    refuses (``NaN``, unpaired surrogates)."""
+    tail = f",{extra}" if extra else ""
+    return (
+        f'{{"model":{model},"stream":{"true" if stream else "false"},'
+        f'"messages":[{{"role":"user","content":{content}}}]{tail}}}'
+    ).encode()
+
+
+# JSON texts the parser reads but that have no strict JSON encoding, which
+# the upstream request needs: numbers that are not finite, unpaired surrogates.
+UNENCODABLE = {
+    "nan": {"extra": '"temperature":NaN'},
+    "infinity": {"extra": '"top_p":-Infinity'},
+    "surrogate-in-message": {"content": '"a\\ud800b"'},
+    "surrogate-elsewhere": {"extra": '"user":"\\udfff"'},
+}
 
 
 def _assert_outcome(resp: httpx.Response, action: str) -> None:
@@ -216,6 +249,86 @@ def test_upstream_connection_failure(stream):
     _assert_outcome(resp, "ALLOW")
 
 
+# ── Bodies the upstream request cannot carry; unexpected failures ──
+
+
+@pytest.mark.parametrize("case", UNENCODABLE)
+@pytest.mark.parametrize("stream", [False, True])
+def test_request_body_without_a_json_encoding(stream, case):
+    upstream = _upstream(stream)
+    resp, box = _send(upstream, None, content=raw_body(stream, **UNENCODABLE[case]))
+    assert resp.status_code == 400
+    error = resp.json()["error"]
+    assert error["type"] == "invalid_request_error"
+    assert error["code"] == "invalid_request_body"
+    assert upstream.requests == []
+    _assert_outcome(resp, "ALLOW")
+
+
+@pytest.mark.parametrize("status", [200, 403])
+@pytest.mark.parametrize("stream", [False, True])
+def test_blocked_request_with_a_model_name_without_a_json_encoding(stream, status):
+    upstream = _upstream(stream)
+    content = raw_body(stream, content=json.dumps(INJECTION), model='"\\ud800"')
+    resp, box = _send(upstream, None, content=content, ADMINA_GATEWAY_BLOCK_STATUS=status)
+    assert resp.status_code == status
+    assert upstream.requests == []
+    _assert_outcome(resp, "BLOCK")
+    if status == 200 and not stream:
+        assert resp.json()["model"] == "unknown"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_unexpected_failure_after_the_event_id(stream):
+    upstream = MockUpstream(error=lambda request: RuntimeError("unexpected"))
+    resp, box = _send(upstream, chat_body(stream=stream))
+    assert resp.status_code == 500
+    assert resp.json()["error"]["type"] == "server_error"
+    assert "unexpected" not in resp.text
+    _assert_outcome(resp, "ALLOW")
+
+
+def test_unexpected_failure_before_the_relay_closes_the_upstream_stream():
+    class _Stream:
+        """An upstream stream with a content type no response can carry."""
+
+        def __init__(self) -> None:
+            self.exits = 0
+
+        async def __aenter__(self):
+            async def nothing():
+                return
+                yield
+
+            return SimpleNamespace(
+                status_code=200,
+                headers={"content-type": "text/event-stream; charset=€"},
+                aiter_bytes=nothing,
+            )
+
+        async def __aexit__(self, *exc) -> None:
+            self.exits += 1
+
+    class _Client:
+        def __init__(self) -> None:
+            self.opened = _Stream()
+
+        def stream(self, method, url, json=None, headers=None):
+            return self.opened
+
+    async def go(client) -> httpx.Response:
+        app = gateway_app(client, settings(), state={"forensic_box": _Box()})
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=True)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            return await c.post("/v1/chat/completions", json=chat_body(stream=True))
+
+    client = _Client()
+    resp = asyncio.run(go(client))
+    assert resp.status_code == 500
+    _assert_outcome(resp, "ALLOW")
+    assert client.opened.exits == 1
+
+
 # ── Before the event id; without a forensic store ─────────────
 
 
@@ -229,6 +342,54 @@ def test_unknown_route_has_no_outcome_headers():
     assert HEX64.fullmatch(resp.headers["x-admina-ruleset"])
     assert resp.headers["x-admina-version"] == admina.__version__
     assert box.written == []
+
+
+NOT_AN_OBJECT = {
+    "array": b"[1, 2]",
+    "string": b'"hello"',
+    "number": b"42",
+    "null": b"null",
+    "nested-beyond-the-parser": b"[" * 100_000 + b"]" * 100_000,
+}
+
+
+@pytest.mark.parametrize("case", NOT_AN_OBJECT)
+def test_body_that_is_not_a_json_object_is_refused_before_the_event_id(case):
+    upstream = _upstream(False)
+    resp, box = _send(upstream, None, content=NOT_AN_OBJECT[case])
+    assert resp.status_code == 400
+    assert resp.json() == {"detail": "Invalid JSON body"}
+    for name in OUTCOME_HEADERS:
+        assert name not in resp.headers
+    assert resp.headers["x-admina-version"] == admina.__version__
+    assert upstream.requests == []
+    assert box.written == []
+
+
+@pytest.mark.parametrize("messages", ["5", "true", "1.5", '"hello"', '{"role":"user"}'])
+def test_messages_that_are_not_a_list_get_an_outcome(messages):
+    upstream = _upstream(False)
+    content = f'{{"model":"m","stream":false,"messages":{messages}}}'.encode()
+    resp, box = _send(upstream, None, content=content)
+    assert resp.status_code == 200
+    _assert_outcome(resp, "ALLOW")
+    assert len(upstream.requests) == 1
+
+
+def test_messages_nested_deeper_than_the_interpreter_recursion_limit():
+    # Python 3.11 refuses this nesting while parsing (before the event id);
+    # later versions parse it, and the call then gets its outcome.
+    depth = sys.getrecursionlimit() + 200
+    content = b'{"model":"m","stream":false,"messages":' + b"[" * depth + b"]" * depth + b"}"
+    resp, box = _send(_upstream(False), None, content=content)
+    if resp.status_code == 400:
+        assert box.written == []
+        return
+    assert resp.status_code != 500
+    assert resp.headers["x-admina-action"] in {"ALLOW", "BLOCK"}
+    event, result = box.request_record()
+    assert event["request_sha256"] is None
+    assert resp.headers["x-admina-record-hash"] == result["record_hash"]
 
 
 def test_without_a_forensic_store_there_is_no_record_hash():

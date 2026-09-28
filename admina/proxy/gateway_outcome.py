@@ -108,10 +108,11 @@ def firewall_categories(verdict: Any) -> tuple[str, ...]:
 def messages_sha256(messages: Any) -> str | None:
     """SHA-256 (64 lowercase hex) of the RFC 8785 canonical form of
     *messages*; None when it has none (an unpaired surrogate, an integer
-    beyond a double, a value that is not JSON)."""
+    beyond a double, a value that is not JSON) or is nested deeper than the
+    interpreter's recursion limit."""
     try:
         return hashlib.sha256(canonicalize(messages)).hexdigest()
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         return None
 
 

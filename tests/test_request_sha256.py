@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -121,6 +122,15 @@ def test_redacted_messages_are_hashed_as_forwarded():
 )
 def test_messages_without_a_canonical_form_have_no_hash(value):
     assert messages_sha256([{"role": "user", "content": "hi", "extra": value}]) is None
+
+
+def test_messages_nested_beyond_the_recursion_limit_have_no_hash():
+    # Python 3.12 and later parse JSON nested deeper than the interpreter's
+    # recursion limit, which the canonical form is written within.
+    nested: list = []
+    for _ in range(sys.getrecursionlimit() + 100):
+        nested = [nested]
+    assert messages_sha256([{"role": "user", "content": nested}]) is None
 
 
 def test_request_without_a_canonical_form_is_still_forwarded():
