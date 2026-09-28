@@ -65,7 +65,9 @@ domains:
       # they trigger too many FPs in your domain). Builtin set:
       # instruction_override, role_hijack, prompt_extraction, jailbreak,
       # delimiter_injection, data_exfiltration, tool_abuse, obfuscation,
-      # multilang_evasion. Stays empty = all categories active.
+      # multilang_evasion, it_instruction_override, it_role_hijack,
+      # it_prompt_extraction, it_model_addressing. Stays empty = all
+      # categories active.
       disabled_categories: []
       # Single patterns you want SILENCED, by id (Python engine). Each
       # match reports its pattern's id in `patterns[].id` of the firewall

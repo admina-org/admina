@@ -14,9 +14,10 @@
 
 """Pattern timing: regular expressions applied to request text on long inputs.
 
-Every builtin firewall pattern, the patterns of the pattern packs of the
-tests and of ``examples/pattern_packs``, the text normalisation, the deep
-path, and the PII and egress regexes finish within the time budget
+Every builtin firewall pattern (the Italian baseline included), the patterns
+of the pattern packs of the tests and of ``examples/pattern_packs``, the
+text normalisation, the deep path, and the PII and egress regexes finish
+within the time budget
 (``pattern_timing.DEFAULT_BUDGET_MS``) on the long inputs of
 ``pattern_timing.timing_inputs``: 64k characters of spaces, tabs, commas,
 newlines or a mix after each trigger word, and each trigger repeated. The

@@ -341,6 +341,24 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `PatternPackError` with `agent_security.firewall.strict_pack_timing:
   true`. A listed pack makes `get_firewall()` use the Python firewall.
   Example pack: `examples/pattern_packs/example-pack.yaml`.
+- Italian baseline of the Python firewall, four builtin categories, risk
+  `high`: `it_instruction_override` (`it_instruction_override.1`: an
+  override verb such as `ignora`, `dimentica`, `non seguire` where an
+  instruction starts, with rules, instructions or "quanto detto" as object;
+  `.2`: the same override of what was said "finora" or "fin qui", anywhere),
+  `it_role_hijack` (`.1`: "d'ora in poi" / "da adesso" and a second-person
+  verb; `.2`: "sei ora" an AI or an assistant without limits; `.3`: "agisci
+  come" / "fai finta di essere" a model without filters),
+  `it_prompt_extraction` (`.1`: `rivela`, `mostra`, `ripeti` ... the system
+  prompt or "le tue istruzioni" where an instruction starts; `.2`: the
+  second-person forms `mostrami`, `dimmi` ...) and `it_model_addressing`
+  (`.1`: a note or instruction addressed to an AI system followed by `:`;
+  `.2`: "se sei un'intelligenza artificiale"). "Where an instruction starts"
+  is the start of the text, after a sentence end, a colon, a line break, an
+  opening quote or bracket, the end of a tag or the start of an HTML
+  comment, then an optional list marker and an optional word addressing the
+  reader ("ora", "per favore", "assistente,"). Every pattern is timed with
+  the builtin patterns (`tests/test_firewall_pattern_timing.py`).
 
 ### Changed
 
@@ -452,6 +470,18 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `disabled_patterns` and `allowed_tags` must be lists of strings and
   `strict_pack_timing` a boolean: another value is a configuration error
   (`ValueError` from `load_config()`).
+- The Italian `multilang_evasion` patterns (`multilang_evasion.it.1`,
+  `multilang_evasion.it.2`) match where an instruction starts (see the
+  Italian baseline above) and end on a word boundary: third-person prose
+  with the same verbs ("il consiglio annulla le direttive precedenti") no
+  longer matches, nor does a verb inside another word ("signora"); the
+  singular `istruzione` and `restrizione` still match.
+- The committed red-team baseline records the Python injection recall
+  23/37 (it was 21/37): the Italian attacks `inj-it-002` and `inj-it-003`
+  of the corpus are detected. No new false positive; the Rust figures are
+  unchanged.
+- The default configuration's `ruleset_sha256()` for the `python` engine
+  changes with the builtin pattern list.
 - The default `agent_security.firewall.heuristic_threshold` of the
   configuration is `0.5` (it was `0.7`, which the firewall did not read), so
   the default `heuristic_threshold_milli` of the ruleset is `500`.

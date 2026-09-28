@@ -360,6 +360,19 @@ domains:
       disabled_patterns: [tool_abuse.en.4]
 ```
 
+The Python firewall has an Italian baseline besides the Italian patterns of
+`multilang_evasion`: `it_instruction_override`, `it_role_hijack`,
+`it_prompt_extraction` and `it_model_addressing` (risk `high`). Italian
+imperatives of `-are` verbs have the form of the third person ("ignora",
+"annulla"), so these patterns and the Italian `multilang_evasion` patterns
+match such a verb where an instruction starts (the start of the text, after
+a sentence end, a colon, a line break, an opening quote or bracket, a tag or
+an HTML comment opener, a list marker, "per favore", "assistente,"), or rest
+on second-person forms ("rispondi", "sei ora", "mostrami", "le tue
+istruzioni") and on notes addressed to an AI system ("Istruzioni per
+l'IA:"). "Ignora tutte le istruzioni precedenti" matches; "Il giudice
+annulla le linee guida impugnate" does not.
+
 `disabled_patterns`, `custom_patterns` and pattern packs (below) apply to
 the Python firewall only: with any of them set, `get_firewall()` uses the
 Python firewall even when the Rust engine is selected.

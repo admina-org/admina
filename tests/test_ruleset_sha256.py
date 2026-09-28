@@ -88,8 +88,8 @@ _RUST_CANONICAL = (
     b'"heuristic_threshold_milli":500,"pattern_packs":[]}'
 )
 _RUST_VECTOR = "e69d13465ec5a301c5a291a4b4be8856a4f7b89c61a4692e50efa573a78985c6"
-_PYTHON_VECTOR = "d9a221bc1cc441065b1977e2de48ea883bec45da29de6573da083618958bc589"
-_PYTHON_CUSTOM_VECTOR = "526da15ffffad22fb648e197035849161de1b3103d98efebf6c5be6d6e6a2ecb"
+_PYTHON_VECTOR = "d301ee86baefc48e085dc7beb99096dc9155369a368c99cdbd8238d5ffb9af66"
+_PYTHON_CUSTOM_VECTOR = "be4f552c0e43ff358ab59d29df3bb9949b771eff434de897604b42a5ec35a719"
 
 
 def test_rust_vector_canonical_bytes():

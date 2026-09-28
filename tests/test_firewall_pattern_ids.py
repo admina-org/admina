@@ -74,6 +74,19 @@ _IDS_0_12 = [
     "multilang_evasion.de.1",
 ]
 
+# The ids added in 0.13: the Italian baseline.
+_IDS_0_13 = [
+    "it_instruction_override.1",
+    "it_instruction_override.2",
+    "it_role_hijack.1",
+    "it_role_hijack.2",
+    "it_role_hijack.3",
+    "it_prompt_extraction.1",
+    "it_prompt_extraction.2",
+    "it_model_addressing.1",
+    "it_model_addressing.2",
+]
+
 _ALL_IDS = [p.id for p in BUILTIN_PATTERNS]
 
 
@@ -96,6 +109,10 @@ def test_builtin_id_names_its_category():
 
 def test_ids_of_the_0_12_patterns_are_stable():
     assert _ALL_IDS[: len(_IDS_0_12)] == _IDS_0_12
+
+
+def test_ids_of_the_0_13_patterns_are_stable():
+    assert _ALL_IDS[len(_IDS_0_12) :] == _IDS_0_13
 
 
 def test_injection_patterns_are_the_builtin_patterns_without_ids():

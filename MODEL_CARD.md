@@ -100,10 +100,10 @@ switches, HTML entities and percent-encoding are not encoding markers,
 and the length signal starts above 100 000 characters;
 `INJECTION_DEEP_PATH_ENABLED=false` turns the deep path off.
 
-### Categories emitted (v0.11.0)
+### Categories emitted (v0.13.0)
 
 The Python engine — the default, higher-recall engine — emits exactly
-**9** distinct category labels. This is the authoritative set: it is
+**13** distinct builtin category labels. This is the authoritative set: it is
 what appears in `detections_by_type`
 (`admina/domains/agent_security/firewall.py:602-604`), what becomes the
 `category` label of the Prometheus series
@@ -126,7 +126,11 @@ of its group.
 | `data_exfiltration` | high | `curl` / `wget` / `nc` to a URL; send / post / upload / forward / leak … to an external URL or a known burner domain (webhook.site, requestbin, ngrok.io, pastebin, gist) | `firewall.py:273-294` |
 | `tool_abuse` | critical / high | shell execution (`exec`, `subprocess`, `os.system`, `sh -c`); sensitive filesystem paths (`/etc/passwd`, `~/.ssh/`, `~/.aws/credentials`, `/proc/self/environ`); internal / admin / private API calls; destructive commands (`rm -rf`, `DROP TABLE`, `mkfs.`, `dd if=`) | `firewall.py:295-331` |
 | `obfuscation` | high / medium | base64 encode/decode markers; hex-escape runs (`\xNN\xNN\xNN`); ROT13 / Caesar-cipher markers; hex-escape-as-instruction | `firewall.py:332-342` |
-| `multilang_evasion` | critical | override phrasing in Italian, French, Spanish and German (verb-then-target and target-then-adjective word orders) | `firewall.py:343-406` |
+| `multilang_evasion` | critical | override phrasing in Italian, French, Spanish and German (verb-then-target and target-then-adjective word orders); the Italian patterns only where an instruction starts, with word boundaries | `firewall.py`, section 9 |
+| `it_instruction_override` | high | Italian override (`ignora`, `dimentica`, `non seguire` … rules, instructions, "quanto detto") where an instruction starts; override of what was said "finora" anywhere | `firewall.py`, section 10 |
+| `it_role_hijack` | high | "d'ora in poi" + second-person verb; "sei ora" an AI or an assistant without limits; "agisci come" / "fai finta di essere" a model without filters | `firewall.py`, section 10 |
+| `it_prompt_extraction` | high | `rivela` / `mostra` / `ripeti` … the system prompt or "le tue istruzioni" where an instruction starts; `mostrami`, `dimmi` … anywhere | `firewall.py`, section 10 |
+| `it_model_addressing` | high | a note or instruction addressed to an AI system ("Istruzioni per l'IA:"); "se sei un'intelligenza artificiale" | `firewall.py`, section 10 |
 
 Operators can add further categories without forking: every entry in
 `agent_security.firewall.custom_patterns` carries its own `category`
@@ -176,7 +180,14 @@ Python bridge — `admina/engines/__init__.py:333-341`).
 ### Languages
 
 Patterns are written for English with an explicit subset for
-`multilang_evasion` covering French, Italian, Spanish, German. Coverage
+`multilang_evasion` covering French, Italian, Spanish, German, and an
+Italian baseline (the `it_*` categories). Italian imperatives of `-are`
+verbs have the form of the third person, so the Italian override and
+extraction patterns match only where an instruction starts: third-person
+prose such as "il giudice annulla le linee guida" is not flagged, and an
+override in the middle of a sentence without such a start or a
+second-person form is not either. The Italian baseline is Python-only in
+0.13 (the Rust engine has the `multilang_evasion` subset only). Coverage
 in other languages is best-effort. We accept contributions for
 additional locales.
 
