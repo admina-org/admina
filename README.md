@@ -938,21 +938,24 @@ does not start when they are enabled without it.
 {
   "status": "healthy",
   "service": "admina-proxy",
-  "version": "0.13.0rc1",
+  "version": "0.13.0",
   "mode": "enforce",
   "surfaces": ["gateway"],
-  "ruleset_sha256": "b9ddba234d55b532c2be464124c01a9d906e9fb7f492729807e0a7eadb39faa0",
+  "ruleset_sha256": "9cada1f2c9c85e60d1ec53ede74fbec7524f1db6e324500c46105f4d174c980a",
   "forensic_writable": true,
   "forensic_chain": "ok",
   "engine": {
     "engine": "rust",
     "rust_available": true,
-    "rust_version": "0.13.0-rc.1",
+    "rust_version": "0.13.0",
     "selection": "auto",
     "active": "rust",
-    "pii_active": "python"
+    "pii_active": "python",
+    "firewall": "rust",
+    "loop_breaker": null,
+    "pii": "python"
   },
-  "timestamp": "2026-09-27T18:35:14.481520+00:00"
+  "timestamp": "2026-09-28T23:37:06.472687+00:00"
 }
 ```
 

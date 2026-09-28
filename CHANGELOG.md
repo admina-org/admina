@@ -13,6 +13,21 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-09-29
+
+Everything in 0.13.0rc1, and: the governance outcome on the gateway's
+responses and the correlation of its calls (outcome headers,
+`ADMINA_GATEWAY_BLOCK_STATUS`, request ids, W3C trace context, request and
+completion records with hashes), the whole chat completion body in the
+gateway's scan, egress checks per surface, a forensic store that writes
+atomically, signs each record, verifies from a checkpoint and exports JSON
+Lines, PII engines from other packages with value-only redaction and an
+`[OMISSIS]` mask style, an offline mode, per-surface request metrics and
+governance events without request text, stable firewall pattern ids with
+pattern packs and Italian baseline patterns, a schema check of admina.yaml,
+the engines in use on `/health`, an OISG score from external evidence, and
+`admina redteam` on external corpora. Upgrading is recommended.
+
 ### Security
 
 - Each forensic record is signed: `record_sig` is the HMAC-SHA256 (64
@@ -65,7 +80,6 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `unauthenticated`). `ADMINA_AUDIT_APPEND_KEY` (or `_FILE`) is a key
   accepted by this route only, besides the API key; every other route
   refuses it. Unset (the default), the route needs the API key.
-
 - PII redaction reads text values and keeps the structure around them.
   `_deep_redact` (MCP tool parameters and results, `GovernedAgent`) passes
   the values of a dict to the PII engine and keeps its keys;
@@ -110,6 +124,26 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   after the upstream answered; a `POST /api/v1/validate` request whose
   pipeline raises is answered `500` (`{"detail": "Internal Server
   Error"}`).
+- The firewall of the gateway scans every string of a chat completion
+  request, keys included: the messages (content, names, tool calls), the
+  tool definitions (`tools`), `response_format` and any other field of the
+  body. The `arguments` of a tool call (and of a legacy `function_call`) are
+  scanned as the JSON they hold, each string separately, and as they are
+  when they are not JSON. `ADMINA_GATEWAY_SCAN_ROLES` and
+  `X-Admina-Scan-Policy` narrow the messages only. A request whose body has
+  a string nested more than 32 levels deep, or tool call arguments nested
+  deeper than the JSON parser reads, is blocked in `enforce` mode
+  (`would_action` in `observe` and `dry-run`), with `checks.scan_depth =
+  {"action": "BLOCK", "reason": "depth_limit_exceeded"}` in its record.
+  `request_texts()` of `admina.domains.agent_security.scan_policy` collects
+  the texts and reports `truncated`; `run_pipeline(scan_truncated=True)`
+  blocks.
+- `ADMINA_GATEWAY_MODELS_ALLOWLIST` applies to `POST /v1/chat/completions`
+  too: a request for a model outside the list, or without a model, is
+  answered `403` (`{"error": {"message", "type": "invalid_request_error",
+  "param": "model", "code": "model_not_allowed"}}`) before any governance
+  check, forensic record or upstream call. An empty list (the default) lets
+  every model through.
 
 ### Added
 
@@ -577,26 +611,6 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   says, with `X-Admina-Action: BLOCK`.
 - A chat completion request whose JSON body is not an object is answered
   `400` (`Invalid JSON body`).
-- The firewall of the gateway scans every string of a chat completion
-  request, keys included: the messages (content, names, tool calls), the
-  tool definitions (`tools`), `response_format` and any other field of the
-  body. The `arguments` of a tool call (and of a legacy `function_call`) are
-  scanned as the JSON they hold, each string separately, and as they are
-  when they are not JSON. `ADMINA_GATEWAY_SCAN_ROLES` and
-  `X-Admina-Scan-Policy` narrow the messages only. A request whose body has
-  a string nested more than 32 levels deep, or tool call arguments nested
-  deeper than the JSON parser reads, is blocked in `enforce` mode
-  (`would_action` in `observe` and `dry-run`), with `checks.scan_depth =
-  {"action": "BLOCK", "reason": "depth_limit_exceeded"}` in its record.
-  `request_texts()` of `admina.domains.agent_security.scan_policy` collects
-  the texts and reports `truncated`; `run_pipeline(scan_truncated=True)`
-  blocks.
-- `ADMINA_GATEWAY_MODELS_ALLOWLIST` applies to `POST /v1/chat/completions`
-  too: a request for a model outside the list, or without a model, is
-  answered `403` (`{"error": {"message", "type": "invalid_request_error",
-  "param": "model", "code": "model_not_allowed"}}`) before any governance
-  check, forensic record or upstream call. An empty list (the default) lets
-  every model through.
 - The filesystem forensic store writes each record, `_chain_state.json` and
   `_chain_state.json.sig` atomically and durably: to a temporary file in the
   same directory (`.<name>.<random>.tmp`, never read as a record), fsynced,
@@ -1837,7 +1851,8 @@ environment in `docker-compose.benchmark.yml`.
 
 ---
 
-[Unreleased]: https://github.com/admina-org/admina/compare/v0.13.0rc1...HEAD
+[Unreleased]: https://github.com/admina-org/admina/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/admina-org/admina/compare/v0.13.0rc1...v0.13.0
 [0.13.0rc1]: https://github.com/admina-org/admina/compare/v0.12.1...v0.13.0rc1
 [0.12.1]: https://github.com/admina-org/admina/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/admina-org/admina/compare/v0.11.1...v0.12.0
