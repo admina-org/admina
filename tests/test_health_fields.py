@@ -44,6 +44,7 @@ FIELDS = {
     "surfaces",
     "ruleset_sha256",
     "forensic_writable",
+    "forensic_chain",
     "engine",
     "timestamp",
 }

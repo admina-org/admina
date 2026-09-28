@@ -41,9 +41,13 @@ record concerned:
 - ``link_broken``: its ``previous_hash`` is not the ``record_hash`` of the
   record before it (``GENESIS`` for record 1, the checkpoint's hash for the
   first record after a checkpoint);
-- ``missing_record``: a record that must exist cannot be found;
-- ``state_mismatch``: the records do not reach the chain state's count, or
-  the record at that count is not the state's head;
+- ``missing_record``: there is no record with the next sequence number:
+  before the first one found (sequence numbers start at 1), between two
+  records, or before the chain state's count;
+- ``sequence_gap``: a record's ``sequence_number`` is not the one of its
+  file (or key), or a sequence number comes twice or out of order;
+- ``state_mismatch``: the record at the chain state's count is not the
+  state's head;
 - ``checkpoint_mismatch``: the record at the checkpoint's sequence number
   has another ``record_hash``;
 - ``signature_invalid``: its ``record_sig`` is not the signature of its
@@ -55,8 +59,11 @@ Without the key, signatures are not checked: records with one are counted
 as ``signed``, those without as ``unsigned``, and ``signatures_verified`` is
 false.
 
-``store_unavailable`` is the reason given by a store whose backend could not
-be opened (:class:`~admina.domains.compliance.forensic.UnavailableForensicStore`).
+Reasons given by the stores for the chain state (see
+:mod:`admina.domains.compliance.forensic`): ``state_missing`` (records but
+no chain state), ``state_invalid`` (a chain state that cannot be read, or
+whose HMAC does not verify with the key) and ``store_unavailable`` (a
+backend that could not be opened).
 """
 
 from __future__ import annotations
@@ -80,7 +87,10 @@ __all__ = [
     "RECORD_SIG_ALG",
     "RECORD_SIG_LABEL",
     "RECORD_UNSIGNED",
+    "SEQUENCE_GAP",
     "SIGNATURE_INVALID",
+    "STATE_INVALID",
+    "STATE_MISSING",
     "STORE_UNAVAILABLE",
     "UNSIGNED",
     "ChainReport",
@@ -105,6 +115,9 @@ RECORD_UNSIGNED = "none"
 HASH_MISMATCH = "hash_mismatch"
 LINK_BROKEN = "link_broken"
 MISSING_RECORD = "missing_record"
+SEQUENCE_GAP = "sequence_gap"
+STATE_MISSING = "state_missing"
+STATE_INVALID = "state_invalid"
 STATE_MISMATCH = "state_mismatch"
 CHECKPOINT_MISMATCH = "checkpoint_mismatch"
 STORE_UNAVAILABLE = "store_unavailable"
@@ -250,7 +263,8 @@ def verify_entries(
     ``(sequence_number, record_hash)`` is given, then only the records
     after it are checked, the first against the checkpoint's hash. Without
     a checkpoint, record 1 links to ``GENESIS`` and the first record of a
-    range that starts later is not linked to anything.
+    range that starts later is not linked to anything. The sequence
+    numbers must follow one another from the first one expected.
 
     *state* ``(record_count, chain_head)``: the chain state. The records
     must reach its count, and the record at that count must be its head,
@@ -282,14 +296,21 @@ def verify_entries(
     else:
         lower = from_seq
         previous = GENESIS if from_seq == 1 else None
+    expected = lower + 1 if checkpoint is not None else lower
 
     for seq, load in iterator:
+        if seq > expected:
+            return report.fail(MISSING_RECORD, expected)
+        if seq < expected:
+            return report.fail(SEQUENCE_GAP, seq)
         try:
             record = _load(load)
         except FileNotFoundError:
             return report.fail(MISSING_RECORD, seq)
         if record is None or not _hash_ok(record):
             return report.fail(HASH_MISMATCH, seq)
+        if record.get("sequence_number") != seq:
+            return report.fail(SEQUENCE_GAP, seq)
         if previous is not None and record.get("previous_hash") != previous:
             return report.fail(LINK_BROKEN, seq)
         error = _signature_error(record, seq, signing_key, signed_from)
@@ -302,11 +323,13 @@ def verify_entries(
         previous = record["record_hash"]
         report.records += 1
         report.checkpoint = (seq, previous)
+        expected += 1
         if seq == count:
             at_count = previous
 
     if count > 0 and count >= lower:
-        last = report.checkpoint[0] if report.checkpoint is not None else lower - 1
-        if last < count or at_count != head:
+        if expected <= count:
+            return report.fail(MISSING_RECORD, expected)
+        if at_count != head:
             return report.fail(STATE_MISMATCH, count)
     return report

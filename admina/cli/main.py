@@ -1354,16 +1354,17 @@ def doctor() -> None:
     forensic_backend = env.get("FORENSIC_BACKEND", os.environ.get("FORENSIC_BACKEND", "memory"))
     if forensic_backend in ("filesystem", "s3"):
         try:
-            import asyncio as _asyncio
+            from admina.core.secretfile import secret_from_env
+            from admina.domains.compliance.forensic import verify_bucket, verify_directory
 
-            from admina.domains.compliance.forensic import ForensicBlackBox, verify_directory
+            state_key = secret_from_env("ADMINA_FORENSIC_STATE_KEY")
 
             if forensic_backend == "filesystem":
                 base_dir = env.get("FORENSIC_BASE_DIR", os.environ.get("FORENSIC_BASE_DIR", ""))
                 if not base_dir or not Path(base_dir).is_dir():
                     raise FileNotFoundError(f"no forensic directory at {base_dir!r}")
                 # Read-only: nothing is written to the store.
-                chain = verify_directory(base_dir)
+                chain = verify_directory(base_dir, state_key=state_key)
             else:
                 # s3 — needs boto3; construct without credentials (probe only)
                 try:
@@ -1380,8 +1381,8 @@ def doctor() -> None:
                 if s3_endpoint:
                     s3_kwargs["endpoint_url"] = s3_endpoint
                 client = _boto3.client("s3", **s3_kwargs)
-                fbox = ForensicBlackBox(boto3_client=client, bucket=s3_bucket)
-                chain = _asyncio.run(fbox.verify_chain())
+                # Read-only: nothing is written to the bucket.
+                chain = verify_bucket(client, s3_bucket, state_key=state_key)
             n = chain.get("records", 0)
             if chain.get("valid"):
                 click.echo(f"    {forensic_backend:20s} {ok_mark}  {n} records, valid")

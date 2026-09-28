@@ -38,7 +38,11 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from admina.domains.compliance.forensic import ForensicBlackBox, UnavailableForensicStore
+from admina.domains.compliance.forensic import (
+    ForensicBlackBox,
+    ForensicWriteError,
+    UnavailableForensicStore,
+)
 
 __all__ = [
     "FORENSIC_BACKENDS",
@@ -143,6 +147,9 @@ def _filesystem_store(base_dir: str, fail_mode: str) -> ForensicBlackBox:
         return _unavailable(
             "filesystem", f"the forensic directory {base_dir} cannot be used ({reason})", fail_mode
         )
+    except ForensicWriteError as exc:
+        # Closed mode: the chain state could not be written at startup.
+        raise ForensicBackendError(f"the forensic directory {base_dir}: {exc}") from exc
     if box.writable() is False:
         message = f"the forensic directory {base_dir} is not writable"
         if fail_mode == "closed":

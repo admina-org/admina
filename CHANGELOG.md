@@ -32,6 +32,29 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `signatures_verified`. Records written before a key was set are reported
   as unsigned. `record_signing_key()` and `sign_record_hash()` are in
   `admina.domains.compliance.forensic_integrity`.
+- The forensic chain state is rebuilt only from verified records. At
+  startup a chain state that is missing (with records) or whose HMAC does
+  not verify is rebuilt only when every stored record verifies with the key
+  from record 1 on (sequence, hashes, links, signatures); the rebuild is
+  logged at `CRITICAL` and recorded as a signed record of type
+  `chain_state_rebuilt` (`EventType.CHAIN_STATE_REBUILT`, with `cause`,
+  `records_verified`, `head_hash`). Without a key, or when a record does not
+  verify, or when the last record of a valid chain state is missing or
+  differs, the chain is invalid: `chain_status` is `invalid`, a `CRITICAL`
+  log names the reason and the record, no record is written (in `closed`
+  mode governed requests are answered `503`), and verification is never
+  valid. A record found after the last saved chain state is counted only
+  when it verifies and links to it.
+- Verification requires contiguous sequence numbers from 1: a record
+  missing before the first one found, between two records or before the
+  chain state's count is reported as `missing_record`, and a sequence
+  number that does not match its file, comes twice or out of order as
+  `sequence_gap`. `verify_directory()` also checks the chain state's HMAC
+  with the key and reports `state_missing` and `state_invalid`;
+  `verify_bucket()` does the same for an S3 bucket, and `admina doctor`
+  uses it, writing nothing.
+- `GET /health` reports `forensic_chain`: `ok`, `rebuilt`, `invalid` (then
+  `status` is `degraded`), or `null` without a stored chain.
 
 ### Added
 
@@ -196,8 +219,8 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `FORENSIC_BACKEND` and `FORENSIC_BASE_DIR` (the lines in `admina.yaml` are
   comments).
 - The chain state also holds `format` (`admina-forensic/1`) and `head_key`
-  (the key of the last record). Rebuilding a missing chain state reads the
-  record names and one record, not every record.
+  (the key of the last record). Checking it at startup reads its last
+  record and any record written after it, not every record.
 
 ## [0.13.0rc1] — 2026-09-27
 

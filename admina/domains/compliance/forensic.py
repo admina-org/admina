@@ -25,6 +25,15 @@ the last record written. What else happens depends on the store's
 ``fail_mode``: ``open`` (the default) logs the failure and returns
 ``stored: False`` without a hash; ``closed`` raises
 :class:`ForensicWriteError`.
+
+At startup a durable store checks its chain state (``chain_status``):
+``ok`` when the saved state verifies and matches the stored records,
+``rebuilt`` when a missing or unverifiable state was rebuilt from records
+that all verify with the key (logged, and recorded as a
+``chain_state_rebuilt`` event), ``invalid`` otherwise — then no record is
+written until the forensic directory is restored or moved aside.
+:func:`verify_directory` and :func:`verify_bucket` verify a stored chain
+without writing to it.
 """
 
 from __future__ import annotations
@@ -32,19 +41,22 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import itertools
 import json
 import logging
 import os
 import tempfile
 import threading
 import time
-from collections.abc import Iterator
+import uuid
+from collections.abc import Callable, Iterable, Iterator
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
 
 from admina.core.secretfile import secret_from_env
+from admina.core.types import EventType
 from admina.domains.compliance.forensic_files import (
     FORMAT,
     STATE_KEY,
@@ -58,8 +70,12 @@ from admina.domains.compliance.forensic_files import (
 )
 from admina.domains.compliance.forensic_integrity import (
     GENESIS,
+    MISSING_RECORD,
     RECORD_SIG_ALG,
     RECORD_UNSIGNED,
+    STATE_INVALID,
+    STATE_MISMATCH,
+    STATE_MISSING,
     STORE_UNAVAILABLE,
     RecordEntry,
     compute_record_hash,
@@ -78,6 +94,12 @@ _CHAIN_STATE_SIG_KEY = STATE_SIG_KEY
 
 #: What a store does when a record cannot be written (see the module docstring).
 FAIL_MODES = ("open", "closed")
+
+#: ``chain_status`` of a durable store: the chain state was restored as
+#: saved, rebuilt from verified records at startup, or the chain is invalid.
+CHAIN_OK = "ok"
+CHAIN_REBUILT = "rebuilt"
+CHAIN_INVALID = "invalid"
 
 
 class ForensicWriteError(Exception):
@@ -150,6 +172,10 @@ class ForensicBlackBox(BaseForensicStore):
         )
         # First sequence number that must carry a signature (None: no key).
         self._signed_from: int | None = 1 if self._signing_key is not None else None
+        # CHAIN_OK, CHAIN_REBUILT or CHAIN_INVALID (None: nothing is stored);
+        # for an invalid chain, chain_error holds reason and sequence_number.
+        self.chain_status: str | None = None
+        self.chain_error: dict[str, Any] | None = None
         if self.filesystem_dir is not None:
             ensure_directory(self.filesystem_dir)
         self._ensure_bucket()
@@ -261,74 +287,61 @@ class ForensicBlackBox(BaseForensicStore):
         obj = self._s3_call(self.boto3_client.get_object, Bucket=self.bucket, Key=key)
         return obj["Body"].read()
 
-    def _s3_keys(self) -> Iterator[str]:
-        """Every key of the bucket, in the order S3 lists them, a page at a time."""
+    def _s3_keys(self, start_after: str | None = None) -> Iterator[str]:
+        """The keys of the bucket (after *start_after* when given), in the
+        order S3 lists them, a page at a time."""
         token: str | None = None
         while True:
             kwargs: dict = {"Bucket": self.bucket}
             if token:
                 kwargs["ContinuationToken"] = token
+            elif start_after:
+                kwargs["StartAfter"] = start_after
             resp = self._s3_call(self.boto3_client.list_objects_v2, **kwargs)
             for item in resp.get("Contents", []) or []:
-                yield item["Key"]
+                if start_after is None or item["Key"] > start_after:
+                    yield item["Key"]
             if not resp.get("IsTruncated"):
                 return
             token = resp.get("NextContinuationToken")
 
+    def _record_items(
+        self, from_seq: int = 1, after_key: str | None = None
+    ) -> Iterator[tuple[int, str, Any]]:
+        """``(sequence number, key, load)`` of each stored record from
+        *from_seq* on, in sequence order; ``load()`` returns the record's
+        bytes. With *after_key*, only the records stored from its directory
+        on are listed."""
+        if self.boto3_client is not None:
+            keys = self._s3_keys(after_key)
+            for seq, key in ordered_record_keys(keys, from_seq):
+                yield seq, key, partial(self._s3_get, key)
+        elif self.filesystem_dir is not None:
+            start_dir = after_key.rsplit("/", 1)[0] if after_key else None
+            for seq, path in iter_record_files(self.filesystem_dir, from_seq, start_dir):
+                key = path.relative_to(self.filesystem_dir).as_posix()
+                yield seq, key, path.read_bytes
+
     def _record_entries(self, from_seq: int = 1) -> Iterator[RecordEntry]:
         """``(sequence number, load)`` of each stored record from *from_seq*
         on, in sequence order; ``load()`` returns the record's bytes."""
-        if self.boto3_client is not None:
-            for seq, key in ordered_record_keys(self._s3_keys(), from_seq):
-                yield seq, partial(self._s3_get, key)
-        elif self.filesystem_dir is not None:
-            for seq, path in iter_record_files(self.filesystem_dir, from_seq):
-                yield seq, path.read_bytes
-
-    def _last_record(self) -> tuple[str, bytes] | None:
-        """Key and bytes of the stored record with the highest sequence
-        number, or None when there is none. Reads one record."""
-        last: tuple[int, str] | None = None
-        if self.boto3_client is not None:
-            for seq, key in ordered_record_keys(self._s3_keys()):
-                if last is None or seq > last[0]:
-                    last = (seq, key)
-            return None if last is None else (last[1], self._s3_get(last[1]))
-        if self.filesystem_dir is None:
-            return None
-        for seq, path in iter_record_files(self.filesystem_dir):
-            if last is None or seq > last[0]:
-                last = (seq, path.relative_to(self.filesystem_dir).as_posix())
-        if last is None:
-            return None
-        return last[1], (self.filesystem_dir / last[1]).read_bytes()
+        for seq, _key, load in self._record_items(from_seq):
+            yield seq, load
 
     # ── Chain state ─────────────────────────────────────────────
-
-    def _reconstruct_chain_state_from_records(self) -> bool:
-        """Rebuild chain_head/record_count from the stored records.
-
-        Returns True if records were found. Used when the mutable state file
-        is missing or corrupt, so the chain is never silently restarted from
-        GENESIS while records still exist. Only the last record is read.
-        """
-        found = self._last_record()
-        if found is None:
-            return False
-        key, data = found
-        last = json.loads(data)
-        self.record_count = last.get("sequence_number", record_seq(key) or 0)
-        self.chain_head = last.get("record_hash", GENESIS)
-        self._head_key = key
-        if self._signing_key is not None:
-            self._signed_from = self.record_count + 1
-        logger.warning(
-            "Forensic chain state reconstructed from the stored records "
-            "(state file missing or corrupt): seq=%d, head=%s...",
-            self.record_count,
-            self.chain_head[:16],
-        )
-        return True
+    #
+    # At startup the chain state is read and, with a key, its HMAC checked.
+    #
+    # - A valid state is used as it is; the record at its count must be its
+    #   head, and any record after it (written just before the process
+    #   stopped) must verify and link to it, and is then counted.
+    # - A missing state, when there are records, or one that does not verify
+    #   is rebuilt only from records that all verify with the key, from
+    #   record 1 on (sequence, hashes, links, signatures); the rebuild is
+    #   logged (CRITICAL) and recorded as a ``chain_state_rebuilt`` event.
+    # - In any other case the chain is invalid: CRITICAL log, chain_status
+    #   "invalid", no record is written and verification is never valid,
+    #   until an operator restores the forensic directory or moves it aside.
 
     def _read_state_sig(self) -> str | None:
         """The HMAC sidecar of the chain state, or None."""
@@ -355,36 +368,33 @@ class ForensicBlackBox(BaseForensicStore):
         """Restore chain_head and record_count from the configured backend."""
         if not self._durable:
             return
+        self.chain_status = CHAIN_OK
         where = "S3" if self.boto3_client is not None else "filesystem"
         try:
             payload = self._read_object(_CHAIN_STATE_KEY)
         except OSError:
-            logger.error(
-                "Cannot read forensic chain state (%s) — reconstructing from records", where
-            )
-            self._reconstruct_chain_state_from_records()
+            logger.error("Cannot read the forensic chain state (%s)", where)
+            self._rebuild(STATE_INVALID)
             return
         if payload is None:
-            logger.info("No existing forensic chain state (%s), starting fresh", where)
-            self._reconstruct_chain_state_from_records()
+            if next(self._record_items(), None) is None:
+                logger.info("No forensic chain state or record (%s): new chain", where)
+                return
+            logger.critical("Forensic chain state missing (%s) while records exist", where)
+            self._rebuild(STATE_MISSING)
             return
         if self._state_signing_key and not self._state_sig_is_valid(
             payload, self._read_state_sig()
         ):
             logger.critical(
-                "Forensic chain state signature INVALID or MISSING (%s) "
-                "— possible tampering; reconstructing from records",
-                where,
+                "Forensic chain state signature invalid or missing (%s): not used", where
             )
-            self._reconstruct_chain_state_from_records()
+            self._rebuild(STATE_INVALID)
             return
-        try:
-            state = json.loads(payload)
-            if not isinstance(state, dict):
-                raise ValueError("not an object")
-        except (ValueError, UnicodeDecodeError):
-            logger.error("Corrupt forensic chain state (%s) — reconstructing from records", where)
-            self._reconstruct_chain_state_from_records()
+        state = _state_of(payload)
+        if state is None:
+            logger.critical("Forensic chain state unreadable (%s): not used", where)
+            self._rebuild(STATE_INVALID)
             return
         self._apply_state(state)
         logger.info(
@@ -393,6 +403,119 @@ class ForensicBlackBox(BaseForensicStore):
             self.record_count,
             self.chain_head[:16],
         )
+        self._check_tail()
+
+    def _alarm(self, reason: str, sequence_number: int | None, detail: str) -> None:
+        """Mark the chain invalid: nothing is recorded until an operator acts."""
+        self.chain_status = CHAIN_INVALID
+        self.chain_error = {"reason": reason, "sequence_number": sequence_number}
+        logger.critical(
+            "Forensic chain INVALID (%s at record %s): %s. No forensic record is written "
+            "until the store is restored or moved aside and the process restarted "
+            "(check it with `admina forensic verify` or `admina doctor`).",
+            reason,
+            sequence_number,
+            detail,
+        )
+
+    def _rebuild(self, cause: str) -> None:
+        """Rebuild the chain state from the stored records, only when they
+        all verify with the key; else mark the chain invalid."""
+        if self._signing_key is None:
+            self._alarm(cause, None, "without a key the records cannot be verified")
+            return
+        last_key: list[str] = []
+
+        def entries() -> Iterator[RecordEntry]:
+            for seq, key, load in self._record_items():
+                last_key[:] = [key]
+                yield seq, load
+
+        report = verify_entries(entries(), signing_key=self._signing_key, signed_from=1)
+        if not report.valid:
+            self._alarm(report.reason or cause, report.sequence_number, "a record does not verify")
+            return
+        if report.checkpoint is None:
+            self._alarm(cause, None, "there is no record to rebuild it from")
+            return
+        self.record_count, self.chain_head = report.checkpoint
+        self._head_key = last_key[0]
+        self._signed_from = 1
+        self.chain_status = CHAIN_REBUILT
+        logger.critical(
+            "Forensic chain state rebuilt from verified records (%s): %d records, head %s...",
+            cause,
+            self.record_count,
+            self.chain_head[:16],
+        )
+        self.record(
+            {
+                "event_id": uuid.uuid4().hex,
+                "event_type": EventType.CHAIN_STATE_REBUILT,
+                "cause": cause,
+                "records_verified": self.record_count,
+                "head_hash": self.chain_head,
+            }
+        )
+
+    def _check_tail(self) -> None:
+        """Check the chain restored from a valid state against the stored
+        records: its last record, and the records after it."""
+        count, head = self.record_count, self.chain_head
+        head_record: list[RecordEntry] = []
+        if count > 0:
+            key = self._head_key or next(
+                (k for seq, k, _ in self._record_items(count) if seq == count), None
+            )
+            data = self._read_object(key) if key is not None else None
+            if data is None:
+                self._alarm(
+                    MISSING_RECORD, count, "the last record of the chain state cannot be read"
+                )
+                return
+            head_record = [(count, lambda: data)]
+            report = verify_entries(
+                head_record,
+                from_seq=count,
+                signing_key=self._signing_key,
+                signed_from=self._signed_from,
+            )
+            if not report.valid or report.checkpoint != (count, head):
+                reason = report.reason if not report.valid else STATE_MISMATCH
+                self._alarm(reason, count, "the last record of the chain state does not match it")
+                return
+            self._head_key = key
+        last_key: list[str] = []
+
+        def after() -> Iterator[RecordEntry]:
+            for seq, key, load in self._record_items(count + 1, self._head_key):
+                last_key[:] = [key]
+                yield seq, load
+
+        report = verify_entries(
+            itertools.chain(head_record, after()),
+            from_seq=count + 1,
+            checkpoint=(count, head) if count > 0 else None,
+            signing_key=self._signing_key,
+            signed_from=self._signed_from,
+        )
+        if not report.valid:
+            self._alarm(
+                report.reason or STATE_MISMATCH,
+                report.sequence_number,
+                "a record after the last one of the chain state does not verify",
+            )
+            return
+        if report.records:
+            self.record_count, self.chain_head = report.checkpoint
+            self._head_key = last_key[0]
+            logger.warning(
+                "Forensic chain state advanced to record %d: %d verified record(s) "
+                "written after the last saved state",
+                self.record_count,
+                report.records,
+            )
+            self._persist_chain_state()
 
     def _persist_chain_state(self) -> None:
         """Persist chain_head and record_count (and the HMAC sidecar when a
@@ -471,6 +594,13 @@ class ForensicBlackBox(BaseForensicStore):
         with self._write_lock:
             now = datetime.now(UTC)
             seq = self.record_count + 1
+            if self.chain_status == CHAIN_INVALID:
+                error = self.chain_error or {}
+                cause = RuntimeError(
+                    f"the forensic chain is invalid ({error.get('reason')} at record "
+                    f"{error.get('sequence_number')})"
+                )
+                return self._not_written(seq, cause)
             previous = self.chain_head
             forensic_record = {
                 "sequence_number": seq,
@@ -528,9 +658,9 @@ class ForensicBlackBox(BaseForensicStore):
         }
 
     def accepting_records(self) -> bool:
-        """False after a record or chain-state write failed, until one
-        succeeds again."""
-        return self._last_write_ok is not False
+        """False while the chain is invalid, and after a record or
+        chain-state write failed, until one succeeds again."""
+        return self.chain_status != CHAIN_INVALID and self._last_write_ok is not False
 
     def writable(self) -> bool | None:
         """Whether the backend accepts writes.
@@ -652,6 +782,16 @@ class ForensicBlackBox(BaseForensicStore):
                 signed_from=signed_from,
             )
             result = report.as_dict()
+        if self.chain_status == CHAIN_INVALID and result["valid"]:
+            # The records read verify, but the chain was found invalid at
+            # startup (e.g. no chain state and no key to rebuild it with).
+            error = self.chain_error or {}
+            result.update(
+                valid=False,
+                reason=error.get("reason"),
+                sequence_number=error.get("sequence_number"),
+                checkpoint=None,
+            )
         return {**result, "last_hash": head}
 
     # ── BaseForensicStore interface ─────────────────────────────
@@ -760,6 +900,76 @@ def _state_of(payload: bytes | None) -> dict[str, Any] | None:
     return state
 
 
+def verify_stored_chain(
+    read: Callable[[str], bytes | None],
+    entries: Callable[[int], Iterable[RecordEntry]],
+    *,
+    state_key: str | None = None,
+    from_seq: int | None = None,
+    checkpoint: tuple[int, str] | None = None,
+) -> dict:
+    """Verify a stored chain without writing to it.
+
+    *read(key)* returns the bytes of the chain state (``_chain_state.json``)
+    or its HMAC (``_chain_state.json.sig``), or None when missing;
+    *entries(from_seq)* yields ``(sequence number, load)`` of the stored
+    records from *from_seq* on, in sequence order.
+
+    As :meth:`ForensicBlackBox.verify`, against the stored chain state. With
+    *state_key* (the chain-state key) the state's HMAC and the record
+    signatures are checked. When the records verify but the state does not,
+    the result is invalid: ``state_missing`` (records and no state) or
+    ``state_invalid`` (a state that cannot be read, or whose HMAC does not
+    verify); the records are then checked from record 1 on as signed.
+    ``last_hash`` is the state's head (or, without a usable state, the hash
+    of the last record checked).
+    """
+    if checkpoint is not None and from_seq is not None:
+        raise ValueError("pass from_seq or checkpoint, not both")
+    payload = read(_CHAIN_STATE_KEY)
+    signing_key = record_signing_key(state_key) if state_key else None
+    problem: str | None = None
+    state: dict[str, Any] | None = None
+    if payload is None:
+        problem = STATE_MISSING if next(iter(entries(1)), None) is not None else None
+    else:
+        sig = read(_CHAIN_STATE_SIG_KEY)
+        expected = (
+            hmac.new(state_key.encode("utf-8"), payload, hashlib.sha256).hexdigest()
+            if state_key
+            else None
+        )
+        signature = sig.decode("utf-8", errors="replace").strip() if sig is not None else ""
+        if expected is not None and not hmac.compare_digest(signature, expected):
+            problem = STATE_INVALID
+        else:
+            state = _state_of(payload)
+            problem = STATE_INVALID if state is None else None
+    if state is not None:
+        signed_from = state.get("signed_from")
+        signed_from = signed_from if isinstance(signed_from, int) else None
+        chain_state = (state.get("record_count", 0), state.get("chain_head", GENESIS))
+    else:
+        # No state to rely on: every record must be signed.
+        signed_from, chain_state = 1, None
+    start = checkpoint[0] if checkpoint is not None else (from_seq or 1)
+    report = verify_entries(
+        entries(start),
+        from_seq=start,
+        checkpoint=checkpoint,
+        state=chain_state,
+        signing_key=signing_key,
+        signed_from=signed_from,
+    )
+    if report.valid and problem is not None:
+        report.fail(problem, None)
+    if chain_state is not None:
+        last_hash = chain_state[1]
+    else:
+        last_hash = report.checkpoint[1] if report.checkpoint is not None else GENESIS
+    return {**report.as_dict(), "last_hash": last_hash}
+
+
 def verify_directory(
     base_dir: str | Path,
     *,
@@ -768,40 +978,66 @@ def verify_directory(
     checkpoint: tuple[int, str] | None = None,
 ) -> dict:
     """Verify the chain stored in the filesystem store directory *base_dir*,
-    reading one record at a time and writing nothing.
-
-    As :meth:`ForensicBlackBox.verify`, against the chain state stored in
-    the directory; with *state_key* (the chain-state key) the record
-    signatures are checked. ``last_hash`` is the state's head (or, without a
-    state, the hash of the last record checked).
-    """
-    if checkpoint is not None and from_seq is not None:
-        raise ValueError("pass from_seq or checkpoint, not both")
+    reading one record at a time and writing nothing (see
+    :func:`verify_stored_chain`)."""
     base = Path(base_dir)
-    try:
-        payload = (base / _CHAIN_STATE_KEY).read_bytes()
-    except FileNotFoundError:
-        payload = None
-    state = _state_of(payload)
-    signing_key = record_signing_key(state_key) if state_key else None
-    signed_from = state.get("signed_from") if state is not None else None
-    start = checkpoint[0] if checkpoint is not None else (from_seq or 1)
-    report = verify_entries(
-        ((seq, path.read_bytes) for seq, path in iter_record_files(base, start)),
-        from_seq=start,
-        checkpoint=checkpoint,
-        state=None
-        if state is None
-        else (state.get("record_count", 0), state.get("chain_head", GENESIS)),
-        signing_key=signing_key,
-        signed_from=signed_from if isinstance(signed_from, int) else None,
+
+    def read(key: str) -> bytes | None:
+        try:
+            return (base / key).read_bytes()
+        except FileNotFoundError:
+            return None
+
+    def entries(start: int) -> Iterator[RecordEntry]:
+        for seq, path in iter_record_files(base, start):
+            yield seq, path.read_bytes
+
+    return verify_stored_chain(
+        read, entries, state_key=state_key, from_seq=from_seq, checkpoint=checkpoint
     )
-    result = report.as_dict()
-    if state is not None:
-        last_hash = state.get("chain_head", GENESIS)
-    else:
-        last_hash = report.checkpoint[1] if report.checkpoint is not None else GENESIS
-    return {**result, "last_hash": last_hash}
+
+
+def verify_bucket(
+    client: Any,
+    bucket: str,
+    *,
+    state_key: str | None = None,
+    from_seq: int | None = None,
+    checkpoint: tuple[int, str] | None = None,
+) -> dict:
+    """Verify the chain stored in the S3 *bucket* through the boto3
+    *client*, reading one record at a time and writing nothing (see
+    :func:`verify_stored_chain`)."""
+
+    def get(key: str) -> bytes:
+        return client.get_object(Bucket=bucket, Key=key)["Body"].read()
+
+    def read(key: str) -> bytes | None:
+        try:
+            return get(key)
+        except Exception:  # noqa: BLE001 — NoSuchKey or similar
+            return None
+
+    def keys() -> Iterator[str]:
+        token: str | None = None
+        while True:
+            kwargs: dict = {"Bucket": bucket}
+            if token:
+                kwargs["ContinuationToken"] = token
+            resp = client.list_objects_v2(**kwargs)
+            for item in resp.get("Contents", []) or []:
+                yield item["Key"]
+            if not resp.get("IsTruncated"):
+                return
+            token = resp.get("NextContinuationToken")
+
+    def entries(start: int) -> Iterator[RecordEntry]:
+        for seq, key in ordered_record_keys(keys(), start):
+            yield seq, partial(get, key)
+
+    return verify_stored_chain(
+        read, entries, state_key=state_key, from_seq=from_seq, checkpoint=checkpoint
+    )
 
 
 def _probe_directory(directory: Path) -> bool:

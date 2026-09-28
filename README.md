@@ -466,13 +466,46 @@ without the key) and, for the first failure, `sequence_number` and
 | `reason` | The record at `sequence_number` |
 |---|---|
 | `hash_mismatch` | is not a JSON object, or its `record_hash` is not the hash of its content |
+| `sequence_gap` | has a `sequence_number` other than its file's, or comes twice or out of order |
 | `signature_invalid` | has a `record_sig` that does not verify with the key, or an unknown `record_sig_alg` |
 | `unsigned` | has no signature, though records from `signed_from` on must have one |
 | `link_broken` | has a `previous_hash` that is not the `record_hash` of the record before it |
-| `missing_record` | cannot be found |
-| `state_mismatch` | is the chain state's last record and has another hash, or the records end before it |
+| `missing_record` | cannot be found: sequence numbers start at 1 and follow one another up to the chain state's count at least |
+| `state_mismatch` | is the chain state's last record and has another hash |
 | `checkpoint_mismatch` | is the checkpoint's and has another hash |
+| `state_missing` | — there are records but no chain state |
+| `state_invalid` | — the chain state cannot be read, or its HMAC does not verify with the key |
 | `store_unavailable` | — the backend could not be opened |
+
+**Chain state at startup.** The store reads the chain state and, with a
+key, checks its HMAC:
+
+- a valid state is used; the record at its count must be its head, and a
+  record written after it (the process stopped between the record and the
+  state) is counted when it verifies and links to it;
+- a missing state (with records) or one that does not verify is rebuilt
+  **only** from records that all verify with the key, from record 1 on
+  (sequence, hashes, links, signatures). The rebuild is logged at `CRITICAL`
+  (`Forensic chain state rebuilt from verified records`) and recorded as a
+  signed record with `event.event_type: "chain_state_rebuilt"`, `cause`
+  (`state_missing` or `state_invalid`), `records_verified` and `head_hash`.
+  An external copy of the head (for example the `checkpoint` of the last
+  export) shows whether records after it are missing;
+- otherwise (no key, a record that does not verify, a missing last record)
+  the chain is **invalid**: a `CRITICAL` log names the reason and the
+  record, `/health` reports `forensic_chain: "invalid"` and `status:
+  "degraded"`, no record is written, verification is never valid, and with
+  `ADMINA_FORENSIC_FAIL_MODE=closed` governed requests are answered `503`.
+
+To recover from an invalid chain: run `admina forensic verify` (or `admina
+doctor` for S3), with the key in the environment, to see the reason and the
+record; stop the proxy; restore the forensic directory or bucket (records,
+`_chain_state.json`, `_chain_state.json.sig`) from a backup, or move it
+aside, keeping it, and start with an empty one; start the proxy. A last
+record that could not be read because the storage was briefly unavailable
+needs only a restart. A store written without a key, or before a key was
+set, cannot be rebuilt: keep its chain state, or move it aside when a key is
+introduced.
 
 **Surfaces.** `ADMINA_ENABLED_SURFACES` lists the surfaces the proxy serves,
 comma-separated (empty = all of them):
@@ -543,6 +576,7 @@ does not start when they are enabled without it.
   "surfaces": ["gateway"],
   "ruleset_sha256": "b9ddba234d55b532c2be464124c01a9d906e9fb7f492729807e0a7eadb39faa0",
   "forensic_writable": true,
+  "forensic_chain": "ok",
   "engine": {
     "engine": "rust",
     "rust_available": true,
@@ -556,8 +590,12 @@ does not start when they are enabled without it.
 ```
 
 - `status`: `healthy`, or `degraded` while forensic records cannot be
-  written (`forensic_writable` is `false`, or the last record or chain-state
-  write failed); the HTTP status is 200 either way;
+  written (`forensic_writable` is `false`, the last record or chain-state
+  write failed, or the chain is invalid); the HTTP status is 200 either way;
+- `forensic_chain`: `ok`, `rebuilt` (the chain state was rebuilt from
+  verified records at startup) or `invalid` (see
+  [Embedded deployment](#embedded-deployment), *Chain state at startup*);
+  `null` for the `memory` store;
 - `mode`: the governance mode (`enforce`, `observe` or `dry-run`);
 - `surfaces`: the enabled surfaces;
 - `ruleset_sha256`: the active firewall ruleset, the value of

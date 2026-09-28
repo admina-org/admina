@@ -160,19 +160,33 @@ def _sorted_dirs(parent: Path, pattern: re.Pattern[str]) -> list[Path]:
     )
 
 
-def _hour_dirs(base: Path) -> Iterator[Path]:
-    """The hour directories under *base*, oldest first."""
-    for year in _sorted_dirs(base, _DIR_NAMES[0]):
-        for month in _sorted_dirs(year, _DIR_NAMES[1]):
-            for day in _sorted_dirs(month, _DIR_NAMES[2]):
-                yield from _sorted_dirs(day, _DIR_NAMES[3])
+def _hour_dirs(base: Path, start_dir: str | None = None) -> Iterator[Path]:
+    """The hour directories under *base*, oldest first; from *start_dir*
+    (``YYYY/MM/DD/HH``) on when given."""
+    start = start_dir.split("/") if start_dir else None
+
+    def children(parent: Path, level: int, prefix: tuple[str, ...]) -> Iterator[Path]:
+        for path in _sorted_dirs(parent, _DIR_NAMES[level]):
+            name = (*prefix, path.name)
+            if start is not None and name < tuple(start[: level + 1]):
+                continue
+            if level == 3:
+                yield path
+            else:
+                yield from children(path, level + 1, name)
+
+    yield from children(base, 0, ())
 
 
-def iter_record_files(base: Path, from_seq: int = 1) -> Iterator[tuple[int, Path]]:
+def iter_record_files(
+    base: Path, from_seq: int = 1, start_dir: str | None = None
+) -> Iterator[tuple[int, Path]]:
     """``(sequence number, path)`` of each record file under *base* with a
     sequence number of at least *from_seq*, in directory order and, within a
-    directory, by sequence number. One directory is listed at a time."""
-    for directory in _hour_dirs(base):
+    directory, by sequence number; only the hour directories from
+    *start_dir* (``YYYY/MM/DD/HH``) on when given. One directory is listed
+    at a time."""
+    for directory in _hour_dirs(base, start_dir):
         try:
             entries = list(os.scandir(directory))
         except FileNotFoundError:

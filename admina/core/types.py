@@ -72,6 +72,8 @@ class EventType(str, Enum):
     LOOP_DETECTED = "loop_detected"
     POLICY_VIOLATION = "policy_violation"
     CIRCUIT_BREAK = "circuit_break"
+    # The forensic chain state was rebuilt from verified records at startup.
+    CHAIN_STATE_REBUILT = "chain_state_rebuilt"
 
     # SDK / framework events
     MODEL_CALL = "model.call"

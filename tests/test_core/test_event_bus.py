@@ -39,6 +39,7 @@ class TestEventType:
             "LOOP_DETECTED",
             "POLICY_VIOLATION",
             "CIRCUIT_BREAK",
+            "CHAIN_STATE_REBUILT",
             # SDK / framework events
             "MODEL_CALL",
             "MODEL_RESPONSE",

@@ -1042,6 +1042,10 @@ async def health(request: Request) -> dict[str, Any]:
     a backend that could not be opened: ``false``). The check runs at most
     once every 10 s on a thread of its own and reports ``false`` when it
     takes longer than 1 s (see admina.proxy.forensic_probe).
+    ``forensic_chain``: ``ok``, ``rebuilt`` (the chain state was rebuilt
+    from verified records at startup) or ``invalid`` (nothing is recorded
+    until an operator acts; status ``degraded``); ``null`` without a stored
+    chain.
     """
     state = getattr(request.app.state, "proxy", None)
     forensic_writable = await _forensic_writable(state)
@@ -1054,6 +1058,7 @@ async def health(request: Request) -> dict[str, Any]:
         "surfaces": list(enabled_surfaces()),
         "ruleset_sha256": scan_config_of(state).ruleset_sha256,
         "forensic_writable": forensic_writable,
+        "forensic_chain": getattr(getattr(state, "forensic_box", None), "chain_status", None),
         "engine": engine_status(),
         "timestamp": datetime.now(UTC).isoformat(),
     }
