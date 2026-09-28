@@ -64,6 +64,19 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   says, with `X-Admina-Action: BLOCK`.
 - A chat completion request whose JSON body is not an object is answered
   `400` (`Invalid JSON body`).
+- The firewall of the gateway scans every string of a chat completion
+  request, keys included: the messages (content, names, tool calls), the
+  tool definitions (`tools`), `response_format` and any other field of the
+  body. The `arguments` of a tool call (and of a legacy `function_call`) are
+  scanned as the JSON they hold, each string separately, and as they are
+  when they are not JSON. `ADMINA_GATEWAY_SCAN_ROLES` and
+  `X-Admina-Scan-Policy` narrow the messages only. A request whose body has
+  a string nested more than 32 levels deep is blocked in `enforce` mode
+  (`would_action` in `observe` and `dry-run`), with `checks.scan_depth =
+  {"action": "BLOCK", "reason": "depth_limit_exceeded"}` in its record.
+  `request_texts()` of `admina.domains.agent_security.scan_policy` collects
+  the texts and reports `truncated`; `run_pipeline(scan_truncated=True)`
+  blocks.
 
 ## [0.13.0rc1] — 2026-09-27
 

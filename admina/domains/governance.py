@@ -90,6 +90,7 @@ async def run_pipeline(
     egress_policy: Any = None,
     egress_mode: str = "observe",
     scan_texts: list[str] | None = None,
+    scan_truncated: bool = False,
 ) -> GovernanceResult:
     """Execute the full governance pipeline and return a GovernanceResult.
 
@@ -114,7 +115,10 @@ async def run_pipeline(
     :func:`~admina.domains.agent_security.egress.resolve_egress_mode`.
 
     ``scan_texts`` are the texts the firewall scans; ``None`` (default)
-    scans every string of ``body``, keys included.
+    scans every string of ``body``, keys included. ``scan_truncated`` says
+    that the caller left text out of ``scan_texts`` because it lies deeper
+    than the caller's depth limit: with the firewall on, the request is then
+    blocked (risk HIGH, ``checks["scan_depth"]``), in ``enforce`` mode.
     """
     start_time = time.perf_counter()
     result = GovernanceResult()
@@ -141,6 +145,12 @@ async def run_pipeline(
                 result.action = GovernanceAction.BLOCK
                 result.risk_level = fw_result["risk_level"]
                 break
+        if scan_truncated:
+            # Text past the caller's depth limit was not scanned: fail closed.
+            result.checks["scan_depth"] = {"action": "BLOCK", "reason": "depth_limit_exceeded"}
+            if result.action == GovernanceAction.ALLOW:
+                result.action = GovernanceAction.BLOCK
+                result.risk_level = RiskLevel.HIGH
 
     # 3. PII Redaction
     pii_count = 0

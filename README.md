@@ -671,6 +671,25 @@ code `internal_error`). `GET /v1/admina/ruleset` (API key required) returns:
 }
 ```
 
+#### Scanned text
+
+The firewall of the gateway scans every string of a chat completion request,
+keys included: the messages (content, names, tool calls), the tool
+definitions (`tools`: names, descriptions, parameter schemas),
+`response_format` and any other field of the body. The `arguments` of a tool
+call (`tool_calls[].function.arguments`, and a legacy
+`function_call.arguments`) are scanned as the JSON they hold, each string
+separately; arguments that are not JSON are scanned as they are. The scan
+scope below narrows the messages only: the tool definitions and the other
+fields are always scanned.
+
+The scan follows the body 32 levels deep: the body is level 0, its fields
+level 1, and the JSON of tool call arguments is at the level of its string.
+A request with a string nested deeper is blocked in `enforce` mode
+(`X-Admina-Would-Action: BLOCK` in `observe` and `dry-run`), and its record
+has `checks.scan_depth = {"action": "BLOCK", "reason":
+"depth_limit_exceeded"}`.
+
 #### Scan scope
 
 The firewall of the gateway scans the messages whose role is in

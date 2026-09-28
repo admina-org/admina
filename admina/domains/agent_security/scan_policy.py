@@ -16,6 +16,14 @@
 
 Which parts of a chat request the firewall scans:
 
+- **Request.** Every string of the request body, keys included
+  (:func:`request_texts`): the messages, the tool definitions (``tools``),
+  ``response_format`` and any other field. The ``arguments`` string of a
+  message's tool call (or legacy ``function_call``) is scanned as the JSON
+  it holds, each string of it a text of its own; when it is not JSON, as it
+  is. Text nested more than :data:`REQUEST_SCAN_DEPTH` levels deep is not
+  collected and the result says so (``truncated``), so that the caller can
+  refuse the request. Roles and blocks (below) narrow the messages only.
 - **Roles.** Messages whose ``role`` is ``system``, ``user``, ``assistant``
   or ``tool`` are scanned when the role is in scope; messages with any
   other role, or none, are always scanned. The operator sets the roles in
@@ -51,6 +59,7 @@ Which parts of a chat request the firewall scans:
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
@@ -61,13 +70,16 @@ from admina.core.config import PRESCAN_TAG_NAME
 from admina.domains.governance import _extract_text_fields
 
 __all__ = [
+    "REQUEST_SCAN_DEPTH",
     "SCAN_POLICY_HEADER",
     "SCAN_ROLES",
+    "RequestTexts",
     "ScanPolicy",
     "ScanPolicyError",
     "ScanScope",
     "parse_scan_policy",
     "parse_scan_roles",
+    "request_texts",
     "resolve_scan_scope",
     "scope_texts",
     "strip_prescanned",
@@ -85,6 +97,10 @@ _HEX64 = re.compile(r"[0-9a-fA-F]{64}")
 # Depth of a message in the body the pipeline scans, {"params": {"messages":
 # [...]}}: scanning a message from here keeps the pipeline's depth limit.
 _MESSAGE_DEPTH = 3
+#: Deepest level of a chat request whose text :func:`request_texts` collects.
+#: The body is level 0 and its fields level 1; the JSON read from a tool
+#: call's ``arguments`` is at the level of that string.
+REQUEST_SCAN_DEPTH = 32
 
 
 class ScanPolicyError(ValueError):
@@ -260,6 +276,81 @@ def scope_texts(messages: Any, scope: ScanScope) -> list[str] | None:
                 message = _without_blocks(message, scope.tags)
         texts.extend(_extract_text_fields(message, _MESSAGE_DEPTH))
     return texts
+
+
+@dataclass(frozen=True)
+class RequestTexts:
+    """The texts of a chat request the firewall scans."""
+
+    texts: list[str]
+    #: True when text lies deeper than :data:`REQUEST_SCAN_DEPTH` and is not
+    #: in :attr:`texts`.
+    truncated: bool
+
+
+def request_texts(body: dict, scope: ScanScope) -> RequestTexts:
+    """Every string of the chat request *body*, keys included, under *scope*.
+
+    Messages of a role out of scope are left out and the skipped blocks are
+    removed from the content of the others, as in :func:`scope_texts`; every
+    other field is taken whole. The ``arguments`` string of a message's tool
+    call (or legacy ``function_call``) gives the strings of the JSON it holds,
+    or itself when it is not JSON.
+    """
+    walk = _TextWalk()
+    for key, value in body.items():
+        walk.add(key, 1)
+        if key == "messages" and isinstance(value, list):
+            for message in value:
+                if isinstance(message, dict):
+                    role = message.get("role")
+                    if isinstance(role, str) and role in _ALL_ROLES and role not in scope.roles:
+                        continue
+                    if scope.tags:
+                        message = _without_blocks(message, scope.tags)
+                walk.add(message, 2, in_message=True)
+        else:
+            walk.add(value, 1)
+    return RequestTexts(texts=walk.texts, truncated=walk.truncated)
+
+
+class _TextWalk:
+    """Collects the strings of a JSON value down to :data:`REQUEST_SCAN_DEPTH`."""
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+        self.truncated = False
+
+    def add(self, value: Any, depth: int, *, in_message: bool = False) -> None:
+        """Collect *value*, at *depth*; inside a message, *in_message*."""
+        if depth > REQUEST_SCAN_DEPTH:
+            # A string, or a container with something in it, would have had
+            # text; an empty value or a number, nothing.
+            if isinstance(value, (str, dict, list)) and value:
+                self.truncated = True
+            return
+        if isinstance(value, str):
+            self.texts.append(value)
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                self.add(key, depth + 1)
+                if in_message and key == "arguments" and isinstance(item, str):
+                    # Read once: strings inside the arguments stay strings.
+                    self.add(_arguments(item), depth + 1)
+                else:
+                    self.add(item, depth + 1, in_message=in_message)
+        elif isinstance(value, list):
+            for item in value:
+                self.add(item, depth + 1, in_message=in_message)
+
+
+def _arguments(text: str) -> Any:
+    """The JSON value that tool call arguments hold, or *text* when they
+    hold none."""
+    try:
+        return json.loads(text)
+    except (ValueError, RecursionError):
+        return text
 
 
 def _without_blocks(message: dict, tags: frozenset[str]) -> dict:

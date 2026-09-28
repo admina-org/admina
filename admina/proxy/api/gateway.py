@@ -28,10 +28,13 @@ Routes (prefix /v1):
 Every chat completion response carries ``X-Admina-Ruleset``, the
 :func:`~admina.domains.agent_security.ruleset.ruleset_sha256` of the rules
 the gateway scans with (see :mod:`admina.proxy.gateway_scan`), and
-``X-Admina-Version``. The firewall scans the messages of the roles in
-``ADMINA_GATEWAY_SCAN_ROLES``, narrowed by an accepted
-``X-Admina-Scan-Policy`` while ``ADMINA_GATEWAY_SCAN_POLICY_ENABLED`` is on
-(see :mod:`admina.domains.agent_security.scan_policy`).
+``X-Admina-Version``. The firewall scans every string of the request body:
+the messages of the roles in ``ADMINA_GATEWAY_SCAN_ROLES``, narrowed by an
+accepted ``X-Admina-Scan-Policy`` while ``ADMINA_GATEWAY_SCAN_POLICY_ENABLED``
+is on, with tool call ``arguments`` read as JSON, and every other field (tool
+definitions, ``response_format``, …). A request with text nested deeper than
+the scan depth limit is blocked (see
+:mod:`admina.domains.agent_security.scan_policy`).
 
 Once a request has its event id, every response also carries the
 governance outcome: ``X-Admina-Event-Id``, ``X-Admina-Action``,
@@ -114,8 +117,8 @@ from admina.domains.agent_security.scan_policy import (
     SCAN_ROLES,
     ScanScope,
     parse_scan_roles,
+    request_texts,
     resolve_scan_scope,
-    scope_texts,
 )
 from admina.domains.governance import (
     GovernanceResult,
@@ -1144,6 +1147,7 @@ async def _governed_call(
 
     def pipeline() -> Coroutine[Any, Any, GovernanceResult]:
         # Called in a worker thread: selecting the texts to scan runs there too.
+        scanned = request_texts(body, scope)
         return run_pipeline(
             body={"params": {"messages": messages}},
             content_str=prompt_text,
@@ -1162,7 +1166,8 @@ async def _governed_call(
             guard_fail_mode=cfg.GUARD_FAIL_MODE,
             egress_policy=state.egress_policy,
             egress_mode=resolve_egress_mode(cfg.GOVERNANCE_MODE),
-            scan_texts=scope_texts(messages, scope),
+            scan_texts=scanned.texts,
+            scan_truncated=scanned.truncated,
         )
 
     pre = await _govern(state, cfg, pipeline, event_id)
