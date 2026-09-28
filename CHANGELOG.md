@@ -442,6 +442,17 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `applicable` criteria of each pillar, and exports as JSON (`to_json()`,
   read back by `from_dict()`) and Markdown (`to_markdown()`, a table per
   pillar). `compute_oisg_score()` is unchanged.
+- `admina redteam`: the detection-efficacy scorecard as a command of the
+  package, with the options of `scripts/redteam.py` (`--engine`, `--corpus`,
+  `--format`, `--out`) and `--corpora-dir DIR`, `--config FILE` (default
+  `$ADMINA_CONFIG`), `--baseline FILE`, `--gate` and `--write-baseline
+  [FILE]` (default `baseline.json` next to `--out`). With `--baseline` or
+  `--gate` the run is compared with the baseline (with `--gate` alone, the
+  packaged one) and the result is printed on standard error. Exit status: 0;
+  1 when `--gate` finds a regression (a lower recall or a new false
+  positive); 2 when an option, a corpus, the configuration or the baseline is
+  not valid. `scripts/redteam.py` runs this command; there `--baseline`
+  without a file writes the baseline, as `--write-baseline` does.
 - `run_suite()` of `admina.redteam` takes `corpora_dir`, `baseline` and
   `config`; without them the scorecard is unchanged.
   - `corpora_dir`: a directory of external corpora, `<name>.jsonl` files

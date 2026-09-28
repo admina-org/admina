@@ -12,45 +12,32 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""CLI for the admina-redteam detection-efficacy suite (sibling of benchmark.py)."""
+"""CLI for the admina-redteam detection-efficacy suite: runs ``admina redteam``.
+
+The options are those of ``admina redteam``. ``--baseline`` without a file
+(followed by nothing or by another option) writes the baseline of the run,
+as ``--write-baseline`` does.
+"""
 
 from __future__ import annotations
 
-import argparse
-import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from admina import redteam  # noqa: E402
+from admina.cli.redteam import redteam  # noqa: E402
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Admina detection-efficacy scorecard")
-    parser.add_argument("--engine", choices=["both", "python", "rust"], default="both")
-    parser.add_argument("--corpus", choices=["all", "injection", "pii", "loop"], default="all")
-    parser.add_argument("--format", choices=["md", "json", "both"], default="both")
-    parser.add_argument("--out", default="redteam-scorecard.json")
-    parser.add_argument(
-        "--baseline", action="store_true", help="also write the reduced baseline shape"
-    )
-    args = parser.parse_args()
-
-    engines = None if args.engine == "both" else [args.engine]
-    corpora = None if args.corpus == "all" else [args.corpus]
-    card = redteam.run_suite(engines=engines, corpora=corpora)
-
-    if args.format in ("md", "both"):
-        print(redteam.to_markdown(card))
-    if args.format in ("json", "both"):
-        Path(args.out).write_text(json.dumps(card, indent=2), encoding="utf-8")
-    if args.baseline:
-        Path(args.out).with_name("baseline.json").write_text(
-            json.dumps(redteam.make_baseline(card), indent=2), encoding="utf-8"
-        )
-    return 0
+def _arguments(argv: list[str]) -> list[str]:
+    """*argv* with a ``--baseline`` that has no file as ``--write-baseline``."""
+    args = list(argv)
+    for index, arg in enumerate(args):
+        following = args[index + 1] if index + 1 < len(args) else None
+        if arg == "--baseline" and (following is None or following.startswith("-")):
+            args[index] = "--write-baseline"
+    return args
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    redteam.main(args=_arguments(sys.argv[1:]), prog_name="redteam.py")

@@ -295,6 +295,8 @@ admina plugin install X    # Install a plugin from path or registry
 admina plugin create X     # Scaffold a new plugin from template
 admina forensic export --from-seq 1 --format jsonl --out records.jsonl
 admina forensic verify     # Verify the forensic chain (read-only, JSON result)
+admina redteam --format md # Detection-efficacy scorecard of the firewall, PII and loop detectors
+admina redteam --corpora-dir corpora/ --config admina.yaml --baseline baseline.json --gate
 ```
 
 `admina forensic export` and `admina forensic verify` read the directory of a
@@ -307,6 +309,36 @@ result (`valid`, `records`, `reason`, `sequence_number`, `checkpoint`,
 `last_hash`) and exits with 0 when the chain is valid, 1 when it is not;
 `--checkpoint SEQ:HASH` (the `checkpoint` of an earlier result) checks only
 the records after it.
+
+`admina redteam` measures the injection firewall, the PII redactor and the
+loop breaker on the corpora of the package (`admina/redteam/corpora/`), on
+every available engine (`--engine both|python|rust`), then prints the
+Markdown scorecard and writes the JSON one to `--out` (`--format
+md|json|both`; `--corpus NAME` runs one corpus). `scripts/redteam.py` runs
+the same command.
+
+- `--corpora-dir DIR` adds external corpora, run after the packaged ones:
+  each `<name>.jsonl` has the rows of the packaged corpus of its detector
+  (`{"id", "text", "label": "attack" | "benign", "lang", "tag"}` for the
+  firewall, `expected_types` instead of `label` for the PII redactor,
+  `messages` instead of `text` with `label` `loop` | `not_loop` for the loop
+  breaker), and the directory's `SHA256SUMS` (the output of `sha256sum
+  *.jsonl`) lists every one; the hashes are verified before the run.
+- `--config FILE` (default `$ADMINA_CONFIG`) builds the Python firewall from
+  the `agent_security.firewall` settings of an admina.yaml, as the proxy
+  does: custom patterns, pattern packs, disabled categories and patterns,
+  heuristic threshold and allowed tags. The Rust firewall is measured only
+  when the file sets none of the keys it cannot apply (see
+  [Engine selection](#engine-selection)). The PII redactor and the loop
+  breaker keep their defaults.
+- `--write-baseline [FILE]` writes the baseline of the run (default:
+  `baseline.json` next to `--out`). `--baseline FILE` compares the run with
+  a baseline and prints the result on standard error; `--gate` exits with
+  status 1 when a recall drops or a false positive appears (default baseline:
+  the packaged one, for the packaged corpora with the default settings).
+- Exit status 2: an option, a corpus, the configuration or the baseline is
+  not valid (a hash that does not match, a row without `tag`, an unknown
+  corpus name).
 
 `admina dev` defaults to a **single-process local mode** with zero Docker
 dependency: one uvicorn serves the proxy API and the dashboard SPA on the

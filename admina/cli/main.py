@@ -38,6 +38,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from admina import __version__
 from admina.cli.forensic import forensic as forensic_commands
+from admina.cli.redteam import redteam as redteam_command
 from admina.core.secrets import SecretVault, validate_password
 
 logger = logging.getLogger(__name__)
@@ -1514,6 +1515,11 @@ def password_set(new_password: str) -> None:
 # ── admina forensic commands ─────────────────────────────────
 
 app.add_command(forensic_commands)
+
+
+# ── admina redteam command ───────────────────────────────────
+
+app.add_command(redteam_command)
 
 
 # ── admina egress commands ───────────────────────────────────

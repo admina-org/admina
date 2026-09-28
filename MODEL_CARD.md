@@ -1049,7 +1049,7 @@ proxy. These are **performance** metrics, not **accuracy** metrics.
 ### Accuracy benchmarks
 
 Admina ships `admina-redteam`, a reproducible detection-efficacy suite
-(`admina/redteam/`, CLI `scripts/redteam.py`). It runs the injection firewall,
+(`admina/redteam/`, CLI `admina redteam`). It runs the injection firewall,
 PII redactor and loop-breaker against original, hash-pinned, multilingual
 (EN/IT/FR/ES/DE) corpora on **both** the Python and Rust engines and emits
 precision/recall/FPR plus a per-class Python-vs-Rust matrix. A soft CI gate
@@ -1089,7 +1089,7 @@ recall with **9/16** false positives, pinned to mode
 accelerator, so it is reported separately rather than in the
 Python-vs-Rust matrix above.
 
-Notable measured gaps (run `python scripts/redteam.py --format md` for the full
+Notable measured gaps (run `admina redteam --format md` for the full
 per-class matrix): the Rust firewall scores **0%** on base64 / homoglyph /
 leetspeak / ROT13 / hyphenation evasions that the Python engine catches (no
 `normalize_text()` pass — the fast path is the least thorough); the Rust PII
