@@ -64,6 +64,20 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   destinations and its records have no `checks.egress`.
   `admina.domains.agent_security.egress` adds `EGRESS_SURFACES`,
   `parse_egress_surfaces()` and `egress_policy_for()`.
+- `ADMINA_GATEWAY_FORWARD_FIELDS`, `ADMINA_GATEWAY_MAX_N` and
+  `ADMINA_GATEWAY_MAX_COMPLETION_TOKENS` (all off by default: the body is
+  forwarded as received): the top-level fields of a chat completion
+  forwarded upstream (`model`, `messages`, `stream` and the fields of a limit
+  that is set always are), the largest `n`, and the largest `max_tokens` and
+  `max_completion_tokens`. Larger values are lowered to the limit, and a
+  request that sets neither token field is forwarded with `max_tokens` set to
+  it. While a limit is set, a value of its fields other than an integer of at
+  least 1 (absent and `null` aside) is answered `400` (`{"error": {"message",
+  "type": "invalid_request_error", "param": <field>, "code":
+  "invalid_value"}}`) before any governance check, forensic record or
+  upstream call. The firewall scans the request as received; the forwarded
+  `messages` and `request_sha256` do not change. `admina.proxy.gateway_body`
+  holds `ForwardSettings`.
 
 ### Changed
 

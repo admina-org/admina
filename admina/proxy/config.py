@@ -28,6 +28,7 @@ from admina.core.types import EventType, GovernanceAction, RiskLevel
 from admina.domains.agent_security.scan_policy import SCAN_ROLES, parse_scan_roles
 from admina.domains.governance import normalize_guard_fail_mode
 from admina.proxy.dashboard_session import parse_cookie_secure
+from admina.proxy.gateway_body import forward_field_names
 from admina.proxy.gateway_correlation import (
     forward_header_names,
     record_header_names,
@@ -243,6 +244,23 @@ class Settings(BaseSettings):
     # (code model_not_allowed) before it is governed or forwarded.
     # Empty = every model, and the upstream's full model list.
     ADMINA_GATEWAY_MODELS_ALLOWLIST: str = ""
+    # Top-level fields of a chat completion request forwarded upstream,
+    # comma-separated and case-sensitive (empty = every field, as received).
+    # model, messages and stream are always forwarded, and so are the fields
+    # of the limits below that are set; other fields not listed are left out.
+    # The firewall still scans the request as received.
+    ADMINA_GATEWAY_FORWARD_FIELDS: str = ""
+    # Largest n (choices) forwarded upstream (0 = no limit): a larger n is
+    # lowered to it.
+    ADMINA_GATEWAY_MAX_N: int = Field(default=0, ge=0)
+    # Largest max_tokens and max_completion_tokens forwarded upstream
+    # (0 = no limit): larger values are lowered to it, and a request that
+    # sets neither is forwarded with max_tokens set to it.
+    # While a limit is set, the fields it applies to must be absent, null or
+    # an integer of at least 1; any other value gets 400 (code invalid_value)
+    # before any governance check. These three settings never change the
+    # messages.
+    ADMINA_GATEWAY_MAX_COMPLETION_TOKENS: int = Field(default=0, ge=0)
     # How streamed chat completions (stream=true) are relayed:
     #   "passthrough": the upstream bytes are forwarded unchanged, each SSE
     #       event as soon as it is complete, while no response transformation
@@ -350,6 +368,11 @@ class Settings(BaseSettings):
     @classmethod
     def validate_gateway_forward_headers(cls, v: str) -> str:
         return ",".join(forward_header_names(v))
+
+    @field_validator("ADMINA_GATEWAY_FORWARD_FIELDS")
+    @classmethod
+    def validate_gateway_forward_fields(cls, v: str) -> str:
+        return ",".join(forward_field_names(v))
 
     @field_validator("GOVERNANCE_MODE")
     @classmethod

@@ -518,6 +518,32 @@ the OpenAI error format (`invalid_request_error`, `param: "model"`, code
 `model_not_allowed`) before any governance check, forensic record or upstream
 call.
 
+A chat completion is forwarded with its body as received and its messages as
+governed (PII redacted when redaction applies). Three settings, all off by
+default, change the other top-level fields of the forwarded body:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `ADMINA_GATEWAY_FORWARD_FIELDS` | empty: every field | fields forwarded, comma-separated and case-sensitive; `model`, `messages` and `stream` always are, and so are the fields of a limit below that is set; any other field is left out |
+| `ADMINA_GATEWAY_MAX_N` | `0`: no limit | largest `n` forwarded: a larger `n` is lowered to it; an absent or `null` `n` is forwarded as it is |
+| `ADMINA_GATEWAY_MAX_COMPLETION_TOKENS` | `0`: no limit | largest `max_tokens` and `max_completion_tokens` forwarded: each one that is larger is lowered to it, and a request that sets neither (absent or `null`) is forwarded with `max_tokens` set to it |
+
+```bash
+ADMINA_GATEWAY_FORWARD_FIELDS=temperature,top_p,stop,seed,tools,tool_choice,response_format,stream_options
+ADMINA_GATEWAY_MAX_N=1
+ADMINA_GATEWAY_MAX_COMPLETION_TOKENS=4096
+```
+
+While a limit is set, the fields it applies to must be absent, `null` or an
+integer of at least 1 (`true`, `2.0` and `"2"` are not); any other value gets
+400 in the OpenAI error format (`invalid_request_error`, `param` naming the
+field, code `invalid_value`) before any governance check, forensic record or
+upstream call. The proxy does not start when `ADMINA_GATEWAY_FORWARD_FIELDS`
+names a field with characters other than ASCII letters, digits, `_` and `-`.
+These settings change the forwarded body only: the firewall scans the request
+as received, and the forwarded `messages`, whose hash is `request_sha256`, are
+the same with or without them.
+
 Named routes come from `ADMINA_GATEWAY_UPSTREAMS` or from `gateway.upstreams`
 in `admina.yaml`; the environment variable, when set, replaces the YAML routes
 (URLs and key files):
@@ -791,8 +817,8 @@ counts the policies: `admina_prescan_accepted_total`,
 
 #### Governance outcome
 
-Once a request has passed the route, JSON, model and size checks it gets an
-event id, and every response to it carries the outcome of governance,
+Once a request has passed the route, JSON, model, forwarded value and size
+checks it gets an event id, and every response to it carries the outcome of governance,
 streaming or not (response headers, sent before the first event). The body
 must be a JSON object; any other body is answered `400` (`Invalid JSON body`)
 before the event id exists.
@@ -815,7 +841,8 @@ the gateway `500` with `"type": "server_error"`. `X-Admina-Ruleset` (see
 [Firewall ruleset](#firewall-ruleset)) and `X-Admina-Version` (the Admina
 version, `admina.__version__`) are on these responses and on those the
 gateway sends before the event id exists (unknown route, invalid JSON,
-model outside the allowlist, message text over the limit). Read the outcome
+model outside the allowlist, value refused by a forwarding limit, message
+text over the limit). Read the outcome
 from `X-Admina-Action`, not from the body.
 
 `ADMINA_GATEWAY_BLOCK_STATUS` sets how a blocked request is answered:

@@ -29,6 +29,13 @@ With ``ADMINA_GATEWAY_MODELS_ALLOWLIST`` set, ``GET /v1/models`` lists only
 those models and a chat completion for any other model is answered 403
 (code ``model_not_allowed``) before it is governed, recorded or forwarded.
 
+A chat completion is forwarded with its body as received and its messages
+as governed. ``ADMINA_GATEWAY_FORWARD_FIELDS``, ``ADMINA_GATEWAY_MAX_N`` and
+``ADMINA_GATEWAY_MAX_COMPLETION_TOKENS`` (off by default) narrow the other
+fields and lower ``n`` and the token limits; a value such a limit refuses is
+answered 400 (code ``invalid_value``) before it is governed, recorded or
+forwarded (see :mod:`admina.proxy.gateway_body`).
+
 Every chat completion response carries ``X-Admina-Ruleset``, the
 :func:`~admina.domains.agent_security.ruleset.ruleset_sha256` of the rules
 the gateway scans with (see :mod:`admina.proxy.gateway_scan`), and
@@ -130,6 +137,7 @@ from admina.domains.governance import (
     safe_serialize,
     unfinished_pipeline_result,
 )
+from admina.proxy.gateway_body import ForwardedValueError, ForwardSettings
 from admina.proxy.gateway_correlation import (
     context_of,
     forward_header_names,
@@ -325,6 +333,17 @@ def _model_not_allowed() -> JSONResponse:
         "code": "model_not_allowed",
     }
     return _error_response(403, error)
+
+
+def _invalid_value(exc: ForwardedValueError) -> JSONResponse:
+    """400 in the OpenAI error format for a value a forwarding limit refuses."""
+    error = {
+        "message": str(exc),
+        "type": "invalid_request_error",
+        "param": exc.field,
+        "code": "invalid_value",
+    }
+    return _error_response(400, error)
 
 
 def _extract_prompt_text(messages: Any) -> str:
@@ -1123,6 +1142,10 @@ async def _chat_completion(
     allowed_models = _models_allowlist(cfg)
     if allowed_models and body.get("model") not in allowed_models:
         return _model_not_allowed(), None
+    try:
+        fields = ForwardSettings.of(cfg).fields(body)
+    except ForwardedValueError as exc:
+        return _invalid_value(exc), None
     prompt_text = _extract_prompt_text(body.get("messages") or [])
     if 0 < cfg.ADMINA_GATEWAY_MAX_PROMPT_CHARS < len(prompt_text):
         too_long = _error(
@@ -1141,7 +1164,9 @@ async def _chat_completion(
         ),
     )
     try:
-        response = await _governed_call(request, state, cfg, scan, route, call, body, prompt_text)
+        response = await _governed_call(
+            request, state, cfg, scan, route, call, body, fields, prompt_text
+        )
     except Exception as exc:  # noqa: BLE001 — the call still ends with its outcome
         response = _unexpected_failure(call, exc, body)
     return response, call
@@ -1155,11 +1180,13 @@ async def _governed_call(
     route: GatewayUpstream,
     call: GatewayCall,
     body: dict,
+    fields: dict,
     prompt_text: str,
 ) -> Response:
     """The response to *call*, whose request has JSON *body* and message
     text *prompt_text*: governed, recorded and, unless blocked, relayed to
-    *route*."""
+    *route* with the top-level *fields* (see
+    :mod:`admina.proxy.gateway_body`) and the governed messages."""
     event_id = call.event_id
     messages = body.get("messages") or []
     model = body.get("model", "unknown")
@@ -1226,7 +1253,7 @@ async def _governed_call(
         "X-Admina-Event-Id": event_id,
         **route.auth_headers(),
     }
-    forward_body = {**body, "messages": fwd_messages}
+    forward_body = {**fields, "messages": fwd_messages}
     client = state.gateway_http_client
     deadline = total_deadline(cfg)
 
