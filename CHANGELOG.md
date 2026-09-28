@@ -464,6 +464,12 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   installed), `loop_breaker` (`none` when none is built), `pii`,
   `pii_redaction` (`on`, `off`), `rust_available`, `rust_version`,
   `selection` and `version`.
+- README and MODEL_CARD describe the firewall as a heuristic signal, give
+  the pattern counts of each engine (44 builtin patterns on Python, 15 on
+  Rust), the engine selection and the official image (the Rust firewall
+  and loop breaker under `auto`, no spaCy model), and state what the
+  engine microbenchmark measures; the full Docker Compose stack runs 8
+  containers.
 
 - `admina_requests_total` has the labels `surface` (`gateway`, `mcp`,
   `integration`) and `action` (`ALLOW`, `BLOCK`, `REDACT`, `CIRCUIT_BREAK`,

@@ -25,9 +25,9 @@ functions, and ISO/IEC 42001 clause 8 (Operations).
 
 | Component | Type | Engine | Source |
 |-----------|------|--------|--------|
-| Injection Firewall | Pattern matcher (RegexSet) + heuristic scorer | Rust (`core-rust/src/firewall.rs`) + Python fallback | `admina/domains/agent_security/firewall.py` |
+| Injection Firewall | Pattern matcher (RegexSet) + heuristic scorer | Python (44 builtin patterns) or Rust (`core-rust/src/firewall.rs`, 15 patterns), by `ADMINA_ENGINE`: `auto` (default) runs Rust when `admina-core` is installed, unless admina.yaml sets a Python-only firewall key | `admina/domains/agent_security/firewall.py` |
 | PII Scanner | Regex + spaCy NER (optional), or Microsoft Presidio (opt-in) | Python default even when Rust is installed; Rust (`core-rust/src/pii.rs`) only under an explicit `ADMINA_ENGINE=rust` | `admina/domains/data_sovereignty/`, `admina/engines/presidio.py` |
-| Loop Breaker | TF-IDF cosine similarity over a sliding window | Rust (`core-rust/src/loop_breaker.rs`) + Python fallback | `admina/domains/agent_security/loop_breaker.py` |
+| Loop Breaker | TF-IDF cosine similarity over a sliding window | Rust (`core-rust/src/loop_breaker.rs`) when `admina-core` is installed (`ADMINA_ENGINE=auto`, default) or `ADMINA_ENGINE=rust`, else Python | `admina/domains/agent_security/loop_breaker.py` |
 | Egress Policy | Destination allowlist (exact host / `*.suffix` / CIDR) matched against tool-call arguments | Python only — no Rust variant | `admina/domains/agent_security/egress.py` |
 | Coordination Detector | Fan-in counter over distinct agents, escalating to keyed shingle-sketch echo confirmation | Python only — no Rust variant; requires Redis — no Redis means no detection at all | `admina/domains/agent_security/coordination.py`, `admina/domains/agent_security/fingerprint.py` |
 | Forensic Hash Chain | SHA-256 chained log | Rust (`core-rust/src/forensic.rs`) + Python fallback | `admina/domains/compliance/forensic.py` |
@@ -42,8 +42,20 @@ but the two engines are not behaviorally equivalent: on an internal
 14-attack evasion corpus the Python firewall blocks all 14 while the Rust
 firewall blocks 7 (plain-text and single-encoding attacks only). The Rust
 PII engine also lacks EU national-ID patterns, spaCy NER, and Luhn
-validation. Python is the higher-recall default; Rust is opt-in for
+validation. Python is the higher-recall engine; Rust is opt-in for
 latency-sensitive workloads where the narrower coverage is acceptable.
+
+Opt-in means the `[rust]` extra of a `pip install`. The official proxy
+image installs `admina-core`, so under the default `ADMINA_ENGINE=auto` it
+runs the Rust firewall and loop breaker (the PII engine stays Python, with
+regular expressions only: the image has no spaCy model). Set
+`ADMINA_ENGINE=python` for the Python firewall. An explicit
+`ADMINA_ENGINE=rust` stops the proxy when `admina-core` is missing or when
+admina.yaml sets a firewall key only the Python firewall applies
+(`custom_patterns`, `disabled_categories`, `disabled_patterns`,
+`pattern_packs`). `GET /health` reports the engine each component runs on
+(`engine.firewall`, `engine.loop_breaker`, `engine.pii`), and so do the
+startup log and `admina_engine_info`.
 
 ---
 
@@ -72,9 +84,10 @@ Admina is **not**:
 - A replacement for legal counsel. The EU AI Act classifier is a
   pre-screening aid; final classification of an AI system requires legal
   review.
-- A guarantee against all prompt injection attacks. New attack classes
-  emerge continuously; the firewall covers known patterns at the time
-  of release.
+- A guarantee against prompt injection. The firewall is a heuristic
+  signal (regular expressions and a score of lexical signals): paraphrases
+  and new attack classes pass it, and some benign text is flagged. Its
+  patterns cover known phrasings at the time of release.
 - A jailbreak detector calibrated for any specific commercial LLM. The
   firewall is model-agnostic and does not have access to the upstream
   model's instruction hierarchy.
@@ -88,7 +101,8 @@ Admina is **not**:
 
 ### What it does
 
-Scans inbound text for prompt-injection attempts. Two layers: a fast
+Scans inbound text for prompt-injection attempts and returns a heuristic
+signal, not a verdict on intent. Two layers: a fast
 path of compiled regexes run against the raw text *and* against an
 evasion-normalised copy (homoglyph / leetspeak / char-by-char /
 base64 neutralised), and a deep path that scores five heuristic signals
@@ -157,8 +171,9 @@ categories — they are not. They are only visible in the Rust engine's
 `matched_patterns` field; the Rust bridge reports an empty
 `detections_by_type` (`admina/engines/__init__.py:216-227`), so no Rust
 label ever reaches the stats API, the Prometheus series, or
-`disabled_categories` (a non-empty `disabled_categories` forces the
-Python bridge — `admina/engines/__init__.py:333-341`).
+`disabled_categories` (a non-empty `disabled_categories` makes the firewall
+Python under `ADMINA_ENGINE=auto`, and stops the proxy under
+`ADMINA_ENGINE=rust`).
 
 | Rust label | Python equivalent |
 |------------|-------------------|
@@ -1019,11 +1034,14 @@ We welcome contributions extending coverage. See
 
 ### Performance benchmarks
 
-Performance numbers in the README (`6.25 µs` median for the four-domain
-pipeline) are reproduced via `scripts/benchmark.py` and
-`docker-compose.benchmark.yml`. Hardware and methodology are documented
-inside the benchmark script. These are **performance** metrics, not
-**accuracy** metrics.
+The engine microbenchmark in the README (median microseconds per call of
+the Rust engine components on short inputs) comes from
+`tests/test_benchmark_14us.py` (`pytest -m benchmark`), whose docstring
+records the hardware and the method. It is not the latency the proxy adds,
+which grows with the length of the text scanned and is higher on the
+Python engine; `scripts/bench_gateway.py` measures the gateway on a
+retrieval-augmented trace, and `scripts/benchmark.py` load-tests a running
+proxy. These are **performance** metrics, not **accuracy** metrics.
 
 ### Accuracy benchmarks
 

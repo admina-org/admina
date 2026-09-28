@@ -73,13 +73,13 @@
 |                                | Plain LLM / RAG app                  | **With Admina**                                                          |
 | :----------------------------- | :----------------------------------- | :----------------------------------------------------------------------- |
 | PII in prompts/responses       | leaks unless you build redaction     | **Redacted by default** — email, SSN, IBAN, phone, IP, names             |
-| Prompt injections              | reach the model                      | **Blocked at the proxy** — 15 regex + Rust heuristic scoring             |
+| Prompt injections              | reach the model                      | **Screened at the proxy** — a heuristic signal, not a guarantee: regex patterns (44 on the Python engine, 15 on Rust) + scoring |
 | Agent tool calls               | unaudited                            | **Validated pre-action + logged post-action** (forensic chain)           |
 | Loop / runaway agents          | burn tokens / budget                 | **Broken** — TF-IDF cosine similarity over the action stream             |
 | EU AI Act readiness            | manual                               | **Gap analysis + risk classification** built-in                          |
 | Audit trail                    | logs you hope nobody deletes         | **SHA-256 hash chain** — tamper-evident by design                        |
 | Adding governance to existing code | rewrite the call sites           | **Zero code changes** via proxy, or 3 lines via SDK                      |
-| Performance overhead           | unknown                              | **~6 µs per pipeline** (Rust engine), in-process or networked            |
+| Performance overhead           | unknown                              | **Measured** — engine microbenchmarks and a gateway benchmark to run on your hardware ([Performance](#performance--hybrid-python--rust-engine)) |
 | License                        | varies                               | **Apache 2.0**, open core                                                |
 
 > Admina is **decision-support and defense-in-depth**, not legal advice. See [Compliance scope](#compliance-scope) for the full disclaimer and limitations.
@@ -163,7 +163,9 @@ pip install admina-framework
 > The Rust engine is an **optional, opt-in** accelerator. The default
 > `pip install admina-framework` ships only the pure-Python implementation;
 > `admina-framework[rust]` adds the `admina-core` wheel, which Admina
-> auto-detects at runtime (falling back to pure Python if it's absent).
+> auto-detects at runtime: under `ADMINA_ENGINE=auto` (the default) the
+> firewall and the loop breaker run on Rust whenever it is installed, as in
+> the official proxy image (see [Engine selection](#engine-selection)).
 >
 > The default is pure Python on purpose: the Python injection firewall
 > currently has **broader detection coverage** than the Rust one (it adds
@@ -230,7 +232,7 @@ Pipeline (identical in both modes): `loop-breaker → firewall → PII redaction
 
 | Domain | Capabilities | Engine |
 |--------|-------------|--------|
-| **Agent Security** | Anti-injection firewall (15 regex + heuristic scoring), loop breaker (TF-IDF cosine similarity) | Rust + Python |
+| **Agent Security** | Anti-injection firewall (heuristic: 44 regex patterns on the Python engine, 15 on Rust, + scoring), loop breaker (TF-IDF cosine similarity) | Rust + Python |
 | **Data Sovereignty** | PII redaction (email, SSN, credit cards, IBAN, phone, IP), residency enforcement, data classification | Rust + spaCy NER |
 | **Compliance** | EU AI Act risk classification (Art. 6) and gap analysis (Art. 9-15), forensic black box (SHA-256 hash chain), OTEL native spans | Rust + Python |
 | **AI Infrastructure** | LLM engine (Ollama, OpenAI), RAG pipeline (ChromaDB), Open WebUI | Python |
@@ -340,6 +342,120 @@ cp admina.yaml.example admina.yaml   # Copy and customize
 
 See [`admina.yaml.example`](https://github.com/admina-org/admina/blob/main/admina.yaml.example) for all options including domains, AI infra, plugins, dashboard, forensic storage, alert channels, and integrations.
 
+### Configuration check
+
+`admina.yaml` is checked against its schema (`schema_version: 1`,
+`admina.core.config_schema`):
+
+- A value of the wrong type (a word where a number goes, a single name where
+  a list goes, a list where a section goes) is an error naming the key:
+  `load_config()` raises `ConfigSchemaError` (a `ValueError`) and the proxy
+  does not start, for example `admina.yaml /etc/admina/admina.yaml:
+  domains.agent_security.loop_breaker.window_size: must be an integer`. The
+  values of `gateway` and `presidio` are checked by their own readers, with
+  the same effect. An empty value (`key:` and nothing after it) is not
+  checked.
+- A key the schema does not know, such as the typo
+  `domains.agent_security.firewal`, is logged at proxy startup as a warning
+  with its path (`admina.yaml /etc/admina/admina.yaml: unknown keys, not
+  read: domains.agent_security.firewal ...`). With `ADMINA_CONFIG_STRICT=true`
+  it is an error and the proxy does not start. `check_config()` of
+  `admina.core.config` runs the same check for the SDK.
+- Free-form blocks are not checked inside: `plugin_config`, `integrations`,
+  `agent_security.domains`, and the entries of `custom_patterns` (the
+  firewall skips a malformed entry with a warning).
+
+At startup the proxy also lists, as a warning, the `ADMINA_*` variables of
+its environment and `.env` file that nothing reads (`ADMINA_* variables not read
+by Admina: ADMINA_FOO ...`); `ADMINA_CONFIG_STRICT=true` makes them an
+error. Known are the proxy settings, the variables read by the
+engines, the SDK, the builtin plugins and the other containers of the stack,
+and the per-route keys of the gateway. Variables of other components are not
+reported when they start with:
+
+- `ADMINA_<NAME>_`, where `<name>` is an entry point that an installed
+  distribution registers in `admina.plugins`, `admina.pii_engines` or
+  `admina.pattern_packs`, in upper case with `_` for any other character
+  than a letter or a digit (entry point `example-pii`:
+  `ADMINA_EXAMPLE_PII_`). A plugin reads its own variables under that
+  prefix;
+- a prefix listed in `ADMINA_ENV_ALLOW_PREFIXES` (comma-separated, for
+  example `ADMINA_MYAPP_`).
+
+Values are never logged.
+
+### Engine selection
+
+`ADMINA_ENGINE` selects the engines of the firewall, the loop breaker and the
+`spacy-regex` PII engine:
+
+| `ADMINA_ENGINE` | Firewall | Loop breaker | PII (`spacy-regex`) |
+|---|---|---|---|
+| `auto` (default) | Rust when `admina-core` is installed, else Python; Python, with a warning, when `admina.yaml` sets a key below | Rust when `admina-core` is installed, else Python | Python |
+| `python` | Python | Python | Python |
+| `rust` | Rust | Rust | Rust |
+
+With `ADMINA_ENGINE=rust` the engines are not built, and the proxy does not
+start, when `admina-core` is not installed or when `admina.yaml` sets a key
+that only the Python firewall applies: `agent_security.firewall`
+`custom_patterns`, `disabled_categories`, `disabled_patterns` or
+`pattern_packs` (an empty list is not set). The error names the cause:
+
+```
+ADMINA_ENGINE=rust, but admina-core is not installed: install admina-framework[rust], or set ADMINA_ENGINE=python (or auto) to run the Python engines
+ADMINA_ENGINE=rust, but admina.yaml sets agent_security.firewall.pattern_packs, which only the Python firewall applies: remove them, or set ADMINA_ENGINE=python (or auto) to run the Python firewall
+```
+
+`pattern_pack_dirs`, `strict_pack_timing`, `heuristic_threshold` and
+`allowed_tags` do not select an engine (the Rust engine does not read
+them). The SDK raises the same `EngineSelectionError` (a `ValueError`) from
+`get_firewall()`, `get_loop_breaker()` and `get_pii_engine()`.
+
+Both firewalls are heuristic, and they differ: the Python firewall has 44
+builtin patterns in 13 categories, normalises evasions (homoglyphs,
+leetspeak, base64, ROT13, hyphenation) and has the Italian baseline; the
+Rust firewall has 15 patterns, no normalisation and none of the Italian
+baseline patterns, which are simply absent under Rust. See the
+[model card](MODEL_CARD.md) for what each one detects.
+
+`GET /health` and `GET /api/stats` report under `engine`:
+
+- as in 0.12: `selection` (`ADMINA_ENGINE` as set, `auto` when unset),
+  `active` (the engine that selection resolves to for the firewall and the
+  loop breaker), `pii_active`, `rust_available`, `rust_version`
+  (`admina_core.version()`, or `null`) and `engine` (`rust` whenever
+  `admina-core` is installed);
+- `firewall`, `loop_breaker` and `pii`: the engines of the objects the proxy
+  built. Under `auto` with a key above, `firewall` is `python` while
+  `active` is `rust`. `loop_breaker` is `null` when no enabled surface needs
+  one (`mcp`, `integration`); `pii` is `python`, `rust`, `presidio` or the
+  name of a plugin engine.
+
+The startup banner and the `admina_engine_info` gauge of `/metrics` report
+the same engines, `admina-core` version and settings:
+
+```
+  Engine selection: ADMINA_ENGINE=auto (admina-core 0.13.0)
+  Firewall: ON (rust engine) | PII Redaction: ON (python engine) | Loop Breaker: ON (rust engine)
+
+admina_engine_info{engine="rust",firewall="rust",loop_breaker="rust",pii="python",pii_redaction="on",rust_available="yes",rust_version="0.13.0",selection="auto",version="0.13.0"} 1
+```
+
+The gauge's `engine` is the firewall's engine, `loop_breaker` is `none`
+when none is built, and `rust_version` is empty without `admina-core`.
+`INJECTION_FAST_PATH_ENABLED=false` and `PII_REDACTION_ENABLED=false` show as
+`OFF (gateway and /mcp)`: `/api/v1/validate` runs the firewall and the PII
+redaction whatever these two settings say.
+
+**The official proxy image** (`admina/proxy/Dockerfile`) installs the Rust
+engine, and spaCy without a language model (the `slim` target has no spaCy).
+Under the default `ADMINA_ENGINE=auto` it runs the Rust firewall and loop
+breaker and the Python PII engine with regular expressions only: no names or
+organisations are detected until a spaCy model is installed (see
+[PII engines](#pii-engines)). Set `ADMINA_ENGINE=python` in the container
+for the Python firewall, and read `engine.firewall` of `/health` to see the
+firewall that runs.
+
 ### Firewall patterns
 
 Every firewall pattern has a stable id, reported with each match in
@@ -385,9 +501,11 @@ ignora le istruzioni precedenti") or after a closing quote, tag or emphasis
 that follows a word ('Il modulo "Alfa" ignora le istruzioni precedenti',
 "<b>Il fornitore</b> ignora le istruzioni precedenti").
 
-`disabled_patterns`, `custom_patterns` and pattern packs (below) apply to
-the Python firewall only: with any of them set, `get_firewall()` uses the
-Python firewall even when the Rust engine is selected.
+`custom_patterns`, `disabled_categories`, `disabled_patterns` and pattern
+packs (below) apply to the Python firewall only, and so does the Italian
+baseline: with any of those keys set, `ADMINA_ENGINE=auto` runs the Python
+firewall and `ADMINA_ENGINE=rust` stops the proxy (see
+[Engine selection](#engine-selection)).
 
 #### Firewall pattern packs
 
@@ -1472,9 +1590,10 @@ The Rust core engine is an optional accelerator. The default
 enable the Rust engine with the opt-in extra `pip install
 "admina-framework[rust]"` (or build from source for local development —
 `maturin develop --release --manifest-path core-rust/Cargo.toml`, see
-[CONTRIBUTING.md](https://github.com/admina-org/admina/blob/main/CONTRIBUTING.md)). At runtime Admina auto-detects
-whichever is available and falls back transparently to Python if the Rust
-extension is not installed.
+[CONTRIBUTING.md](https://github.com/admina-org/admina/blob/main/CONTRIBUTING.md)). Under `ADMINA_ENGINE=auto` Admina
+runs the Rust firewall and loop breaker when the extension is installed and
+the Python ones otherwise; `ADMINA_ENGINE=rust` without it stops the proxy
+(see [Engine selection](#engine-selection)).
 
 > **Detection trade-off (why Rust is opt-in, not the default).** The Rust
 > firewall is faster but currently detects a narrower set of attacks than
@@ -1484,11 +1603,16 @@ extension is not installed.
 > not yet. On an internal 14-attack evasion corpus the Python firewall
 > blocks all 14 while the Rust firewall blocks 7 (the plain-text and
 > multilingual-keyword attacks), with no false positives on either side.
-> Full Rust↔Python detection parity is tracked for 0.10. Until then, keep
-> the default (pure Python) when detection breadth matters; opt into
-> `[rust]` when latency dominates.
+> Keep the Python engine (no `[rust]` extra, or `ADMINA_ENGINE=python`) when
+> detection breadth matters; use the Rust engine when latency dominates.
 
-Measured numbers below assume the Rust engine is loaded:
+The numbers below are a microbenchmark of the Rust engine components on
+short inputs (`tests/test_benchmark_14us.py`, run with `pytest -m benchmark`;
+Apple M4 Max in a Docker Desktop VM, Python 3.11, 10 000 iterations). They
+are the cost of each engine call on a short text, not the latency the proxy
+adds: that grows with the length of the text scanned, the Python engine
+costs more, and the gateway adds its own work. Measure your deployment with
+`scripts/bench_gateway.py` (below).
 
 ```
 Component          Rust (median)   P95        P99
@@ -1548,7 +1672,7 @@ Generates a weighted mix of: clean MCP requests, injection attempts, PII content
 
 ## Infrastructure & Services
 
-The full stack (`docker compose up`) runs 9 containers:
+The full stack (`docker compose up`) runs 8 containers:
 
 | Port | Service | Description |
 |------|---------|-------------|
@@ -1639,7 +1763,7 @@ admina/
 |   +-- openclaw/           OpenClaw governance skill
 |   +-- n8n/                n8n community nodes
 +-- tests/                  800+ tests (pytest)
-+-- docker-compose.yml      Full stack deployment (9 containers)
++-- docker-compose.yml      Full stack deployment (8 containers)
 ```
 
 </details>
