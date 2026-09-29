@@ -95,10 +95,13 @@ the engines in use on `/health`, an OISG score from external evidence, and
   `X-Admina-Action: BLOCK`, recorded with `checks["pipeline"]`
   (`{"action": "ERROR", "error": "redacted_messages_missing"}`) and logged
   as an error.
-- A placeholder already in the text (an upper-case name in square brackets,
-  such as `[IBAN]` or `[OMISSIS]`) is not masked again: the NER step of the
-  `spacy-regex` engine, the `presidio` engine and `PIIEngineBridge` mask a
-  detected span only outside the placeholders.
+- A mask of Admina already in the text (a placeholder: the `mask` of a
+  category of `PII_CATEGORIES`, such as `[IBAN]` or `[LOCATION]`, a category
+  name in square brackets, such as `[IP_ADDRESS]`, or `[OMISSIS]`) is not
+  masked again: the NER step of the `spacy-regex` engine, the `presidio`
+  engine and `PIIEngineBridge` mask a detected span only outside the
+  placeholders. Other text in square brackets is masked like any other text
+  (`masking.placeholder_pattern()`).
 - The `presidio` engine masks overlapping detections as one span, their
   union, with the category and mask of the first.
 - The `governance.decision` event of an `/mcp` request carries names,

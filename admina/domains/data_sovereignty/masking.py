@@ -32,10 +32,13 @@ space around it and its final punctuation. Splitting a text takes time
 linear in its length, and extending a span to its sentences time
 logarithmic in their number.
 
-A placeholder is a mask already in the text: an upper-case name in square
-brackets, such as ``[EMAIL]``, ``[IBAN]``, ``[IP_ADDR]`` or ``[OMISSIS]``. The
-engines never mask a placeholder again: a detected span that covers one is
-reduced to the parts of it outside the placeholders
+A placeholder is a mask of Admina already in the text: the ``mask`` of a
+category of :data:`admina.domains.data_sovereignty.pii.PII_CATEGORIES` (such
+as ``[EMAIL]``, ``[IBAN]``, ``[IP_ADDR]`` or ``[LOCATION]``), a category name
+in square brackets (``[IP_ADDRESS]``, ``[GPE]``, …) or ``[OMISSIS]``
+(:func:`placeholder_pattern`). Other text in square brackets is text like
+any other. The engines never mask a placeholder again: a detected span that
+covers one is reduced to the parts of it outside the placeholders
 (:func:`outside_placeholders`).
 """
 
@@ -44,6 +47,7 @@ from __future__ import annotations
 import re
 from bisect import bisect_left, bisect_right
 from collections.abc import Collection, Iterable
+from functools import cache
 from itertools import accumulate
 from operator import itemgetter
 
@@ -53,8 +57,20 @@ MASK_STYLES = ("typed", "omissis")
 OMISSIS = "[OMISSIS]"
 """The mask of every span in the ``omissis`` style."""
 
-PLACEHOLDER_RX = re.compile(r"\[[A-Z][A-Z0-9_]*\]")
-"""A mask already in the text."""
+
+@cache
+def placeholder_pattern() -> re.Pattern[str]:
+    """The placeholders (see the module documentation) as one alternation
+    of literal strings, built at the first call."""
+    # pii imports this module: its categories are read at the first call.
+    from admina.domains.data_sovereignty.pii import PII_CATEGORIES
+
+    masks = {OMISSIS}
+    for category, config in PII_CATEGORIES.items():
+        masks.add(config["mask"])
+        masks.add(f"[{category}]")
+    return re.compile("|".join(re.escape(mask) for mask in sorted(masks)))
+
 
 # The end of a sentence: a line break, with the white space after it; or a
 # run of final punctuation with any closing quotes and brackets, then white
@@ -81,7 +97,7 @@ def placeholder_spans(text: str) -> list[Span]:
     """The ``(start, end)`` of each placeholder in *text*, in order."""
     if "[" not in text:
         return []
-    return [m.span() for m in PLACEHOLDER_RX.finditer(text)]
+    return [m.span() for m in placeholder_pattern().finditer(text)]
 
 
 def outside_placeholders(start: int, end: int, placeholders: list[Span], text: str) -> list[Span]:

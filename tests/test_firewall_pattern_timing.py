@@ -345,7 +345,7 @@ _OTHER_REGEXES = {
     **{f"pii-{name.lower()}": regex for name, regex in pii.REGEX_PII_PATTERNS.items()},
     "pii-version-prefix": pii._VERSION_PREFIX_RX,
     "pii-version-suffix": pii._VERSION_SUFFIX_RX,
-    "masking-placeholder": masking.PLACEHOLDER_RX,
+    "masking-placeholder": masking.placeholder_pattern(),
     "masking-sentence-end": masking._SENTENCE_END_RX,
     "egress-host": egress._HOST_RX,
     "egress-single-label": egress._SINGLE_LABEL_RX,

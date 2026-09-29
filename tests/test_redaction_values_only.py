@@ -360,3 +360,63 @@ def test_a_span_is_reduced_to_its_parts_outside_the_placeholders():
     assert outside_placeholders(25, 29, spans, text) == [(25, 29)]
     assert outside_placeholders(0, 5, [], "Mario") == [(0, 5)]
     assert outside_placeholders(0, 3, [], " , ") == []
+
+
+# ── Only the masks of Admina are placeholders ─────────────────
+
+BRACKETED_IBAN = "IBAN [IT60X0542811101000000123456] ok"
+BRACKETED_FISCAL_CODE = "CF [RSSMRA80A01H501U] ok"
+BRACKETED_NAMES = "Meeting with [OBAMA] in [CHICAGO]."
+
+
+def test_the_placeholders_are_the_masks_of_admina():
+    from admina.domains.data_sovereignty.masking import OMISSIS, placeholder_spans
+    from admina.domains.data_sovereignty.pii import PII_CATEGORIES
+
+    masks = {OMISSIS} | {c["mask"] for c in PII_CATEGORIES.values()}
+    masks |= {f"[{name}]" for name in PII_CATEGORIES}
+    for mask in masks:
+        assert placeholder_spans(f"a {mask} b") == [(2, 2 + len(mask))], mask
+    for text in (BRACKETED_IBAN, BRACKETED_FISCAL_CODE, BRACKETED_NAMES, "[A] [X_1] [NOTE]"):
+        assert placeholder_spans(text) == [], text
+
+
+def _presidio(nlp_models=None):
+    pytest.importorskip("presidio_analyzer")
+    from admina.engines.presidio import PresidioPIIEngine
+
+    try:
+        return PresidioPIIEngine(nlp_models=nlp_models)
+    except (ImportError, ValueError):
+        pytest.skip("Presidio installed without the spaCy models")
+
+
+@pytest.mark.parametrize(
+    ("text", "masked"),
+    [(BRACKETED_IBAN, "IBAN [[IBAN]] ok"), (BRACKETED_FISCAL_CODE, "CF [[CF]] ok")],
+)
+def test_presidio_masks_text_in_square_brackets(text, masked):
+    assert _presidio({"it": "blank"}).redact(text)["redacted_text"] == masked
+
+
+def test_presidio_masks_names_in_square_brackets():
+    out = _presidio().redact(BRACKETED_NAMES)["redacted_text"]
+    assert "OBAMA" not in out and "CHICAGO" not in out
+    assert "[[PERSON]]" in out
+
+
+def test_spacy_regex_masks_names_in_square_brackets():
+    out = _spacy_regex().redact(BRACKETED_NAMES)["redacted_text"]
+    assert "OBAMA" not in out and "CHICAGO" not in out
+    assert "[[PERSON]]" in out
+
+
+def test_plugin_engine_masks_text_in_square_brackets(example_pii_plugin):
+    from admina.engines import get_pii_engine
+
+    engine = get_pii_engine("example-pii")
+    out = engine.redact(f"{BRACKETED_IBAN}, {BRACKETED_FISCAL_CODE}")
+    assert out["redacted_text"] == "IBAN [[IBAN]] ok, CF [[CODICE_FISCALE]] ok"
+    assert out["count"] == 2
+    names = get_pii_engine("every-word").redact("[OBAMA] [IBAN]")["redacted_text"]
+    assert names == "[[PERSON]] [IBAN]"

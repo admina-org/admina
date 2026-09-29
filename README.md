@@ -731,8 +731,9 @@ and starts the proxy without the OpenTelemetry exporter.
 Every engine masks text values only, never the keys of a JSON object: the
 gateway redacts the text of each message (`content`, as a string or the
 `text` of each part, reasoning and refusal text, tool call `arguments`) and
-forwards roles, names and ids as received. A placeholder already in the text
-(`[EMAIL]`, `[IBAN]`, …) is never masked again. IBANs are masked when they
+forwards roles, names and ids as received. A mask of Admina already in the
+text (`[EMAIL]`, `[IBAN]`, …, `[OMISSIS]`) is never masked again; other text
+in square brackets is masked like any other text. IBANs are masked when they
 have the length of their country (Italy: 27 characters), compact or with
 spaces, and a valid checksum; phone numbers include the Italian formats.
 
