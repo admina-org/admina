@@ -493,15 +493,15 @@ the engines in use on `/health`, an OISG score from external evidence, and
   "evidence_ref"}, ...}}` with an entry for every criterion (JSON Schema
   `admina/domains/compliance/schemas/oisg-evidence.schema.json`, read by
   `evidence_schema()`; dataclasses `OISGEvidence` and `CriterionEvidence`).
-  A status is `satisfied`, `partial`, `gap_consapevole` (a known gap,
+  A status is `satisfied`, `partial`, `accepted_gap` (a known gap,
   accepted with a `reason`, which is required and not blank) or
   `not_applicable`. Scoring: `satisfied` is worth 5 points, `partial` 2.5,
-  `gap_consapevole` 0; `not_applicable` criteria are left out and each
+  `accepted_gap` 0; `not_applicable` criteria are left out and each
   pillar is rescaled to 25 over the criteria that apply; a pillar without
   any has no score (`null`) and the total is rescaled to 100 over the other
   pillars. Scores are rounded half up to one decimal, and the level is
   `get_level()` of the total. A missing or unknown criterion, an unknown
-  status or key, a `gap_consapevole` without a reason, and evidence where
+  status or key, an `accepted_gap` without a reason, and evidence where
   every criterion is `not_applicable` raise `OISGEvidenceError` (a
   `ValueError`; `problems` names each key). The result,
   `OISGEvidenceResult` (an `OISGResult`), carries the `status`, `reason`,

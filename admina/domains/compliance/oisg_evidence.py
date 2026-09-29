@@ -23,7 +23,7 @@ reference:
 
 - ``satisfied``: 5 points;
 - ``partial``: 2.5 points;
-- ``gap_consapevole``: a known gap, accepted with a reason (required and
+- ``accepted_gap``: a known gap, accepted with a reason (required and
   not blank): 0 points;
 - ``not_applicable``: left out of the score.
 
@@ -79,7 +79,7 @@ __all__ = [
     "CRITERION_IDS",
     "EVIDENCE_SCHEMA_PATH",
     "EVIDENCE_SCHEMA_VERSION",
-    "GAP_CONSAPEVOLE",
+    "ACCEPTED_GAP",
     "NOT_APPLICABLE",
     "PARTIAL",
     "SATISFIED",
@@ -96,17 +96,17 @@ __all__ = [
 
 SATISFIED = "satisfied"
 PARTIAL = "partial"
-GAP_CONSAPEVOLE = "gap_consapevole"
+ACCEPTED_GAP = "accepted_gap"
 NOT_APPLICABLE = "not_applicable"
 
 #: The statuses of a criterion.
-STATUSES = (SATISFIED, PARTIAL, GAP_CONSAPEVOLE, NOT_APPLICABLE)
+STATUSES = (SATISFIED, PARTIAL, ACCEPTED_GAP, NOT_APPLICABLE)
 
 #: Points of the statuses that count in the score (``not_applicable`` does not).
 _STATUS_POINTS = {
     SATISFIED: Fraction(POINTS_PER_CRITERION),
     PARTIAL: Fraction(POINTS_PER_CRITERION, 2),
-    GAP_CONSAPEVOLE: Fraction(0),
+    ACCEPTED_GAP: Fraction(0),
 }
 
 #: The ids of the 20 criteria, pillar by pillar, as in ``CRITERIA``.
@@ -128,7 +128,7 @@ def evidence_schema() -> dict[str, Any]:
 class OISGEvidenceError(ValueError):
     """The evidence does not match its schema. ``problems`` lists each
     problem with the path of its key (for example
-    ``criteria.s4.reason: required for status gap_consapevole``)."""
+    ``criteria.s4.reason: required for status accepted_gap``)."""
 
     def __init__(self, problems: list[str]) -> None:
         self.problems = list(problems)
@@ -153,7 +153,7 @@ class OISGEvidence:
 
     Raises:
         OISGEvidenceError: a criterion is missing or unknown, a status is
-            unknown, or a ``gap_consapevole`` has no reason.
+            unknown, or an ``accepted_gap`` has no reason.
     """
 
     criteria: Mapping[str, CriterionEvidence]
@@ -234,8 +234,8 @@ def _entry_problems(where: str, entry: Any) -> list[str]:
         if key in entry and not isinstance(entry[key], str):
             problems.append(f"{where}.{key}: must be a string")
     reason = entry.get("reason", "")
-    if entry.get("status") == GAP_CONSAPEVOLE and not (isinstance(reason, str) and reason.strip()):
-        problems.append(f"{where}.reason: required for status {GAP_CONSAPEVOLE}")
+    if entry.get("status") == ACCEPTED_GAP and not (isinstance(reason, str) and reason.strip()):
+        problems.append(f"{where}.reason: required for status {ACCEPTED_GAP}")
     return problems
 
 
@@ -352,7 +352,7 @@ class OISGEvidenceResult(OISGResult):
             ]
         lines += [
             "",
-            "_Scoring: satisfied 5 points, partial 2.5, gap_consapevole 0; not_applicable "
+            "_Scoring: satisfied 5 points, partial 2.5, accepted_gap 0; not_applicable "
             "criteria are left out and each pillar is rescaled to 25 over the criteria "
             "that apply._",
         ]
@@ -381,7 +381,7 @@ def compute_oisg_score_from_evidence(
 
     Returns:
         The score of the 20 criteria of ``CRITERIA``: ``satisfied`` 5
-        points, ``partial`` 2.5, ``gap_consapevole`` 0; ``not_applicable``
+        points, ``partial`` 2.5, ``accepted_gap`` 0; ``not_applicable``
         criteria are left out, each pillar is rescaled to 25 over the
         criteria that apply, and the total to 100 over the pillars with a
         score (see the module docstring). Scores have one decimal, rounded

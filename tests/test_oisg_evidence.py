@@ -45,7 +45,7 @@ def _evidence(default: str = "satisfied", **statuses: str) -> dict[str, Any]:
     for cid in CRITERION_IDS:
         status = statuses.get(cid, default)
         entry = {"status": status, "evidence_ref": f"doc/{cid}.md"}
-        if status == "gap_consapevole":
+        if status == "accepted_gap":
             entry["reason"] = f"known gap for {cid}, accepted"
         criteria[cid] = entry
     return {"criteria": criteria}
@@ -92,7 +92,7 @@ def test_each_status_is_accepted_and_reported(status):
 
 
 def test_statuses_are_the_four_literals():
-    assert STATUSES == ("satisfied", "partial", "gap_consapevole", "not_applicable")
+    assert STATUSES == ("satisfied", "partial", "accepted_gap", "not_applicable")
 
 
 def test_reason_and_evidence_ref_are_optional_except_for_a_gap():
@@ -106,8 +106,8 @@ def test_reason_and_evidence_ref_are_optional_except_for_a_gap():
 
 
 @pytest.mark.parametrize("reason", [None, "", "   \n"])
-def test_gap_consapevole_without_a_reason_is_refused(reason):
-    evidence = _evidence(s4="gap_consapevole")
+def test_accepted_gap_without_a_reason_is_refused(reason):
+    evidence = _evidence(s4="accepted_gap")
     if reason is None:
         del evidence["criteria"]["s4"]["reason"]
     else:
@@ -115,7 +115,7 @@ def test_gap_consapevole_without_a_reason_is_refused(reason):
     with pytest.raises(OISGEvidenceError) as exc:
         compute_oisg_score_from_evidence(evidence)
     assert "criteria.s4.reason" in str(exc.value)
-    assert "gap_consapevole" in str(exc.value)
+    assert "accepted_gap" in str(exc.value)
 
 
 def test_unknown_criterion_id_is_refused():
@@ -186,7 +186,7 @@ def test_dataclass_evidence_is_accepted_and_validated():
     with pytest.raises(OISGEvidenceError, match=r"criteria\.s4\.reason"):
         OISGEvidence(
             {
-                cid: CriterionEvidence("gap_consapevole" if cid == "s4" else "satisfied")
+                cid: CriterionEvidence("accepted_gap" if cid == "s4" else "satisfied")
                 for cid in CRITERION_IDS
             }
         )
@@ -204,7 +204,7 @@ def test_all_satisfied_scores_100():
 
 
 def test_partial_is_half_the_points_and_gap_is_none():
-    result = compute_oisg_score_from_evidence(_evidence(o1="partial", o2="gap_consapevole"))
+    result = compute_oisg_score_from_evidence(_evidence(o1="partial", o2="accepted_gap"))
     o1, o2 = result.pillars["open"].criteria[:2]
     assert (o1.points, o2.points) == (2.5, 0.0)
     assert result.pillars["open"].score == 17.5  # 5 + 5 + 5 + 2.5 + 0
@@ -228,8 +228,8 @@ def test_scores_round_half_up():
             g1="not_applicable",
             g2="partial",
             g3="partial",
-            g4="gap_consapevole",
-            g5="gap_consapevole",
+            g4="accepted_gap",
+            g5="accepted_gap",
         )
     )
     assert result.pillars["governed"].score == 6.3
@@ -249,11 +249,11 @@ def test_fixed_combination_of_statuses_has_a_deterministic_total():
     combination = {
         "o2": "partial",
         "o3": "not_applicable",
-        "o5": "gap_consapevole",
+        "o5": "accepted_gap",
         "i4": "not_applicable",
         "s1": "partial",
         "s2": "partial",
-        "s5": "gap_consapevole",
+        "s5": "accepted_gap",
         "g1": "not_applicable",
         "g2": "not_applicable",
         "g3": "not_applicable",
@@ -275,8 +275,8 @@ def test_fixed_combination_of_statuses_has_a_deterministic_total():
     [
         ({}, 100.0),
         ({f"{p}{n}": "partial" for p in "oisg" for n in (1, 2, 3)}, 70.0),
-        ({f"{p}{n}": "gap_consapevole" for p in "oisg" for n in (1, 2, 3)}, 40.0),
-        ({f"{p}{n}": "gap_consapevole" for p in "oisg" for n in (1, 2, 3, 4)}, 20.0),
+        ({f"{p}{n}": "accepted_gap" for p in "oisg" for n in (1, 2, 3)}, 40.0),
+        ({f"{p}{n}": "accepted_gap" for p in "oisg" for n in (1, 2, 3, 4)}, 20.0),
     ],
 )
 def test_level_comes_from_get_level(statuses, total):
@@ -290,7 +290,7 @@ def test_level_comes_from_get_level(statuses, total):
 
 def test_json_export_round_trips():
     result = compute_oisg_score_from_evidence(
-        _evidence(o5="partial", s4="gap_consapevole", g2="not_applicable")
+        _evidence(o5="partial", s4="accepted_gap", g2="not_applicable")
     )
     text = result.to_json()
     assert json.loads(text) == result.to_dict()
@@ -323,7 +323,7 @@ def test_json_export_has_a_stable_key_order():
 
 
 def test_markdown_export_lists_every_criterion_with_status_reason_and_evidence():
-    evidence = _evidence(s4="gap_consapevole", o5="partial", i3="not_applicable")
+    evidence = _evidence(s4="accepted_gap", o5="partial", i3="not_applicable")
     evidence["criteria"]["o5"]["reason"] = "vendor | training data not published"
     result = compute_oisg_score_from_evidence(evidence)
     md = result.to_markdown()
@@ -397,9 +397,9 @@ def _schema_errors(value: Any) -> list[str]:
 
 
 def _invalid_examples() -> list[dict]:
-    gap_without_reason = _evidence(s4="gap_consapevole")
+    gap_without_reason = _evidence(s4="accepted_gap")
     del gap_without_reason["criteria"]["s4"]["reason"]
-    gap_blank_reason = _evidence(s4="gap_consapevole")
+    gap_blank_reason = _evidence(s4="accepted_gap")
     gap_blank_reason["criteria"]["s4"]["reason"] = "  "
     unknown_id = _evidence()
     unknown_id["criteria"]["z1"] = {"status": "satisfied"}
@@ -426,7 +426,7 @@ def _invalid_examples() -> list[dict]:
     "evidence",
     [
         _evidence(),
-        _evidence(o5="partial", s4="gap_consapevole", g2="not_applicable"),
+        _evidence(o5="partial", s4="accepted_gap", g2="not_applicable"),
         {"schema_version": 1, **_evidence("partial")},
     ],
 )
@@ -443,6 +443,6 @@ def test_invalid_evidence_fails_the_schema_and_the_parser(evidence):
 
 
 def test_evidence_to_dict_passes_the_schema():
-    evidence = OISGEvidence.from_dict(_evidence(o1="gap_consapevole", o2="not_applicable"))
+    evidence = OISGEvidence.from_dict(_evidence(o1="accepted_gap", o2="not_applicable"))
     assert _schema_errors(evidence.to_dict()) == []
     assert list(evidence.to_dict()["criteria"]) == list(CRITERION_IDS)

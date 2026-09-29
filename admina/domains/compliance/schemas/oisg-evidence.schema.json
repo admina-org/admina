@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "OISG evidence",
-  "description": "Evidence for the 20 criteria of the OISG adequacy score (admina.domains.compliance.oisg.CRITERIA), read by admina.domains.compliance.oisg_evidence.compute_oisg_score_from_evidence. Every criterion has a status. Scoring: satisfied is worth 5 points, partial 2.5, gap_consapevole (a known gap, accepted with a reason) 0; a not_applicable criterion is left out. Each pillar scores 25 x its points / (5 x its applicable criteria), so it is rescaled to 25 over the criteria that apply; a pillar without applicable criteria has no score and the total is rescaled to 100 over the other pillars (with every criterion applicable, the total is the sum of the four pillar scores). Scores are rounded half up to one decimal; the level is get_level of the rounded total. Evidence where every criterion is not_applicable is refused.",
+  "description": "Evidence for the 20 criteria of the OISG adequacy score (admina.domains.compliance.oisg.CRITERIA), read by admina.domains.compliance.oisg_evidence.compute_oisg_score_from_evidence. Every criterion has a status. Scoring: satisfied is worth 5 points, partial 2.5, accepted_gap (a known gap, accepted with a reason) 0; a not_applicable criterion is left out. Each pillar scores 25 x its points / (5 x its applicable criteria), so it is rescaled to 25 over the criteria that apply; a pillar without applicable criteria has no score and the total is rescaled to 100 over the other pillars (with every criterion applicable, the total is the sum of the four pillar scores). Scores are rounded half up to one decimal; the level is get_level of the rounded total. Evidence where every criterion is not_applicable is refused.",
   "type": "object",
   "required": ["criteria"],
   "additionalProperties": false,
@@ -38,11 +38,11 @@
       "additionalProperties": false,
       "properties": {
         "status": {
-          "description": "satisfied, partial, gap_consapevole (a known gap, accepted with a reason) or not_applicable.",
-          "enum": ["satisfied", "partial", "gap_consapevole", "not_applicable"]
+          "description": "satisfied, partial, accepted_gap (a known gap, accepted with a reason) or not_applicable.",
+          "enum": ["satisfied", "partial", "accepted_gap", "not_applicable"]
         },
         "reason": {
-          "description": "Why the criterion has this status. Required, and not blank, for gap_consapevole.",
+          "description": "Why the criterion has this status. Required, and not blank, for accepted_gap.",
           "type": "string"
         },
         "evidence_ref": {
@@ -52,7 +52,7 @@
       },
       "if": {
         "required": ["status"],
-        "properties": {"status": {"const": "gap_consapevole"}}
+        "properties": {"status": {"const": "accepted_gap"}}
       },
       "then": {
         "required": ["reason"],
