@@ -218,7 +218,7 @@ def firewall_for(engine: str) -> Any:
         if not engines._rust_available:
             raise RuntimeError("the rust engine needs admina-core")
         return engines._RustFirewallBridge()
-    return engines._PythonFirewallBridge(extras=[], disabled=[])
+    return engines._PythonFirewallBridge(engines._FirewallSettings())
 
 
 def build_gateway(engine: str, client: httpx.AsyncClient) -> Gateway:
