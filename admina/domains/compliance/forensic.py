@@ -79,8 +79,10 @@ from admina.domains.compliance.forensic_integrity import (
     STORE_UNAVAILABLE,
     RecordEntry,
     compute_record_hash,
+    hex_digest_matches,
     record_signing_key,
     sign_record_hash,
+    stored_hex_digest,
     verify_entries,
 )
 from admina.plugins.base import BaseForensicStore
@@ -364,13 +366,14 @@ class ForensicBlackBox(BaseForensicStore):
     #   until an operator restores the forensic directory or moves it aside.
 
     def _read_state_sig(self) -> str | None:
-        """The HMAC sidecar of the chain state, or None."""
+        """The HMAC in the sidecar of the chain state (:func:`stored_hex_digest`),
+        or None when it is missing, cannot be read or holds anything else."""
         try:
             data = self._read_object(_CHAIN_STATE_SIG_KEY)
         except OSError as exc:
             logger.error("Cannot read the forensic chain-state signature: %s", exc)
             return None
-        return data.decode("utf-8", errors="replace").strip() if data is not None else None
+        return stored_hex_digest(data) if data is not None else None
 
     def _apply_state(self, state: dict[str, Any]) -> None:
         self.chain_head = state.get("chain_head", GENESIS)
@@ -588,11 +591,11 @@ class ForensicBlackBox(BaseForensicStore):
 
     def _state_sig_is_valid(self, payload: bytes, signature: str | None) -> bool:
         """True iff a signing key is set and *signature* matches *payload*
-        (constant-time)."""
+        (:func:`hex_digest_matches`)."""
         expected = self._sign_state_payload(payload)
         if expected is None or not signature:
             return False
-        return hmac.compare_digest(signature, expected)
+        return hex_digest_matches(signature, expected)
 
     # ── Writing ─────────────────────────────────────────────────
 
@@ -990,8 +993,8 @@ def verify_stored_chain(
             if state_key
             else None
         )
-        signature = sig.decode("utf-8", errors="replace").strip() if sig is not None else ""
-        if expected is not None and not hmac.compare_digest(signature, expected):
+        signature = stored_hex_digest(sig) if sig is not None else None
+        if expected is not None and not hex_digest_matches(signature, expected):
             problem = STATE_INVALID
         else:
             state = _state_of(payload)

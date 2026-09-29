@@ -155,3 +155,39 @@ def test_the_proxy_resumes_the_chain_after_a_restart(tmp_path, key, monkeypatch)
     assert _sequence_numbers(base) == list(range(1, 33))
     assert verify_directory(base, state_key=key)["valid"] is True
     assert len((base / STATE_SIG).read_text()) == 64
+
+
+@pytest.mark.parametrize(
+    ("change", "expected"),
+    [("chain-state-signature", "rebuilt"), ("last-record-signature", "invalid")],
+)
+def test_the_proxy_starts_with_a_signature_that_is_not_hex(
+    tmp_path, key, monkeypatch, change, expected
+):
+    """A chain-state signature or a record signature that is not 64
+    lowercase hex characters (here not ASCII, or not UTF-8) makes the chain
+    state unusable or the chain invalid; the proxy still starts and serves."""
+    pytest.importorskip("fastapi")
+    from _forensic_chain import rewrite
+    from _proxy_app import isolate
+
+    from admina.proxy import main as proxy_main
+
+    base = tmp_path / "forensic"
+    monkeypatch.setenv("ADMINA_FORENSIC_STATE_KEY", key)
+    monkeypatch.setattr(proxy_main.settings, "ADMINA_API_KEY", "")
+    monkeypatch.setattr(proxy_main.settings, "ALLOW_UNAUTHENTICATED", True)
+    isolate(monkeypatch, forensic_backend="filesystem", forensic_dir=str(base))
+    responses, chain = _serve_concurrently(1)
+    assert chain == "ok"
+
+    if change == "chain-state-signature":
+        (base / STATE_SIG).write_bytes(b"\xff" * 64)
+    else:
+        last = record_files(base)[-1]
+        record = load(last)
+        record["record_sig"] = "é" * 64
+        rewrite(last, record)
+    responses, chain = _serve_concurrently(2)
+    assert [r.status_code for r in responses] == [200, 200]
+    assert chain == expected

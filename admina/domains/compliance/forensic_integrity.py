@@ -50,14 +50,18 @@ record concerned:
   state's head;
 - ``checkpoint_mismatch``: the record at the checkpoint's sequence number
   has another ``record_hash``;
-- ``signature_invalid``: its ``record_sig`` is not the signature of its
-  ``record_hash`` under the key (or ``record_sig_alg`` is unknown);
+- ``signature_invalid``: its ``record_sig`` is not 64 lowercase hex
+  characters, or not the signature of its ``record_hash`` under the key (or
+  ``record_sig_alg`` is unknown);
 - ``unsigned``: it has no signature, and the key requires one (from the
   chain state's ``signed_from`` on).
 
-Without the key, signatures are not checked: records with one are counted
-as ``signed``, those without as ``unsigned``, and ``signatures_verified`` is
-false.
+Without the key, signatures are not checked, only their form: records with
+one are counted as ``signed``, those without as ``unsigned``, and
+``signatures_verified`` is false. Signatures, and the HMAC of the chain
+state, are compared in constant time as ASCII bytes, and only once they are
+64 lowercase hex characters (:func:`hex_digest_matches`,
+:func:`stored_hex_digest`).
 
 Reasons given by the stores for the chain state (see
 :mod:`admina.domains.compliance.forensic`): ``state_missing`` (records but
@@ -96,8 +100,10 @@ __all__ = [
     "ChainReport",
     "canonical_record",
     "compute_record_hash",
+    "hex_digest_matches",
     "record_signing_key",
     "sign_record_hash",
+    "stored_hex_digest",
     "verify_entries",
 ]
 
@@ -144,6 +150,28 @@ def sign_record_hash(signing_key: bytes, record_hash: str) -> str:
     """``record_sig``: HMAC-SHA256 of *record_hash* (its ASCII hex
     characters) under *signing_key*, 64 lowercase hex characters."""
     return hmac.new(signing_key, record_hash.encode("ascii"), hashlib.sha256).hexdigest()
+
+
+def hex_digest_matches(value: object, expected: str) -> bool:
+    """True when *value* is a string of 64 lowercase hex characters equal to
+    the hex digest *expected*, compared in constant time as ASCII bytes;
+    False for any other value."""
+    return (
+        isinstance(value, str)
+        and _HEX64.fullmatch(value) is not None
+        and hmac.compare_digest(value.encode("ascii"), expected.encode("ascii"))
+    )
+
+
+def stored_hex_digest(data: bytes) -> str | None:
+    """The hex digest stored in *data* (the HMAC sidecar of a chain state):
+    its 64 lowercase hex characters, with the white space around them left
+    out; None when *data* holds anything else."""
+    try:
+        text = data.decode("ascii").strip()
+    except UnicodeDecodeError:
+        return None
+    return text if _HEX64.fullmatch(text) is not None else None
 
 
 def canonical_record(record: dict[str, Any]) -> str:
@@ -238,9 +266,9 @@ def _signature_error(
     if sig is None and alg in (None, RECORD_UNSIGNED):
         required = signing_key is not None and signed_from is not None and seq >= signed_from
         return UNSIGNED if required else None
-    if alg != RECORD_SIG_ALG or not isinstance(sig, str):
+    if alg != RECORD_SIG_ALG or not isinstance(sig, str) or _HEX64.fullmatch(sig) is None:
         return SIGNATURE_INVALID
-    if signing_key is not None and not hmac.compare_digest(
+    if signing_key is not None and not hex_digest_matches(
         sig, sign_record_hash(signing_key, record["record_hash"])
     ):
         return SIGNATURE_INVALID

@@ -73,6 +73,17 @@ the engines in use on `/health`, an OISG score from external evidence, and
   uses it, writing nothing.
 - `GET /health` reports `forensic_chain`: `ok`, `rebuilt`, `invalid` (then
   `status` is `degraded`), or `null` without a stored chain.
+- A record signature is valid only as 64 lowercase hex characters: any
+  other `record_sig` is reported as `signature_invalid`, with or without the
+  key. The HMAC sidecar of the chain state (`_chain_state.json.sig`, white
+  space around it left out) is read as 64 lowercase hex ASCII characters;
+  any other content, text that is not ASCII or bytes that are not UTF-8
+  included, is an invalid chain-state signature (`state_invalid`; at
+  startup the state is then rebuilt from verified records, or the chain is
+  invalid). Signatures are compared in constant time as ASCII bytes
+  (`forensic_integrity.hex_digest_matches()` and `stored_hex_digest()`), in
+  the forensic store, `verify_directory()`, `verify_bucket()` and the
+  built-in `filesystem` forensic store plugin.
 - `POST /api/v1/audit` stamps each record: `source` is always
   `api_v1_audit` (a `source` sent by the caller is kept as `client_source`)
   and `submitted_by` is the credential the request was admitted with

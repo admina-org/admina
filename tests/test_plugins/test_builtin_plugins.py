@@ -436,6 +436,21 @@ def test_plugin_forensic_reconstructs_after_state_loss(tmp_path):
     assert '"sequence_number": 1' in original_rec1  # still the ORIGINAL record 1
 
 
+@pytest.mark.parametrize("data", ["é".encode() * 32, b"\xff" * 64], ids=["not-ascii", "not-utf-8"])
+def test_plugin_forensic_reconstructs_when_the_state_signature_is_not_hex(tmp_path, data):
+    from admina.plugins.builtin.forensic.filesystem import FilesystemForensicStore
+
+    key = "k" * 32
+    s = FilesystemForensicStore(base_dir=str(tmp_path), state_signing_key=key)
+    _run(s.append({"e": 1}))
+    _run(s.append({"e": 2}))
+    head, count = s._chain_head, s._record_count
+    (tmp_path / "_chain_state.json.sig").write_bytes(data)
+
+    s2 = FilesystemForensicStore(base_dir=str(tmp_path), state_signing_key=key)
+    assert (s2._record_count, s2._chain_head) == (count, head)
+
+
 def test_plugin_forensic_refuses_overwrite(tmp_path):
     from admina.plugins.builtin.forensic.filesystem import FilesystemForensicStore
 

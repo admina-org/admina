@@ -31,6 +31,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from admina.core.secretfile import secret_from_env
+from admina.domains.compliance.forensic_integrity import hex_digest_matches, stored_hex_digest
 from admina.plugins.base import BaseForensicStore
 
 logger = logging.getLogger("admina.plugins.forensic.filesystem")
@@ -208,11 +209,12 @@ class FilesystemForensicStore(BaseForensicStore):
         ).hexdigest()
 
     def _state_sig_is_valid(self, payload: bytes, signature: str | None) -> bool:
-        """True iff a signing key is set and *signature* matches *payload*."""
+        """True iff a signing key is set and *signature* matches *payload*
+        (compared as ASCII bytes, see ``hex_digest_matches``)."""
         expected = self._sign_state_payload(payload)
         if expected is None or not signature:
             return False
-        return hmac.compare_digest(signature, expected)
+        return hex_digest_matches(signature, expected)
 
     def _restore_chain_state(self) -> None:
         """Restore chain state from the state file on startup.
@@ -237,7 +239,7 @@ class FilesystemForensicStore(BaseForensicStore):
             return
         if self._state_signing_key:
             sig_file = self._base_dir / "_chain_state.json.sig"
-            signature = sig_file.read_text(encoding="utf-8").strip() if sig_file.exists() else None
+            signature = stored_hex_digest(sig_file.read_bytes()) if sig_file.exists() else None
             if not self._state_sig_is_valid(payload, signature):
                 logger.critical(
                     "Forensic chain state signature INVALID or MISSING at %s "

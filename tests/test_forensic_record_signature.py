@@ -34,6 +34,8 @@ import secrets
 
 import pytest
 from _forensic_chain import (
+    STATE,
+    STATE_SIG,
     load,
     record_file,
     record_files,
@@ -259,3 +261,100 @@ def test_a_key_file_outside_the_store_directory_is_used(tmp_path, monkeypatch):
     box = ForensicBlackBox(filesystem_dir=str(tmp_path / "forensic"))
     box.record({"event_id": "e1"})
     assert _verify(box)["signed"] == 1
+
+
+# ── Signatures that are not 64 lowercase hex characters ───────
+
+NOT_HEX_SIGNATURES = {
+    "not-ascii": "é" * 64,
+    "not-hex": "Z" * 64,
+    "upper-case": "A" * 64,
+    "short": "0" * 63,
+    "long": "0" * 65,
+    "empty": "",
+}
+
+
+@pytest.mark.parametrize("signature", NOT_HEX_SIGNATURES.values(), ids=NOT_HEX_SIGNATURES)
+@pytest.mark.parametrize("with_key", [True, False])
+def test_a_signature_that_is_not_lowercase_hex_is_invalid(tmp_path, signature, with_key):
+    key = _key()
+    _signed_store(tmp_path, key)
+    path = record_file(tmp_path / "forensic", 2)
+    record = load(path)
+    record["record_sig"] = signature
+    rewrite(path, record)
+    result = verify_directory(tmp_path / "forensic", state_key=key if with_key else None)
+    assert (result["valid"], result["reason"], result["sequence_number"]) == (
+        False,
+        "signature_invalid",
+        2,
+    )
+
+
+@pytest.mark.parametrize("seq", [2, 4])
+@pytest.mark.parametrize("state", ["kept", "deleted"])
+def test_the_store_starts_with_a_signature_that_is_not_hex(tmp_path, seq, state):
+    key = _key()
+    _signed_store(tmp_path, key)
+    base = tmp_path / "forensic"
+    path = record_file(base, seq)
+    record = load(path)
+    record["record_sig"] = "é" * 64
+    rewrite(path, record)
+    if state == "deleted":
+        (base / STATE).unlink()
+    box = ForensicBlackBox(filesystem_dir=str(base), state_signing_key=key)
+    if seq == 2 and state == "kept":
+        # Startup checks the head record only; verification finds record 2.
+        assert box.chain_status == "ok"
+    else:
+        assert box.chain_status == "invalid"
+        assert box.chain_error == {"reason": "signature_invalid", "sequence_number": seq}
+    result = _verify(box)
+    assert (result["valid"], result["reason"]) == (False, "signature_invalid")
+
+
+CHAIN_STATE_SIGNATURES = {
+    "not-ascii": "é".encode() * 32,
+    "not-utf-8": b"\xff" * 64,
+    "upper-case": b"A" * 64,
+    "short": b"0" * 63,
+}
+
+
+@pytest.mark.parametrize("name", list(CHAIN_STATE_SIGNATURES))
+def test_a_chain_state_signature_that_is_not_hex_is_invalid(tmp_path, name):
+    key = _key()
+    _signed_store(tmp_path, key)
+    base = tmp_path / "forensic"
+    (base / STATE_SIG).write_bytes(CHAIN_STATE_SIGNATURES[name])
+    result = verify_directory(base, state_key=key)
+    assert (result["valid"], result["reason"]) == (False, "state_invalid")
+    # At startup the chain state is not used; the records all verify with
+    # the key, so the state is rebuilt from them.
+    box = ForensicBlackBox(filesystem_dir=str(base), state_signing_key=key)
+    assert box.chain_status == "rebuilt"
+    assert box.record_count == 5  # 4 records and the chain_state_rebuilt one
+
+
+def test_a_chain_state_signature_with_white_space_around_it_verifies(tmp_path):
+    key = _key()
+    _signed_store(tmp_path, key)
+    base = tmp_path / "forensic"
+    digest = (base / STATE_SIG).read_bytes().strip()
+    (base / STATE_SIG).write_bytes(b" " + digest + b"\n")
+    assert verify_directory(base, state_key=key)["valid"] is True
+    assert ForensicBlackBox(filesystem_dir=str(base), state_signing_key=key).chain_status == "ok"
+
+
+def test_hex_digests_are_compared_as_ascii():
+    from admina.domains.compliance.forensic_integrity import hex_digest_matches, stored_hex_digest
+
+    digest = "ab" * 32
+    assert hex_digest_matches(digest, digest) is True
+    for value in ("é" * 64, "AB" * 32, digest[:-1], None, 42, b"ab" * 32):
+        assert hex_digest_matches(value, digest) is False
+    assert stored_hex_digest(f" {digest}\n".encode()) == digest
+    for data in ("é".encode() * 32, b"\xff" * 64, b"", ("AB" * 32).encode()):
+        assert stored_hex_digest(data) is None
