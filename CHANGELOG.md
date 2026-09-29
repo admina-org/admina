@@ -158,6 +158,15 @@ the engines in use on `/health`, an OISG score from external evidence, and
   "param": "model", "code": "model_not_allowed"}}`) before any governance
   check, forensic record or upstream call. An empty list (the default) lets
   every model through.
+- The dashboard container of `docker-compose.yml` (`dashboard/`) adds
+  `ADMINA_API_KEY` only to the dashboard's read-only routes
+  (`/api/dashboard/*`, its live feed, `/api/stats`); `/mcp` and the other
+  `/api/` routes are forwarded as received, with the caller's own key. With
+  `ADMINA_API_KEY` set the container does not start without
+  `ADMINA_DASHBOARD_PASSWORD` (HTTP Basic Auth), and it refuses a key with
+  characters other than letters, digits and `. _ ~ + / = -`. Without the
+  key it sends no key header, and the dashboard page signs in with the key.
+  Compose publishes the dashboard on `127.0.0.1:3000`.
 - PII redaction builds the masked text in one pass over the detected spans
   (`masking.replace_spans()`), in the regex and NER steps of `PIIRedactor`,
   the `presidio` engine and the spaCy + regex PII engine: its time grows

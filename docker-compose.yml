@@ -84,8 +84,12 @@ services:
       dockerfile: dashboard/Dockerfile
     container_name: admina-dashboard
     ports:
-      - "3000:80"
+      # Loopback only. To reach the dashboard from other hosts, publish it
+      # behind TLS; it asks for ADMINA_DASHBOARD_PASSWORD (HTTP Basic Auth).
+      - "127.0.0.1:3000:80"
     environment:
+      # With the API key the container needs a password: nginx adds the
+      # key only to the dashboard's read-only routes, behind Basic Auth.
       - ADMINA_API_KEY=${ADMINA_API_KEY:-}
       - ADMINA_DASHBOARD_PASSWORD=${ADMINA_DASHBOARD_PASSWORD:-}
     depends_on:

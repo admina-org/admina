@@ -361,6 +361,15 @@ API backend: `GET /api/dashboard/score`, `/feed`, `/compliance`, `/sovereignty`,
 
 In `admina dev` local mode the dashboard asks for the API key (`admina password show`)
 and keeps a short-lived browser session that only the read-only dashboard API accepts.
+
+In the Docker stack (`docker compose up`) the dashboard container is published on
+`127.0.0.1:3000` only. With `ADMINA_API_KEY` set it asks for HTTP Basic Auth
+(`ADMINA_DASHBOARD_USER`, default `admin`, and `ADMINA_DASHBOARD_PASSWORD`, which
+`./scripts/bootstrap-secrets.sh` and `make up` generate) and adds the key only to the
+dashboard's read-only routes (`/api/dashboard/*`, `/api/stats`); it does not start
+without a password. `/mcp` and the other `/api/` routes are forwarded as received, so
+callers send their own key. Without `ADMINA_API_KEY` the page signs in with the key
+as in local mode.
 Set `ADMINA_DASHBOARD_ENABLED=false` to stop serving the bundled dashboard.
 The session cookie is `Secure` over HTTPS. `DASHBOARD_COOKIE_SECURE=auto` marks it
 `Secure` on plain HTTP too, unless the dashboard is opened as `localhost` or a loopback
@@ -1719,7 +1728,7 @@ The full stack (`docker compose up`) runs 8 containers:
 | Port | Service | Description |
 |------|---------|-------------|
 | `8080` | Proxy | MCP proxy + REST API + OpenAPI docs |
-| `3000` | Dashboard | Real-time governance web UI |
+| `3000` | Dashboard | Real-time governance web UI (`127.0.0.1` only) |
 | `3001` | Grafana | Metrics dashboards |
 | `4317` | OTEL Collector | OTLP gRPC ingestion |
 
