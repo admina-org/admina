@@ -147,6 +147,11 @@ the engines in use on `/health`, an OISG score from external evidence, and
   "param": "model", "code": "model_not_allowed"}}`) before any governance
   check, forensic record or upstream call. An empty list (the default) lets
   every model through.
+- PII redaction builds the masked text in one pass over the detected spans
+  (`masking.replace_spans()`), in the regex and NER steps of `PIIRedactor`,
+  the `presidio` engine and the spaCy + regex PII engine: its time grows
+  linearly with the length of the text, however many spans it masks. The
+  masked text is unchanged.
 
 ### Added
 

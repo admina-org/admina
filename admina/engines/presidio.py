@@ -53,6 +53,7 @@ from admina.domains.data_sovereignty.masking import (
     normalize_mask_style,
     outside_placeholders,
     placeholder_spans,
+    replace_spans,
 )
 from admina.domains.data_sovereignty.pii import PII_CATEGORIES
 
@@ -294,9 +295,8 @@ class PresidioPIIEngine:
             }
             for (start, end, category, mask) in accepted
         ]
-        redacted = text
-        for start, end, _category, mask in sorted(accepted, key=lambda s: s[0], reverse=True):
-            redacted = redacted[:start] + mask + redacted[end:]
+        # The accepted spans are in order and do not overlap: one pass.
+        redacted = replace_spans(text, ((start, end, mask) for start, end, _c, mask in accepted))
 
         count = len(entities)
         if count:

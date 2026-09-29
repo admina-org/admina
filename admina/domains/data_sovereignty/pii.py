@@ -28,6 +28,7 @@ from admina.domains.data_sovereignty.masking import (
     normalize_mask_style,
     outside_placeholders,
     placeholder_spans,
+    replace_spans,
 )
 
 # spaCy is part of the [nlp] extra. When absent, PIIRedactor falls back
@@ -282,9 +283,9 @@ class PIIRedactor:
                     }
                 )
 
-            # Replace in reverse order to preserve byte offsets of earlier matches.
-            for match in sorted(matches, key=lambda m: m.start(), reverse=True):
-                redacted = redacted[: match.start()] + mask + redacted[match.end() :]
+            # The matches of a category do not overlap: one pass over them.
+            ordered = sorted(matches, key=lambda m: m.start())
+            redacted = replace_spans(redacted, ((m.start(), m.end(), mask) for m in ordered))
 
         # Step 2 — spaCy NER-based detection. An entity is masked outside the
         # placeholders already in the text (the masks of step 1 included),
@@ -292,8 +293,10 @@ class PIIRedactor:
         if self.nlp:
             doc = self.nlp(redacted)
             placeholders = placeholder_spans(redacted)
-            # Process entities in reverse order to maintain positions
+            # Entities last to first, as they are reported; the entities of a
+            # document do not overlap, and are masked in one pass.
             ner_entities = sorted(doc.ents, key=lambda e: e.start_char, reverse=True)
+            replacements: list[tuple[int, int, str]] = []
             for ent in ner_entities:
                 cat_config = active_categories.get(ent.label_, {})
                 if not cat_config.get("enabled", False):
@@ -310,7 +313,8 @@ class PIIRedactor:
                             "method": "spacy_ner",
                         }
                     )
-                    redacted = redacted[:start] + mask + redacted[end:]
+                    replacements.append((start, end, mask))
+            redacted = replace_spans(redacted, reversed(replacements))
 
         count = len(entities_found)
         if count > 0:

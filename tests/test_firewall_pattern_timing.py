@@ -31,7 +31,10 @@ of e-mail local-part characters. The sentences of the ``omissis`` mask style
 ``PIIEngineBridge`` and ``StreamRedactor``) finish within it on 64k-character
 runs of final punctuation, quotes, brackets, white space and line breaks,
 and their time grows linearly with a sentence, a masked term or a
-placeholder every few characters. Each time is the best of up to three runs.
+placeholder every few characters. The time of PII redaction (the regex and
+NER steps of the PII redactor, the presidio engine and the spaCy + regex
+engine) grows linearly with a masked span every few characters. Each time is
+the best of up to three runs.
 """
 
 from __future__ import annotations
@@ -465,6 +468,95 @@ def test_pii_engine_detect_email_on_long_runs(label):
         _run_inputs(SIZE)[label],
     )
     assert ms <= BUDGET_MS, f"{ms:.1f} ms"
+
+
+# ── Redaction with a mask every few characters ───────────────
+#
+# The redacted text is built in one pass over the detected spans: with a
+# span every few characters, the time of the regex and NER steps of the PII
+# redactor, of the presidio engine and of the spaCy + regex engine grows
+# linearly with the text.
+
+_WORD_RX = re.compile(r"\w+")
+
+
+class _EveryWordNlp:
+    """Stands for a spaCy pipeline: each word is a PERSON entity."""
+
+    def __call__(self, text: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            ents=[
+                SimpleNamespace(start_char=m.start(), end_char=m.end(), label_="PERSON")
+                for m in _WORD_RX.finditer(text)
+            ]
+        )
+
+
+@functools.cache
+def _every_word_redactor() -> pii.PIIRedactor:
+    redactor = pii.PIIRedactor()
+    redactor.nlp = _EveryWordNlp()
+    return redactor
+
+
+@functools.cache
+def _every_word_presidio():
+    from presidio_analyzer import RecognizerResult
+
+    from admina.engines.presidio import PresidioPIIEngine
+
+    engine = PresidioPIIEngine(nlp_models={"it": "blank"})
+
+    def analyze(text: str, language: str) -> list:
+        return [
+            RecognizerResult("PERSON", m.start(), m.end(), 0.85) for m in _WORD_RX.finditer(text)
+        ]
+
+    # This engine's own analyzer: the one it was built with is shared.
+    engine._analyzer = SimpleNamespace(analyze=analyze)
+    engine.languages = ["it"]
+    return engine
+
+
+def _every_word_engine(text: str) -> str:
+    matches = [
+        {"type": "PERSON", "start": m.start(), "end": m.end()} for m in _WORD_RX.finditer(text)
+    ]
+    return asyncio.run(_regex_only_engine().redact(text, matches))
+
+
+def _presidio_every_word(text: str) -> dict:
+    pytest.importorskip("presidio_analyzer")
+    return _every_word_presidio().redact(text)
+
+
+_DENSE_REDACTIONS = {
+    "redactor-emails": (lambda text: _regex_only_redactor().redact(text), "a@b.cd "),
+    "redactor-ipv4": (lambda text: _regex_only_redactor().redact(text), "1.2.3.4 "),
+    "redactor-ner": (lambda text: _every_word_redactor().redact(text), "Mario "),
+    "presidio": (_presidio_every_word, "Mario "),
+    "spacy-regex-engine": (_every_word_engine, "Mario "),
+}
+
+
+@pytest.mark.parametrize("name", list(_DENSE_REDACTIONS))
+def test_redaction_time_grows_linearly_with_dense_matches(name):
+    """time(64k) / time(16k) stays at most 8 with a span every few characters."""
+    function, unit = _DENSE_REDACTIONS[name]
+    timed = SimpleNamespace(search=function)
+    small = pt.search_ms(timed, _fill(unit, SIZE // 4))
+    large = pt.search_ms(timed, _fill(unit, SIZE))
+    ratio = large / max(small, _RATIO_FLOOR_MS)
+    assert ratio <= 8.0, f"{small:.3f} ms at 16k, {large:.3f} ms at 64k"
+
+
+def test_redaction_with_dense_matches_masks_every_span():
+    text = _fill("Mario ", 60)
+    assert _every_word_redactor().redact(text)["redacted_text"] == "[PERSON] " * 10
+    assert _every_word_engine(text) == "[PERSON] " * 10
+    assert _regex_only_redactor().redact("a@b.cd 1.2.3.4 x")["redacted_text"] == (
+        "[EMAIL] [IP_ADDR] x"
+    )
 
 
 # ── Sentences of the omissis mask style ──────────────────────

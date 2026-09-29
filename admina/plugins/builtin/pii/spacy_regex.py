@@ -26,6 +26,7 @@ import re
 from typing import Any
 
 from admina.domains.data_sovereignty.email_matching import EMAIL_RX, iter_email_matches
+from admina.domains.data_sovereignty.masking import replace_spans
 from admina.plugins.base import BasePIIEngine
 
 logger = logging.getLogger("admina.plugins.pii.spacy_regex")
@@ -156,11 +157,9 @@ class SpaCyRegexPIIEngine(BasePIIEngine):
         Returns:
             Redacted text.
         """
-        # Process in reverse order to preserve positions
-        for m in sorted(matches, key=lambda x: x["start"], reverse=True):
-            placeholder = f"[{m['type']}]"
-            text = text[: m["start"]] + placeholder + text[m["end"] :]
-        return text
+        # The matches of detect() do not overlap: one pass, in order.
+        ordered = sorted(matches, key=lambda x: x["start"])
+        return replace_spans(text, ((m["start"], m["end"], f"[{m['type']}]") for m in ordered))
 
     @staticmethod
     def _resolve_overlaps(matches: list[dict]) -> list[dict]:

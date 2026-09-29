@@ -132,6 +132,20 @@ def outside_placeholders(start: int, end: int, placeholders: list[Span], text: s
     return kept
 
 
+def replace_spans(text: str, spans: Iterable[tuple[int, int, str]]) -> str:
+    """*text* with each ``(start, end, mask)`` of *spans* (in order, not
+    overlapping) replaced by its mask, built in one pass: in time linear in
+    the length of *text* and of the masks."""
+    out: list[str] = []
+    position = 0
+    for start, end, mask in spans:
+        out.append(text[position:start])
+        out.append(mask)
+        position = end
+    out.append(text[position:])
+    return "".join(out)
+
+
 def normalize_mask_style(value: str | None) -> str:
     """*value* as a mask style: case and surrounding space are ignored, and
     None or an empty value is ``typed``.
