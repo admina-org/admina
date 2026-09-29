@@ -18,7 +18,8 @@ The record's ``source`` is always ``api_v1_audit`` (a ``source`` sent by the
 caller is kept as ``client_source``) and ``submitted_by`` names the
 credential the request was admitted with. ``ADMINA_AUDIT_APPEND_KEY`` (or
 ``_FILE``) is a key accepted by this route only; unset, the route needs the
-API key, as every other route.
+API key, as every other route. An ``event_type`` of the records the proxy
+writes itself is refused with 400.
 """
 
 from __future__ import annotations
@@ -184,3 +185,41 @@ def test_the_append_key_can_come_from_a_file(tmp_path, monkeypatch):
     monkeypatch.setenv("ADMINA_AUDIT_APPEND_KEY_FILE", str(path))
     monkeypatch.delenv("ADMINA_AUDIT_APPEND_KEY", raising=False)
     assert Settings(_env_file=None).ADMINA_AUDIT_APPEND_KEY == APPEND_KEY
+
+
+# ── Record types of the proxy ─────────────────────────────────
+
+PROXY_TYPES = [
+    "mcp_request",
+    "mcp_response",
+    "gateway_request",
+    "gateway_response",
+    "gateway_response_scan",
+    "policy_violation",
+    "chain_state_rebuilt",
+]
+
+
+def test_the_proxy_record_types_are_those_the_proxy_writes():
+    from admina.proxy.api.integration import PROXY_RECORD_TYPES
+
+    assert sorted(PROXY_RECORD_TYPES) == sorted(PROXY_TYPES)
+
+
+@pytest.mark.parametrize("event_type", [*PROXY_TYPES, " Gateway_Request ", "CHAIN_STATE_REBUILT"])
+@pytest.mark.parametrize("key", [API_KEY, APPEND_KEY])
+def test_a_record_type_of_the_proxy_is_refused(proxy, event_type, key):
+    base, send = proxy
+    response = _audit(send, key, {"event_type": event_type, "action": "x"})
+    assert response.status_code == 400
+    assert "event_type" in response.json()["detail"]
+    assert record_files(base) == []
+
+
+@pytest.mark.parametrize("event_type", ["tool_result", "model.call", "gateway_requests", 7])
+def test_other_record_types_are_recorded(proxy, event_type):
+    base, send = proxy
+    response = _audit(send, API_KEY, {"event_type": event_type, "action": "x"})
+    assert response.status_code == 200
+    assert response.json()["recorded"] is True
+    assert _last_event(base)["event_type"] == event_type

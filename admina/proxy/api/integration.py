@@ -22,7 +22,10 @@ The records of ``/api/v1/audit`` are stamped by the proxy: ``source`` is
 always ``api_v1_audit`` (a ``source`` sent by the caller is kept as
 ``client_source``) and ``submitted_by`` is the credential the request was
 admitted with: ``api_key``, ``append_key`` (``ADMINA_AUDIT_APPEND_KEY``),
-``user:<id>`` for an auth provider's user, or ``unauthenticated``.
+``user:<id>`` for an auth provider's user, or ``unauthenticated``. An
+``event_type`` of the records the proxy writes itself
+(:data:`PROXY_RECORD_TYPES`, compared without case and surrounding white
+space) is refused with ``400``.
 
 Each ``/api/v1/validate`` request that reaches the governance pipeline is
 passed to the ``on_decision`` callable of
@@ -50,6 +53,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from admina.core.exception_log import log_frames
+from admina.core.types import EventType
 from admina.domains.compliance.forensic import ForensicWriteError
 from admina.proxy.decisions import Decision, text_sha256
 
@@ -102,6 +106,25 @@ _CHECKPOINT = re.compile(r"([0-9]+):([0-9a-f]{64})")
 
 #: ``source`` of every record written through ``POST /api/v1/audit``.
 AUDIT_SOURCE = "api_v1_audit"
+
+#: The ``event_type`` of the forensic records the proxy writes itself;
+#: ``POST /api/v1/audit`` refuses them (``400``).
+PROXY_RECORD_TYPES = frozenset(
+    t.value
+    for t in (
+        EventType.MCP_REQUEST,
+        EventType.MCP_RESPONSE,
+        EventType.GATEWAY_REQUEST,
+        EventType.GATEWAY_RESPONSE,
+        EventType.GATEWAY_RESPONSE_SCAN,
+        EventType.POLICY_VIOLATION,
+        EventType.CHAIN_STATE_REBUILT,
+    )
+)
+
+
+def _proxy_record_type(event_type: Any) -> bool:
+    return isinstance(event_type, str) and event_type.strip().lower() in PROXY_RECORD_TYPES
 
 
 def _submitter(request: Request) -> str:
@@ -265,7 +288,8 @@ def create_integration_endpoints(
 
         Expects JSON body with ``event`` (dict) containing the
         action details to record. ``source`` and ``submitted_by`` are set
-        by the proxy (see the module docstring).
+        by the proxy, and an ``event_type`` of the proxy's own records is
+        refused with 400 (see the module docstring).
 
         Returns forensic record metadata (sequence number, hash);
         ``recorded: false`` when the record could not be written, or 503
@@ -276,6 +300,11 @@ def create_integration_endpoints(
             raise HTTPException(
                 status_code=400,
                 detail="'event' field is required and must be a dict",
+            )
+        if _proxy_record_type(event_data.get("event_type")):
+            raise HTTPException(
+                status_code=400,
+                detail="'event_type' names a record type the proxy writes itself",
             )
 
         fbox = get_forensic_box()

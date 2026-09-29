@@ -90,7 +90,12 @@ the engines in use on `/health`, an OISG score from external evidence, and
   (`api_key`, `append_key`, `user:<id>` for an auth provider's user, or
   `unauthenticated`). `ADMINA_AUDIT_APPEND_KEY` (or `_FILE`) is a key
   accepted by this route only, besides the API key; every other route
-  refuses it. Unset (the default), the route needs the API key.
+  refuses it. Unset (the default), the route needs the API key. An
+  `event_type` of the records the proxy writes itself (`mcp_request`,
+  `mcp_response`, `gateway_request`, `gateway_response`,
+  `gateway_response_scan`, `policy_violation`, `chain_state_rebuilt`;
+  `integration.PROXY_RECORD_TYPES`, compared without case and surrounding
+  white space) is refused with `400`, and nothing is recorded.
 - PII redaction reads text values and keeps the structure around them.
   `_deep_redact` (MCP tool parameters and results, `GovernedAgent`) passes
   the values of a dict to the PII engine and keeps its keys;

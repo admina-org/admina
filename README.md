@@ -879,7 +879,10 @@ introduced.
 **Audit records.** `POST /api/v1/audit` records the event it receives with
 `source: "api_v1_audit"` (a `source` in the request is kept as
 `client_source`) and `submitted_by`: the credential the request was admitted
-with (`api_key`, `append_key`, `user:<id>` or `unauthenticated`).
+with (`api_key`, `append_key`, `user:<id>` or `unauthenticated`). An
+`event_type` of the records the proxy writes itself (`mcp_request`,
+`mcp_response`, `gateway_request`, `gateway_response`, `gateway_response_scan`,
+`policy_violation`, `chain_state_rebuilt`) is refused with `400`.
 `ADMINA_AUDIT_APPEND_KEY` (or `ADMINA_AUDIT_APPEND_KEY_FILE`) is a key that
 this route accepts besides the API key and every other route refuses; unset
 (the default), the route needs the API key.
