@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 import uuid
@@ -39,9 +40,63 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from admina.core.event_bus import GovernanceEvent as BusGovernanceEvent
+from admina.core.event_bus import bus as governance_bus
 from admina.core.types import EventType
 from admina.domains.agent_security.egress import resolve_egress_mode
 from admina.domains.governance import redact_response_result, run_pipeline, safe_serialize
+
+logger = logging.getLogger(__name__)
+
+# Strong references to fire-and-forget tasks, so they are not
+# garbage-collected before completion (see asyncio.create_task docs).
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn(coro: Any) -> asyncio.Task:
+    """Schedule *coro* as a background task and keep a strong ref."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
+
+def _decision_metadata(gov_response: Any) -> dict:
+    """Event-bus metadata for a gateway decision.
+
+    The same fields the /mcp surface publishes, minus ``content``: the
+    (redacted) request body never leaves the request on the bus, so live
+    subscribers (dashboard feed, alerts, OTel) see the decision only.
+    """
+    meta = gov_response.to_dict()
+    meta.pop("content", None)
+    return meta
+
+
+async def _emit_decision_safe(event: BusGovernanceEvent) -> None:
+    """Emit *event* on the governance bus; a failing subscriber is logged
+    and never propagates to the request."""
+    try:
+        await governance_bus.emit(event)
+    except Exception:
+        logger.warning("Gateway governance event emission failed", exc_info=True)
+
+
+def _emit_decision(gov_response: Any, session_id: str) -> None:
+    """Publish one GOVERNANCE_DECISION event for a gateway request,
+    fire-and-forget: it adds no latency and cannot fail the request."""
+    _spawn(
+        _emit_decision_safe(
+            BusGovernanceEvent(
+                event_type=EventType.GOVERNANCE_DECISION,
+                session_id=session_id,
+                action=gov_response.action,
+                risk_level=gov_response.risk_level,
+                domain="gateway",
+                metadata=_decision_metadata(gov_response),
+            )
+        )
+    )
 
 
 def _extract_prompt_text(messages: list) -> str:
@@ -341,6 +396,7 @@ def create_gateway_endpoints(
 
         block_message = cfg.ADMINA_GATEWAY_BLOCK_MESSAGE
         if action in ("BLOCK", "CIRCUIT_BREAK"):
+            _emit_decision(pre.gov_response, session_id)
             if stream:
                 return StreamingResponse(
                     _aiter_list(_synthetic_stream(model, block_message)),
@@ -378,6 +434,7 @@ def create_gateway_endpoints(
             try:
                 upstream_resp = await stream_cm.__aenter__()
             except httpx.ConnectError:
+                _emit_decision(pre.gov_response, session_id)
                 raise HTTPException(status_code=502, detail="Gateway upstream unreachable")
 
             async def _proxy() -> AsyncIterator[str]:
@@ -387,11 +444,15 @@ def create_gateway_endpoints(
                     ):
                         yield sse
                 finally:
+                    # One decision event per stream, at completion (or
+                    # client disconnect), never per chunk.
+                    _emit_decision(pre.gov_response, session_id)
                     await stream_cm.__aexit__(None, None, None)
 
             return StreamingResponse(_proxy(), media_type="text/event-stream")
 
         # non-streaming passthrough
+        _emit_decision(pre.gov_response, session_id)
         try:
             resp = await state.http_client.post(url, json=forward_body, headers=headers)
         except httpx.ConnectError:

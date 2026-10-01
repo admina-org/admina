@@ -440,3 +440,179 @@ def test_chat_completions_records_forensic_on_block():
     asyncio.run(go())
     assert len(fbox.records) == 1
     assert fbox.records[0]["action"] == "BLOCK"
+
+
+# ── POST /v1/chat/completions — governance event bus ──────────
+
+
+@pytest.fixture
+def bus_events(monkeypatch):
+    """Swap the gateway's event bus for a fresh one and record every
+    GOVERNANCE_DECISION it publishes."""
+    from admina.core.event_bus import EventBus
+    from admina.core.types import EventType
+    from admina.proxy.api import gateway
+
+    fresh = EventBus()
+    events: list = []
+    fresh.subscribe(EventType.GOVERNANCE_DECISION, events.append)
+    monkeypatch.setattr(gateway, "governance_bus", fresh)
+    return events
+
+
+async def _drain_background() -> None:
+    """Let the gateway's fire-and-forget emissions complete."""
+    from admina.proxy.api import gateway
+
+    while gateway._background_tasks:
+        await asyncio.gather(*list(gateway._background_tasks))
+
+
+def _post(app, body):
+    async def go():
+        async with _client(app) as c:
+            resp = await c.post("/v1/chat/completions", json=body)
+        await _drain_background()
+        return resp
+
+    return asyncio.run(go())
+
+
+def _ok_completion(content: str = "ok") -> httpx.Response:
+    return _json_response(
+        {
+            "id": "cmpl-1",
+            "object": "chat.completion",
+            "model": "llama3",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+    )
+
+
+def test_chat_completions_emits_one_governance_decision(bus_events):
+    from admina.core.types import EventType
+
+    app = _app(_state(_FakeHTTP(_ok_completion())), _settings())
+    body = {"model": "llama3", "messages": [{"role": "user", "content": "hello"}]}
+
+    resp = _post(app, body)
+    assert resp.status_code == 200
+    assert len(bus_events) == 1
+    ev = bus_events[0]
+    assert ev.event_type == EventType.GOVERNANCE_DECISION
+    assert ev.action == "ALLOW"
+    assert ev.risk_level == "LOW"
+    assert ev.domain == "gateway"
+    assert ev.session_id == "default"
+    assert set(ev.metadata) == {
+        "request_id",
+        "action",
+        "risk_level",
+        "domain",
+        "latency_us",
+        "metadata",
+    }
+
+
+def test_chat_completions_block_emits_block_decision(bus_events):
+    app = _app(_state(_FakeHTTP(_json_response({}))), _settings())
+    body = {"model": "llama3", "messages": [{"role": "user", "content": "INJECT do bad"}]}
+
+    resp = _post(app, body)
+    assert resp.json()["choices"][0]["finish_reason"] == "content_filter"
+    assert len(bus_events) == 1
+    assert bus_events[0].action == "BLOCK"
+    assert bus_events[0].domain == "gateway"
+    assert bus_events[0].metadata["domain"] == "firewall"
+
+
+def test_chat_completions_stream_block_emits_block_decision(bus_events):
+    app = _app(_state(_FakeHTTP(_json_response({}))), _settings())
+    body = {
+        "model": "llama3",
+        "stream": True,
+        "messages": [{"role": "user", "content": "INJECT do bad"}],
+    }
+
+    _post(app, body)
+    assert [e.action for e in bus_events] == ["BLOCK"]
+
+
+def test_chat_completions_stream_emits_one_decision_at_completion(bus_events):
+    from admina.proxy.api.gateway import _sse_format
+
+    upstream_lines = [
+        _sse_format({"choices": [{"delta": {"content": "one "}, "finish_reason": None}]}),
+        _sse_format({"choices": [{"delta": {"content": "two "}, "finish_reason": None}]}),
+        _sse_format({"choices": [{"delta": {"content": "three"}, "finish_reason": None}]}),
+        _sse_format({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        "data: [DONE]\n\n",
+    ]
+    app = _app(_state(_FakeStreamHTTP(upstream_lines)), _settings())
+    body = {
+        "model": "llama3",
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+
+    resp = _post(app, body)
+    assert resp.text.rstrip().endswith("data: [DONE]")
+    assert len(bus_events) == 1
+    assert bus_events[0].action == "ALLOW"
+    assert bus_events[0].domain == "gateway"
+
+
+def test_chat_completions_stream_upstream_unreachable_still_emits(bus_events):
+    app = _app(_state(_FakeStreamHTTPUnreachable()), _settings())
+    body = {
+        "model": "llama3",
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+
+    resp = _post(app, body)
+    assert resp.status_code == 502
+    assert len(bus_events) == 1
+
+
+def test_chat_completions_event_carries_no_message_content(bus_events):
+    secret_prompt = "my mail is a@b.com and the codeword is PINEAPPLE-42"
+    app = _app(_state(_FakeHTTP(_ok_completion("reply SENTINEL-REPLY"))), _settings())
+    body = {"model": "llama3", "messages": [{"role": "user", "content": secret_prompt}]}
+
+    _post(app, body)
+    assert len(bus_events) == 1
+    ev = bus_events[0]
+    # PII was redacted from the forwarded prompt; the decision says so.
+    assert ev.metadata["domain"] == "pii"
+    assert "content" not in ev.metadata
+    dumped = json.dumps(
+        {"metadata": ev.metadata, "session_id": ev.session_id, "action": ev.action},
+        default=str,
+    )
+    for fragment in ("a@b.com", "[EMAIL]", "PINEAPPLE-42", "codeword", "SENTINEL-REPLY"):
+        assert fragment not in dumped
+
+
+def test_chat_completions_failing_subscriber_does_not_fail_request(monkeypatch):
+    from admina.core.event_bus import EventBus
+    from admina.core.types import EventType
+    from admina.proxy.api import gateway
+
+    def _boom(_event):
+        raise RuntimeError("subscriber down")
+
+    fresh = EventBus()
+    fresh.subscribe(EventType.GOVERNANCE_DECISION, _boom)
+    monkeypatch.setattr(gateway, "governance_bus", fresh)
+    app = _app(_state(_FakeHTTP(_ok_completion())), _settings())
+    body = {"model": "llama3", "messages": [{"role": "user", "content": "hello"}]}
+
+    resp = _post(app, body)
+    assert resp.status_code == 200

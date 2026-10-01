@@ -13,6 +13,18 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The OpenAI-compatible gateway now publishes governance decisions on
+  the event bus.** Every `/v1/chat/completions` request emits one
+  `GOVERNANCE_DECISION` event (`domain="gateway"`) for allow, block and
+  redaction outcomes; a streaming request emits it once, when the stream
+  completes. The dashboard live feed, bus-driven alerts and the OTel
+  exporter therefore see gateway traffic, as they already did for `/mcp`.
+  Emission is fire-and-forget (no added latency, a failing subscriber
+  cannot fail the request) and the event metadata carries the decision
+  only, never the request or response content.
+
 ## [0.12.1] — 2026-10-05
 
 Patch release: hardened dashboard session handling. Upgrading is
