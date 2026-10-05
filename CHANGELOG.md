@@ -15,23 +15,33 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [0.13.0] — 2026-10-05
 
-Everything in 0.13.0rc1, and: the governance outcome on the gateway's
-responses and the correlation of its calls (outcome headers,
-`ADMINA_GATEWAY_BLOCK_STATUS`, request ids, W3C trace context, request and
-completion records with hashes), the whole chat completion body in the
-gateway's scan, egress checks per surface, a forensic store that writes
+Minor release: an OpenAI-compatible gateway for embedded deployments
+(named upstream routes with keys, streams passed through unchanged,
+upstream errors propagated, request limits, the governance pipeline in
+worker threads, the governance outcome on every response, request ids and
+W3C trace context, request and completion records with hashes, the whole
+chat completion body in the scan), secrets from files, `ADMINA_CONFIG`,
+`ADMINA_ENABLED_SURFACES`, the `proxy-minimal` extra and an offline mode,
+linear-time pattern matching, signed release images with a `-slim`
+variant, egress checks per surface, a forensic store that writes
 atomically, signs each record, verifies from a checkpoint and exports JSON
 Lines, PII engines from other packages with value-only redaction and an
-`[OMISSIS]` mask style, an offline mode, per-surface request metrics and
-governance events without request text, stable firewall pattern ids with
-pattern packs and Italian baseline patterns, a schema check of admina.yaml,
-the engines in use on `/health`, an OISG score from external evidence,
-`admina redteam` on external corpora, a scan depth of 32 levels with a block
-past it on every surface, EU AI Act classification of Italian, French and
-German descriptions, a versioned ruleset document, and an upgrade guide
-(`docs/guides/upgrade-0.13.md`). Upgrading is recommended.
+`[OMISSIS]` mask style, per-surface request metrics and governance events
+without request text, stable firewall pattern ids with pattern packs and
+Italian baseline patterns, a schema check of admina.yaml, the engines in
+use on `/health`, an OISG score from external evidence, `admina redteam` on
+external corpora, a scan depth of 32 levels with a block past it on every
+surface, EU AI Act classification of Italian, French and German
+descriptions, a versioned ruleset document, and an upgrade guide
+(`docs/guides/upgrade-0.13.md`). Upgrading is recommended; read the guide
+first, since several defaults and failure modes change.
 
 ### Security
+
+- Firewall patterns match in linear time on long inputs. Categories, risk
+  levels and matching results are unchanged.
+- PII redaction and the spaCy + regex PII engine match e-mail addresses in
+  linear time on long inputs. Detected spans are unchanged.
 
 - Each forensic record is signed: `record_sig` is the HMAC-SHA256 (64
   lowercase hex characters) of the ASCII characters of its `record_hash`,
@@ -207,6 +217,212 @@ German descriptions, a versioned ruleset document, and an upgrade guide
   64,000 characters). Detected spans are unchanged.
 
 ### Added
+
+- Local make targets that mirror the CI jobs: `make ci-local`, `make ci-linux`
+  and `make ci-audit` (see `make help`). `make ci-linux` runs its container on
+  the CPUs in `CI_LINUX_CPUS` (default `0-3`, the size of a hosted runner).
+- Pattern timing probe, `admina.domains.agent_security.pattern_timing`:
+  `probe_pattern()` returns the worst search time of a regular expression on
+  generated 64k-character inputs (trigger words followed by runs of spaces,
+  tabs, commas or newlines, and repeated triggers); `measure_pattern()` also
+  names the slowest input. Use it to check
+  `agent_security.firewall.custom_patterns` before deploying them.
+- Named upstream routes for the OpenAI-compatible gateway.
+  `ADMINA_GATEWAY_UPSTREAMS` (`name=url[,name=url…]`) or `gateway.upstreams`
+  in `admina.yaml` (`<name>: {url, api_key_file}`) define the routes; the
+  environment variable, when set, replaces the YAML routes.
+  `gateway.default_upstream` names the route used when a request names none
+  (default: the first route). A request selects a route with the
+  `X-Admina-Upstream` header on `POST /v1/chat/completions` and
+  `GET /v1/models`; an unknown route name gets a 400 response in the OpenAI
+  error format (`invalid_request_error`, code `unknown_upstream`) before
+  any governance check or forensic record. Without named routes the gateway
+  has one route, `default`, to `ADMINA_GATEWAY_UPSTREAM`. The
+  `gateway_request` forensic record carries the route name (`upstream`).
+- Upstream API keys for the OpenAI-compatible gateway, sent as
+  `Authorization: Bearer <key>`: `ADMINA_GATEWAY_UPSTREAM_API_KEY` or
+  `ADMINA_GATEWAY_UPSTREAM_API_KEY_FILE` for every route, overridden per
+  route by `ADMINA_GATEWAY_UPSTREAM_<NAME>_API_KEY[_FILE]` (`<NAME>`: route
+  name in upper case) or by the route's `api_key_file`. Key files are read
+  once at startup, with one trailing newline removed. The proxy does not
+  start when a key file is missing, unreadable or empty, when a key is set
+  both directly and as a file, when a route is malformed or when
+  `default_upstream` names no route. Keys are masked in the settings
+  representation and are not logged. Without a key no `Authorization`
+  header is sent. The caller's `Authorization`, `X-API-Key`, `Cookie` and
+  `X-Admina-Upstream` headers are not forwarded upstream.
+- `admina.core.secretfile`: `read_secret_file()` and `resolve_secret()`
+  resolve a secret setting given directly or as `<SETTING>_FILE`.
+- Request body cap on every route: `ADMINA_MAX_REQUEST_BYTES` (default
+  10 MiB, `0` = no limit). A body over the cap gets 413 before it is
+  parsed: at once when its `Content-Length` is over the cap, otherwise as
+  soon as the bytes read go over it. The 413 body is in the OpenAI error
+  format on `/v1` (`invalid_request_error`, code `request_too_large`) and
+  `{"detail": ...}` elsewhere.
+- Upstream timeouts and connection pool of the OpenAI-compatible gateway,
+  which has an HTTP client of its own: `ADMINA_GATEWAY_TIMEOUT_CONNECT` and
+  `ADMINA_GATEWAY_TIMEOUT_READ` (default 30 seconds),
+  `ADMINA_GATEWAY_TIMEOUT_TOTAL` (the whole upstream exchange; default 0),
+  `ADMINA_GATEWAY_MAX_CONNECTIONS` (default 100) and
+  `ADMINA_GATEWAY_MAX_KEEPALIVE_CONNECTIONS` (default 20). A timeout of 0
+  means no limit. A timeout before the response starts gets 504 and any
+  other transport failure 502, with an OpenAI-style error body (type
+  `upstream_error`, code `upstream_timeout` or `upstream_error`) that
+  carries no exception text. A failure during a stream ends it with one
+  `data: {"error": ...}` event and no `data: [DONE]`.
+- `ADMINA_GATEWAY_STREAM_MODE`, or `gateway.stream_mode` in `admina.yaml`
+  (the environment variable wins): `passthrough` (default) or `governed`.
+- `ADMINA_GATEWAY_MAX_PROMPT_CHARS` (default `0`, no limit): the longest
+  message text of `POST /v1/chat/completions`, in characters (the text of
+  every message). A longer request gets 413 (`invalid_request_error`, code
+  `prompt_too_long`) before any governance check. `MAX_REQUEST_TOKENS`
+  applies to `/mcp` only.
+- `admina.core.jcs.canonicalize()`: the RFC 8785 (JSON Canonicalization
+  Scheme) serialisation of a JSON value, as UTF-8 bytes.
+- `ruleset_sha256()` (`admina.domains.agent_security.ruleset`): the SHA-256,
+  as 64 lowercase hex characters, of the RFC 8785 serialisation of
+  `{"admina_version", "engine", "builtin", "pattern_packs",
+  "custom_patterns", "disabled_categories", "heuristic_threshold_milli"}`,
+  an object of strings and integers only. `builtin` lists the active builtin
+  patterns (`{regex, category, risk_level}`, in order, without those of a
+  disabled category) for the `python` engine and is
+  `{"admina_core_version": ...}` for the `rust` engine; `custom_patterns`
+  are the entries as the firewall loads them; `disabled_categories` are
+  sorted without duplicates; `heuristic_threshold_milli` is the threshold ×
+  1000, rounded. The module imports neither FastAPI nor the proxy.
+  `agent_security.firewall.pattern_packs` (a list of names) is read from
+  `admina.yaml` and is part of the hash.
+- The proxy computes `ruleset_sha256()` at startup for the engine its
+  firewall runs on. Every `POST /v1/chat/completions` response carries it in
+  `X-Admina-Ruleset`, the 401 of authentication and the 413 of the request
+  size limit included; an unexpected failure before the response starts gets
+  a 500 in the OpenAI error format (code `internal_error`) with the header.
+  `GET /v1/admina/ruleset` (API key required) returns it with `engine`,
+  `admina_core_version`, `admina_version`, `accepted_prescan_rulesets`,
+  `prescan_tags`, `scan_roles` and `scan_policy_enabled`.
+- Scan scope of the gateway. `ADMINA_GATEWAY_SCAN_ROLES` (default
+  `system,user,assistant,tool`) sets the message roles the firewall scans;
+  messages with any other role are always scanned. With
+  `ADMINA_GATEWAY_SCAN_POLICY_ENABLED=true` (default `false`) a request can
+  narrow the scan with `X-Admina-Scan-Policy: v1; roles=user,tool;
+  prescanned=source,document; ruleset=<sha256>`: only the listed roles, and
+  without the text of `<tag …>…</tag>` blocks of the listed tags that are
+  also in `gateway.prescan_tags` of `admina.yaml`. The policy applies only
+  when `ruleset` is the proxy's own or one in `gateway.prescan_rulesets`;
+  otherwise, when the header is malformed, or while scan policies are off,
+  the request is scanned in full. Unclosed, nested or stray tags leave the
+  whole text to the scan. Any caller that holds the API key can send the
+  header, so scan policies are for deployments where every such caller is
+  trusted to scan what it declares (see the README). The `gateway_request`
+  forensic record carries the outcome as `prescan` (`accepted`, `status`,
+  `roles`, `tags`, `ruleset`), and `/metrics` counts
+  `admina_prescan_accepted_total`, `admina_prescan_ruleset_mismatch_total`,
+  `admina_prescan_malformed_total` and `admina_prescan_ignored_total`.
+- `ADMINA_GATEWAY_PIPELINE_WORKERS` (default `0`, the number of CPUs): the
+  worker threads that run the gateway's governance pipeline, the most
+  requests governed at once. `ADMINA_GATEWAY_PIPELINE_TIMEOUT` (default `0`,
+  no limit): seconds a request waits for its governance decision, the wait
+  for a thread included; past it the request is blocked in every governance
+  mode and recorded with `checks.pipeline` (`time_budget_exceeded`). The
+  same budget bounds the PII redaction of each completion and stream line.
+- `admina_event_loop_lag_seconds` on `/metrics`: a histogram of how late the
+  event loop wakes up a task that sleeps 0.1 s at a time.
+- `ADMINA_GATEWAY_SCAN_RESPONSE` (default `false`): the firewall also checks
+  the content of each choice of a chat completion. A non-streaming completion
+  flagged in `enforce` mode, or whose check runs over the time budget, is
+  replaced by the block message; a streamed completion is checked after it
+  has been sent and the outcome is only recorded. Each check writes a
+  forensic record of type `gateway_response_scan`, linked to the request
+  record by `request_event_id`.
+- `scripts/bench_gateway.py`: time to the first chunk added by the gateway
+  and event loop lag on a retrieval-augmented trace, per firewall engine.
+
+- `ADMINA_CONFIG`: the `admina.yaml` to load, for example
+  `/etc/admina/admina.yaml`. When it is set, `load_config()` reads exactly
+  that file, and so do the proxy, the firewall overrides, the egress policy
+  and the PII engine selection; a missing, unreadable or invalid file raises
+  `admina.core.config.ConfigFileError` and the proxy does not start. Unset
+  or empty, the search in the current directory and in the package
+  directory is unchanged. Explicit `yaml_path` and `search_paths` arguments
+  still take precedence.
+- `ADMINA_API_KEY_FILE` and `ADMINA_FORENSIC_STATE_KEY_FILE`: files holding
+  the API key and the forensic chain-state key, read once at startup with
+  one trailing newline removed. A missing, unreadable or empty file, or a
+  key set both directly and as a file, stops the proxy; the error names the
+  setting and the path, not the key. The built-in filesystem forensic store
+  plugin reads `ADMINA_FORENSIC_STATE_KEY_FILE` too.
+  `admina.core.secretfile.secret_from_env()` resolves such a pair of
+  environment variables.
+- `ADMINA_ENABLED_SURFACES`: the surfaces the proxy serves, comma-separated
+  (empty = all): `gateway` (`/v1/*`), `mcp` (`/mcp`, `/mcp/*`),
+  `integration` (`/api/v1/*`), `compliance` (`/api/compliance/*`) and
+  `dashboard` (`/api/dashboard/*` with the live feed and the browser
+  sign-in, `/api/stats`, `/api/events`, the dashboard shell). The routes of
+  a disabled surface are not mounted and answer 404 before authentication;
+  `/health` and `/metrics` are always served. An unknown surface name stops
+  the proxy. The startup banner lists the enabled surfaces.
+- `GET /health` reports `mode` (governance mode), `surfaces` (enabled
+  surfaces), `ruleset_sha256` (the active firewall ruleset, as in
+  `X-Admina-Ruleset`) and `forensic_writable` (filesystem backend: a probe
+  file created, written, fsynced and removed in `FORENSIC_BASE_DIR`; `s3`:
+  the result of the last record write, `null` before the first; `memory`:
+  `null`). The write check runs at most once every 10 s, on a thread of its
+  own; concurrent calls share it, and a check that takes longer than 1 s
+  reports `false`. The other fields, `engine` included, are unchanged.
+  Example (`ADMINA_ENABLED_SURFACES=gateway`, filesystem backend, Rust
+  engine):
+
+  ```json
+  {
+    "status": "healthy",
+    "service": "admina-proxy",
+    "version": "0.13.0",
+    "mode": "enforce",
+    "surfaces": ["gateway"],
+    "ruleset_sha256": "<64 hex>",
+    "forensic_writable": true,
+    "engine": {
+      "engine": "rust",
+      "rust_available": true,
+      "rust_version": "0.13.0",
+      "selection": "auto",
+      "active": "rust",
+      "pii_active": "python"
+    },
+    "timestamp": "2026-09-27T18:35:14.481520+00:00"
+  }
+  ```
+
+- `ForensicBlackBox.writable()`: the write check behind `forensic_writable`.
+- `proxy-minimal` extra: the proxy without Redis, ClickHouse, boto3, typer
+  and the numpy/scikit-learn stack of the Python loop breaker. It serves
+  the gateway surface (`ADMINA_ENABLED_SURFACES=gateway`, with `REDIS_URL`
+  and `CLICKHOUSE_HOST` empty); with the `mcp` or `integration` surface
+  enabled and neither `proxy` nor `rust` installed, the proxy does not
+  start and says which extra to install.
+- `ADMINA_LOG_FORMAT=json`: one JSON object per log line (`timestamp`,
+  `level`, `logger`, `message`, and `exception` when there is one),
+  uvicorn's own lines included. Other record attributes are not written.
+  `text` (default) keeps the current format.
+- `ADMINA_METRICS_REQUIRE_AUTH` and `ADMINA_API_DOCS_REQUIRE_AUTH` (default
+  `false`): put `/metrics`, and `/docs`, `/redoc`, `/openapi.json`, behind
+  the API key.
+- `DASHBOARD_COOKIE_SECURE=auto`: the dashboard session cookie is `Secure`
+  over HTTPS and, over plain HTTP, whenever the dashboard is addressed by a
+  host other than `localhost`, a `*.localhost` name or a loopback address.
+  `true` and `false` (default) keep their meaning; the usual boolean
+  spellings are accepted and any other value stops the proxy.
+
+- `slim` target of the proxy Dockerfile, published as
+  `ghcr.io/admina-org/admina-proxy:<version>-slim`: the `proxy` extra and
+  the Rust engine, without the `nlp` and `telemetry` extras and without the
+  dashboard files.
+- The release images are pushed with an SBOM and a max-mode provenance
+  attestation and signed with cosign, keyless through GitHub OIDC (the
+  `cosign verify` command is in `.github/workflows/release-docker.yml`).
+  They carry `org.opencontainers.image.*` labels, the proxy images also
+  `org.admina.engine=rust`, and the `LICENSE` and `NOTICE` files in
+  `/usr/share/licenses/admina/`.
 
 - Governance outcome headers on the responses of `POST /v1/chat/completions`
   once the request has its event id, streaming or not, upstream errors,
@@ -609,6 +825,86 @@ German descriptions, a versioned ruleset document, and an upgrade guide
 
 ### Changed
 
+- The gateway runs the governance pipeline (firewall, PII redaction, egress
+  analysis, governance guards) and the PII redaction of completions in
+  worker threads instead of the event loop. Governance guards run there
+  too: one guard instance can be called by several threads at once, each
+  call on the event loop of its thread, so a guard must be thread-safe and
+  must not keep loop-bound objects across calls (see `BaseGovernanceGuard`).
+- A gateway request whose governance pipeline raises is blocked in every
+  governance mode and recorded as `checks.pipeline` (`{"action": "ERROR",
+  "error": "<exception class>"}`; 0.12 answered 500). Guard contract errors
+  still follow `ADMINA_GUARD_FAIL_MODE`.
+- A completion whose PII redaction runs over the time budget or raises is
+  not sent: a non-streaming completion is replaced by the block message, and
+  a stream ends with one `data: {"error": ...}` event (code
+  `response_redaction_failed`) without `data: [DONE]`.
+- `GuardrailsAIGuard` runs one validation at a time.
+- `run_pipeline()` takes the texts the firewall scans (`scan_texts`); by
+  default it scans every string of the body, as before.
+- A malformed entry of `agent_security.firewall.custom_patterns` skips only
+  that entry.
+
+- **Streamed chat completions pass through unchanged.** With
+  `ADMINA_GATEWAY_STREAM_MODE=passthrough` (the default) and PII redaction
+  off, the gateway forwards the upstream SSE bytes as they are, every field
+  included, each event as soon as it is complete (0.12 re-emitted
+  `choices[0].delta.content` only). With PII redaction on, or in
+  `governed` mode, each chunk is parsed and re-serialised.
+- The governed stream path sends one chunk for each upstream chunk, with
+  all of its fields: ids, choice indexes, roles, tool calls, finish
+  reasons and the final `usage` chunk. With PII redaction on, every string
+  of a choice is redacted, per choice and per field across chunks:
+  `content` (a string or a list of parts), reasoning text, tool and
+  function call `arguments` and any other field. The values of `index`,
+  `id`, `type`, `role`, `name` and `finish_reason` and the chunk identity
+  are kept; `logprobs` and `token_ids` are sent as `null`; other strings
+  outside the choices and SSE comment lines are redacted as whole values;
+  values nested more than 16 levels deep are dropped. `data: [DONE]` is
+  sent when the upstream sends it.
+- Upstream errors (4xx, 5xx) reach the client of the gateway with their
+  status, body and content type, streaming or not. A non-streaming body is
+  forwarded unchanged unless PII redaction is on; with redaction on, a
+  successful response that is not a JSON object gets 502 (code
+  `upstream_invalid_response`), and in a JSON response every string is
+  redacted as a whole value under the same rules as the governed stream
+  (structural values and identity kept, `logprobs` and `token_ids` of each
+  choice `null`). `GET /v1/models` forwards the upstream body unchanged
+  when no allow-list is set.
+
+- `redis` is imported only for a `REDIS_URL` with a Redis scheme and
+  `clickhouse_connect` only for a non-empty `CLICKHOUSE_HOST`; `boto3`
+  stays limited to `FORENSIC_BACKEND=s3`. With `REDIS_URL` and
+  `CLICKHOUSE_HOST` empty there is no connection attempt. A backend that is
+  configured while its package is missing is logged as a warning and left
+  off.
+- The loop breaker is built only when the `mcp` or `integration` surface is
+  enabled, the coordination detector with its quarantine refresh loop only
+  with `mcp`, and the gateway's pipeline threads only with `gateway`.
+  Without the loop breaker `/api/stats` reports `"loop_breaker": {}` and the
+  startup banner `Loop Breaker: OFF`.
+- The container entrypoint accepts `ADMINA_API_KEY` or `ADMINA_API_KEY_FILE`
+  and prints only whether the key is set, not any of its characters.
+- Validation errors of the proxy settings name the setting without echoing
+  the configured values.
+
+- The release workflows run the CI workflow on the tagged commit and
+  publish only when it passes. A PEP 440 pre-release tag (for example
+  `v1.2.0rc1`) makes a GitHub pre-release, and the `latest` image tags
+  move only with a final release.
+- The proxy and dashboard images pin their base images by digest. The
+  proxy image build fails when the Rust engine does not build (previously
+  the image fell back to the Python engines).
+- `uv.lock` resolves `admina-core` from `./core-rust` (`[tool.uv.sources]`),
+  so `uv sync --extra rust` or `--all-extras` builds the Rust engine of the
+  same checkout and needs a Rust toolchain; a sync without the `rust` extra
+  does not. The published package metadata keeps the version range of the
+  `rust` extra. The CI python-tests job, `make ci-python` and
+  `make ci-linux` test against this engine.
+- `scripts/check-versions.py` compares versions in their PEP 440 spelling
+  (`1.2.0-rc.1` in the Cargo files matches `1.2.0rc1`) and also checks the
+  `admina-core` entry of `uv.lock`.
+
 - `ADMINA_ENGINE=rust` without `admina-core` installed is an error: the
   engine factories (`get_firewall()`, `get_loop_breaker()`,
   `get_pii_engine()`, the SDK included) and `engine_status()` raise
@@ -745,8 +1041,8 @@ German descriptions, a versioned ruleset document, and an upgrade guide
   `allowed_tags` (lower case, sorted without duplicates), and
   `pattern_packs` holds the content of each listed pack, in order:
   `{name, version, patterns: [{id, regex, category, risk_level}]}` (a
-  changed pack file changes the hash; the description is not hashed). Every
-  ruleset hash of 0.13.0rc1 changes; `ruleset_sha256()` raises
+  changed pack file changes the hash; the description is not hashed);
+  `ruleset_sha256()` raises
   `PatternPackError` when a listed pack cannot be loaded. New test vectors
   are in `tests/test_ruleset_sha256.py`.
 - `agent_security.firewall.pattern_packs`, `pattern_pack_dirs`,
@@ -817,6 +1113,10 @@ German descriptions, a versioned ruleset document, and an upgrade guide
 
 ### Fixed
 
+- The auth middleware runs the request handler once, after the first auth
+  provider that returns a user. An exception raised by the handler gets
+  the application's 500 response and is not retried with another provider.
+
 - **`GovernedModel.ask()` and `stream()` work with the SDK alone**
   (`pip install admina-framework`, without numpy and scikit-learn). They
   built the Python loop breaker on every call, loop detection on or off,
@@ -861,320 +1161,6 @@ German descriptions, a versioned ruleset document, and an upgrade guide
   written with it carry a `Co-Authored-By` trailer that names the
   assistant, and every change is reviewed and tested by the maintainers.
   See "AI-Assisted Contributions" in `CONTRIBUTING.md`.
-
-## [0.13.0rc1] — 2026-09-27
-
-Release candidate of 0.13.0: an OpenAI-compatible gateway for embedded
-deployments (named upstream routes with keys, streams passed through
-unchanged, upstream errors propagated, request limits, the governance
-pipeline in worker threads, the firewall ruleset hash on every response),
-secrets from files, `ADMINA_CONFIG`, `ADMINA_ENABLED_SURFACES` and the
-`proxy-minimal` extra, linear-time pattern matching, and signed release
-images with a `-slim` variant. Installers take it only when asked:
-`pip install --pre admina-framework` or `admina-framework==0.13.0rc1`.
-
-### Security
-
-- Firewall patterns match in linear time on long inputs. Categories, risk
-  levels and matching results are unchanged.
-- PII redaction and the spaCy + regex PII engine match e-mail addresses in
-  linear time on long inputs. Detected spans are unchanged.
-
-### Added
-
-- Local make targets that mirror the CI jobs: `make ci-local`, `make ci-linux`
-  and `make ci-audit` (see `make help`). `make ci-linux` runs its container on
-  the CPUs in `CI_LINUX_CPUS` (default `0-3`, the size of a hosted runner).
-- Pattern timing probe, `admina.domains.agent_security.pattern_timing`:
-  `probe_pattern()` returns the worst search time of a regular expression on
-  generated 64k-character inputs (trigger words followed by runs of spaces,
-  tabs, commas or newlines, and repeated triggers); `measure_pattern()` also
-  names the slowest input. Use it to check
-  `agent_security.firewall.custom_patterns` before deploying them.
-- Named upstream routes for the OpenAI-compatible gateway.
-  `ADMINA_GATEWAY_UPSTREAMS` (`name=url[,name=url…]`) or `gateway.upstreams`
-  in `admina.yaml` (`<name>: {url, api_key_file}`) define the routes; the
-  environment variable, when set, replaces the YAML routes.
-  `gateway.default_upstream` names the route used when a request names none
-  (default: the first route). A request selects a route with the
-  `X-Admina-Upstream` header on `POST /v1/chat/completions` and
-  `GET /v1/models`; an unknown route name gets a 400 response in the OpenAI
-  error format (`invalid_request_error`, code `unknown_upstream`) before
-  any governance check or forensic record. Without named routes the gateway
-  has one route, `default`, to `ADMINA_GATEWAY_UPSTREAM`. The
-  `gateway_request` forensic record carries the route name (`upstream`).
-- Upstream API keys for the OpenAI-compatible gateway, sent as
-  `Authorization: Bearer <key>`: `ADMINA_GATEWAY_UPSTREAM_API_KEY` or
-  `ADMINA_GATEWAY_UPSTREAM_API_KEY_FILE` for every route, overridden per
-  route by `ADMINA_GATEWAY_UPSTREAM_<NAME>_API_KEY[_FILE]` (`<NAME>`: route
-  name in upper case) or by the route's `api_key_file`. Key files are read
-  once at startup, with one trailing newline removed. The proxy does not
-  start when a key file is missing, unreadable or empty, when a key is set
-  both directly and as a file, when a route is malformed or when
-  `default_upstream` names no route. Keys are masked in the settings
-  representation and are not logged. Without a key no `Authorization`
-  header is sent. The caller's `Authorization`, `X-API-Key`, `Cookie` and
-  `X-Admina-Upstream` headers are not forwarded upstream.
-- `admina.core.secretfile`: `read_secret_file()` and `resolve_secret()`
-  resolve a secret setting given directly or as `<SETTING>_FILE`.
-- Request body cap on every route: `ADMINA_MAX_REQUEST_BYTES` (default
-  10 MiB, `0` = no limit). A body over the cap gets 413 before it is
-  parsed: at once when its `Content-Length` is over the cap, otherwise as
-  soon as the bytes read go over it. The 413 body is in the OpenAI error
-  format on `/v1` (`invalid_request_error`, code `request_too_large`) and
-  `{"detail": ...}` elsewhere.
-- Upstream timeouts and connection pool of the OpenAI-compatible gateway,
-  which has an HTTP client of its own: `ADMINA_GATEWAY_TIMEOUT_CONNECT` and
-  `ADMINA_GATEWAY_TIMEOUT_READ` (default 30 seconds),
-  `ADMINA_GATEWAY_TIMEOUT_TOTAL` (the whole upstream exchange; default 0),
-  `ADMINA_GATEWAY_MAX_CONNECTIONS` (default 100) and
-  `ADMINA_GATEWAY_MAX_KEEPALIVE_CONNECTIONS` (default 20). A timeout of 0
-  means no limit. A timeout before the response starts gets 504 and any
-  other transport failure 502, with an OpenAI-style error body (type
-  `upstream_error`, code `upstream_timeout` or `upstream_error`) that
-  carries no exception text. A failure during a stream ends it with one
-  `data: {"error": ...}` event and no `data: [DONE]`.
-- `ADMINA_GATEWAY_STREAM_MODE`, or `gateway.stream_mode` in `admina.yaml`
-  (the environment variable wins): `passthrough` (default) or `governed`.
-- `ADMINA_GATEWAY_MAX_PROMPT_CHARS` (default `0`, no limit): the longest
-  message text of `POST /v1/chat/completions`, in characters (the text of
-  every message). A longer request gets 413 (`invalid_request_error`, code
-  `prompt_too_long`) before any governance check. `MAX_REQUEST_TOKENS`
-  applies to `/mcp` only.
-- `admina.core.jcs.canonicalize()`: the RFC 8785 (JSON Canonicalization
-  Scheme) serialisation of a JSON value, as UTF-8 bytes.
-- `ruleset_sha256()` (`admina.domains.agent_security.ruleset`): the SHA-256,
-  as 64 lowercase hex characters, of the RFC 8785 serialisation of
-  `{"admina_version", "engine", "builtin", "pattern_packs",
-  "custom_patterns", "disabled_categories", "heuristic_threshold_milli"}`,
-  an object of strings and integers only. `builtin` lists the active builtin
-  patterns (`{regex, category, risk_level}`, in order, without those of a
-  disabled category) for the `python` engine and is
-  `{"admina_core_version": ...}` for the `rust` engine; `custom_patterns`
-  are the entries as the firewall loads them; `disabled_categories` are
-  sorted without duplicates; `heuristic_threshold_milli` is the threshold ×
-  1000, rounded. The module imports neither FastAPI nor the proxy.
-  `agent_security.firewall.pattern_packs` (a list of names) is read from
-  `admina.yaml` and is part of the hash.
-- The proxy computes `ruleset_sha256()` at startup for the engine its
-  firewall runs on. Every `POST /v1/chat/completions` response carries it in
-  `X-Admina-Ruleset`, the 401 of authentication and the 413 of the request
-  size limit included; an unexpected failure before the response starts gets
-  a 500 in the OpenAI error format (code `internal_error`) with the header.
-  `GET /v1/admina/ruleset` (API key required) returns it with `engine`,
-  `admina_core_version`, `admina_version`, `accepted_prescan_rulesets`,
-  `prescan_tags`, `scan_roles` and `scan_policy_enabled`.
-- Scan scope of the gateway. `ADMINA_GATEWAY_SCAN_ROLES` (default
-  `system,user,assistant,tool`) sets the message roles the firewall scans;
-  messages with any other role are always scanned. With
-  `ADMINA_GATEWAY_SCAN_POLICY_ENABLED=true` (default `false`) a request can
-  narrow the scan with `X-Admina-Scan-Policy: v1; roles=user,tool;
-  prescanned=source,document; ruleset=<sha256>`: only the listed roles, and
-  without the text of `<tag …>…</tag>` blocks of the listed tags that are
-  also in `gateway.prescan_tags` of `admina.yaml`. The policy applies only
-  when `ruleset` is the proxy's own or one in `gateway.prescan_rulesets`;
-  otherwise, when the header is malformed, or while scan policies are off,
-  the request is scanned in full. Unclosed, nested or stray tags leave the
-  whole text to the scan. Any caller that holds the API key can send the
-  header, so scan policies are for deployments where every such caller is
-  trusted to scan what it declares (see the README). The `gateway_request`
-  forensic record carries the outcome as `prescan` (`accepted`, `status`,
-  `roles`, `tags`, `ruleset`), and `/metrics` counts
-  `admina_prescan_accepted_total`, `admina_prescan_ruleset_mismatch_total`,
-  `admina_prescan_malformed_total` and `admina_prescan_ignored_total`.
-- `ADMINA_GATEWAY_PIPELINE_WORKERS` (default `0`, the number of CPUs): the
-  worker threads that run the gateway's governance pipeline, the most
-  requests governed at once. `ADMINA_GATEWAY_PIPELINE_TIMEOUT` (default `0`,
-  no limit): seconds a request waits for its governance decision, the wait
-  for a thread included; past it the request is blocked in every governance
-  mode and recorded with `checks.pipeline` (`time_budget_exceeded`). The
-  same budget bounds the PII redaction of each completion and stream line.
-- `admina_event_loop_lag_seconds` on `/metrics`: a histogram of how late the
-  event loop wakes up a task that sleeps 0.1 s at a time.
-- `ADMINA_GATEWAY_SCAN_RESPONSE` (default `false`): the firewall also checks
-  the content of each choice of a chat completion. A non-streaming completion
-  flagged in `enforce` mode, or whose check runs over the time budget, is
-  replaced by the block message; a streamed completion is checked after it
-  has been sent and the outcome is only recorded. Each check writes a
-  forensic record of type `gateway_response_scan`, linked to the request
-  record by `request_event_id`.
-- `scripts/bench_gateway.py`: time to the first chunk added by the gateway
-  and event loop lag on a retrieval-augmented trace, per firewall engine.
-
-- `ADMINA_CONFIG`: the `admina.yaml` to load, for example
-  `/etc/admina/admina.yaml`. When it is set, `load_config()` reads exactly
-  that file, and so do the proxy, the firewall overrides, the egress policy
-  and the PII engine selection; a missing, unreadable or invalid file raises
-  `admina.core.config.ConfigFileError` and the proxy does not start. Unset
-  or empty, the search in the current directory and in the package
-  directory is unchanged. Explicit `yaml_path` and `search_paths` arguments
-  still take precedence.
-- `ADMINA_API_KEY_FILE` and `ADMINA_FORENSIC_STATE_KEY_FILE`: files holding
-  the API key and the forensic chain-state key, read once at startup with
-  one trailing newline removed. A missing, unreadable or empty file, or a
-  key set both directly and as a file, stops the proxy; the error names the
-  setting and the path, not the key. The built-in filesystem forensic store
-  plugin reads `ADMINA_FORENSIC_STATE_KEY_FILE` too.
-  `admina.core.secretfile.secret_from_env()` resolves such a pair of
-  environment variables.
-- `ADMINA_ENABLED_SURFACES`: the surfaces the proxy serves, comma-separated
-  (empty = all): `gateway` (`/v1/*`), `mcp` (`/mcp`, `/mcp/*`),
-  `integration` (`/api/v1/*`), `compliance` (`/api/compliance/*`) and
-  `dashboard` (`/api/dashboard/*` with the live feed and the browser
-  sign-in, `/api/stats`, `/api/events`, the dashboard shell). The routes of
-  a disabled surface are not mounted and answer 404 before authentication;
-  `/health` and `/metrics` are always served. An unknown surface name stops
-  the proxy. The startup banner lists the enabled surfaces.
-- `GET /health` reports `mode` (governance mode), `surfaces` (enabled
-  surfaces), `ruleset_sha256` (the active firewall ruleset, as in
-  `X-Admina-Ruleset`) and `forensic_writable` (filesystem backend: a probe
-  file created, written, fsynced and removed in `FORENSIC_BASE_DIR`; `s3`:
-  the result of the last record write, `null` before the first; `memory`:
-  `null`). The write check runs at most once every 10 s, on a thread of its
-  own; concurrent calls share it, and a check that takes longer than 1 s
-  reports `false`. The other fields, `engine` included, are unchanged.
-  Example (`ADMINA_ENABLED_SURFACES=gateway`, filesystem backend, Rust
-  engine):
-
-  ```json
-  {
-    "status": "healthy",
-    "service": "admina-proxy",
-    "version": "0.13.0rc1",
-    "mode": "enforce",
-    "surfaces": ["gateway"],
-    "ruleset_sha256": "b9ddba234d55b532c2be464124c01a9d906e9fb7f492729807e0a7eadb39faa0",
-    "forensic_writable": true,
-    "engine": {
-      "engine": "rust",
-      "rust_available": true,
-      "rust_version": "0.13.0-rc.1",
-      "selection": "auto",
-      "active": "rust",
-      "pii_active": "python"
-    },
-    "timestamp": "2026-09-27T18:35:14.481520+00:00"
-  }
-  ```
-
-- `ForensicBlackBox.writable()`: the write check behind `forensic_writable`.
-- `proxy-minimal` extra: the proxy without Redis, ClickHouse, boto3, typer
-  and the numpy/scikit-learn stack of the Python loop breaker. It serves
-  the gateway surface (`ADMINA_ENABLED_SURFACES=gateway`, with `REDIS_URL`
-  and `CLICKHOUSE_HOST` empty); with the `mcp` or `integration` surface
-  enabled and neither `proxy` nor `rust` installed, the proxy does not
-  start and says which extra to install.
-- `ADMINA_LOG_FORMAT=json`: one JSON object per log line (`timestamp`,
-  `level`, `logger`, `message`, and `exception` when there is one),
-  uvicorn's own lines included. Other record attributes are not written.
-  `text` (default) keeps the current format.
-- `ADMINA_METRICS_REQUIRE_AUTH` and `ADMINA_API_DOCS_REQUIRE_AUTH` (default
-  `false`): put `/metrics`, and `/docs`, `/redoc`, `/openapi.json`, behind
-  the API key.
-- `DASHBOARD_COOKIE_SECURE=auto`: the dashboard session cookie is `Secure`
-  over HTTPS and, over plain HTTP, whenever the dashboard is addressed by a
-  host other than `localhost`, a `*.localhost` name or a loopback address.
-  `true` and `false` (default) keep their meaning; the usual boolean
-  spellings are accepted and any other value stops the proxy.
-
-- `slim` target of the proxy Dockerfile, published as
-  `ghcr.io/admina-org/admina-proxy:<version>-slim`: the `proxy` extra and
-  the Rust engine, without the `nlp` and `telemetry` extras and without the
-  dashboard files.
-- The release images are pushed with an SBOM and a max-mode provenance
-  attestation and signed with cosign, keyless through GitHub OIDC (the
-  `cosign verify` command is in `.github/workflows/release-docker.yml`).
-  They carry `org.opencontainers.image.*` labels, the proxy images also
-  `org.admina.engine=rust`, and the `LICENSE` and `NOTICE` files in
-  `/usr/share/licenses/admina/`.
-
-### Changed
-
-- The gateway runs the governance pipeline (firewall, PII redaction, egress
-  analysis, governance guards) and the PII redaction of completions in
-  worker threads instead of the event loop. Governance guards run there
-  too: one guard instance can be called by several threads at once, each
-  call on the event loop of its thread, so a guard must be thread-safe and
-  must not keep loop-bound objects across calls (see `BaseGovernanceGuard`).
-- A gateway request whose governance pipeline raises is blocked in every
-  governance mode and recorded as `checks.pipeline` (`{"action": "ERROR",
-  "error": "<exception class>"}`; 0.12 answered 500). Guard contract errors
-  still follow `ADMINA_GUARD_FAIL_MODE`.
-- A completion whose PII redaction runs over the time budget or raises is
-  not sent: a non-streaming completion is replaced by the block message, and
-  a stream ends with one `data: {"error": ...}` event (code
-  `response_redaction_failed`) without `data: [DONE]`.
-- `GuardrailsAIGuard` runs one validation at a time.
-- `run_pipeline()` takes the texts the firewall scans (`scan_texts`); by
-  default it scans every string of the body, as before.
-- A malformed entry of `agent_security.firewall.custom_patterns` skips only
-  that entry.
-
-- **Streamed chat completions pass through unchanged.** With
-  `ADMINA_GATEWAY_STREAM_MODE=passthrough` (the default) and PII redaction
-  off, the gateway forwards the upstream SSE bytes as they are, every field
-  included, each event as soon as it is complete (0.12 re-emitted
-  `choices[0].delta.content` only). With PII redaction on, or in
-  `governed` mode, each chunk is parsed and re-serialised.
-- The governed stream path sends one chunk for each upstream chunk, with
-  all of its fields: ids, choice indexes, roles, tool calls, finish
-  reasons and the final `usage` chunk. With PII redaction on, every string
-  of a choice is redacted, per choice and per field across chunks:
-  `content` (a string or a list of parts), reasoning text, tool and
-  function call `arguments` and any other field. The values of `index`,
-  `id`, `type`, `role`, `name` and `finish_reason` and the chunk identity
-  are kept; `logprobs` and `token_ids` are sent as `null`; other strings
-  outside the choices and SSE comment lines are redacted as whole values;
-  values nested more than 16 levels deep are dropped. `data: [DONE]` is
-  sent when the upstream sends it.
-- Upstream errors (4xx, 5xx) reach the client of the gateway with their
-  status, body and content type, streaming or not. A non-streaming body is
-  forwarded unchanged unless PII redaction is on; with redaction on, a
-  successful response that is not a JSON object gets 502 (code
-  `upstream_invalid_response`), and in a JSON response every string is
-  redacted as a whole value under the same rules as the governed stream
-  (structural values and identity kept, `logprobs` and `token_ids` of each
-  choice `null`). `GET /v1/models` forwards the upstream body unchanged
-  when no allow-list is set.
-
-- `redis` is imported only for a `REDIS_URL` with a Redis scheme and
-  `clickhouse_connect` only for a non-empty `CLICKHOUSE_HOST`; `boto3`
-  stays limited to `FORENSIC_BACKEND=s3`. With `REDIS_URL` and
-  `CLICKHOUSE_HOST` empty there is no connection attempt. A backend that is
-  configured while its package is missing is logged as a warning and left
-  off.
-- The loop breaker is built only when the `mcp` or `integration` surface is
-  enabled, the coordination detector with its quarantine refresh loop only
-  with `mcp`, and the gateway's pipeline threads only with `gateway`.
-  Without the loop breaker `/api/stats` reports `"loop_breaker": {}` and the
-  startup banner `Loop Breaker: OFF`.
-- The container entrypoint accepts `ADMINA_API_KEY` or `ADMINA_API_KEY_FILE`
-  and prints only whether the key is set, not any of its characters.
-- Validation errors of the proxy settings name the setting without echoing
-  the configured values.
-
-- The release workflows run the CI workflow on the tagged commit and
-  publish only when it passes. A PEP 440 pre-release tag (for example
-  `v0.13.0rc1`) makes a GitHub pre-release, and the `latest` image tags
-  move only with a final release.
-- The proxy and dashboard images pin their base images by digest. The
-  proxy image build fails when the Rust engine does not build (previously
-  the image fell back to the Python engines).
-- `uv.lock` resolves `admina-core` from `./core-rust` (`[tool.uv.sources]`),
-  so `uv sync --extra rust` or `--all-extras` builds the Rust engine of the
-  same checkout and needs a Rust toolchain; a sync without the `rust` extra
-  does not. The published package metadata keeps the version range of the
-  `rust` extra. The CI python-tests job, `make ci-python` and
-  `make ci-linux` test against this engine.
-- `scripts/check-versions.py` compares versions in their PEP 440 spelling
-  (`0.13.0-rc.1` in the Cargo files matches `0.13.0rc1`) and also checks the
-  `admina-core` entry of `uv.lock`.
-
-### Fixed
-
-- The auth middleware runs the request handler once, after the first auth
-  provider that returns a user. An exception raised by the handler gets
-  the application's 500 response and is not retried with another provider.
 
 ## [0.12.1] — 2026-10-05
 
@@ -2016,8 +2002,7 @@ environment in `docker-compose.benchmark.yml`.
 ---
 
 [Unreleased]: https://github.com/admina-org/admina/compare/v0.13.0...HEAD
-[0.13.0]: https://github.com/admina-org/admina/compare/v0.13.0rc1...v0.13.0
-[0.13.0rc1]: https://github.com/admina-org/admina/compare/v0.12.1...v0.13.0rc1
+[0.13.0]: https://github.com/admina-org/admina/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/admina-org/admina/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/admina-org/admina/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/admina-org/admina/compare/v0.11.0...v0.11.1

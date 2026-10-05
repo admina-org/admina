@@ -4,12 +4,12 @@
 guide lists those changes in the order to check them, each with what to do
 to keep the previous behaviour when there is a choice. Every change is
 described in full in the [CHANGELOG](https://github.com/admina-org/admina/blob/main/CHANGELOG.md),
-sections `[0.13.0]` and `[0.13.0rc1]`.
+section `[0.13.0]`.
 
 ## Before you upgrade
 
-1. Read the `### Security` sections of `[0.13.0rc1]` and `[0.13.0]`: most
-   of them change what is blocked, redacted or recorded.
+1. Read the `### Security` section of `[0.13.0]`: most
+   of its entries change what is blocked, redacted or recorded.
 2. Keep a copy of the forensic directory (or bucket) and of the chain-state
    key (`ADMINA_FORENSIC_STATE_KEY` or `_FILE`).
 3. Upgrade the packages together: `admina-framework` and, with the `[rust]`
