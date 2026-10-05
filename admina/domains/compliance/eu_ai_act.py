@@ -18,8 +18,11 @@ Automated risk classification, gap analysis, and compliance reporting.
 """
 
 import logging
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Any
+
+from admina.domains.compliance.ai_act_terms import RISK_ORDER, TERM_LANGUAGES, TERMS, find_terms
 
 logger = logging.getLogger("admina.eu_ai_act")
 
@@ -251,49 +254,104 @@ class EUAIActCompliance:
     Automated EU AI Act compliance checking and reporting.
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        term_languages: Iterable[str] | None = None,
+        extra_terms: Mapping[str, Mapping[str, Iterable[str]]] | None = None,
+    ):
+        """
+        Args:
+            term_languages: Languages of :data:`~admina.domains.compliance.
+                ai_act_terms.TERMS` matched besides the English keywords;
+                ``None`` = all of them.
+            extra_terms: Terms of the caller, ``{risk class: {area: [term,
+                ...]}}`` with the risk classes ``unacceptable``, ``high``
+                and ``limited``, matched as the terms of a language
+                (reported with ``lang`` ``"custom"``).
+
+        Raises:
+            ValueError: An unknown language or risk class.
+        """
         self.assessments: list[dict] = []
+        languages = list(TERM_LANGUAGES if term_languages is None else term_languages)
+        unknown = [lang for lang in languages if lang not in TERMS]
+        if unknown:
+            raise ValueError(
+                f"Unknown term language(s) {', '.join(unknown)}; "
+                f"available: {', '.join(TERM_LANGUAGES)}"
+            )
+        self._terms: dict[str, Mapping[str, Mapping[str, Iterable[str]]]] = {
+            lang: TERMS[lang] for lang in languages
+        }
+        if extra_terms:
+            bad = [risk for risk in extra_terms if risk not in RISK_ORDER]
+            if bad:
+                raise ValueError(
+                    f"Unknown risk class(es) {', '.join(bad)} in extra_terms; "
+                    f"expected {', '.join(RISK_ORDER)}"
+                )
+            self._terms["custom"] = extra_terms
 
     def classify_risk(self, system_description: str, use_case: str, data_types: list[str]) -> dict:
         """
         Classify an AI system's risk level under the EU AI Act.
+
+        The English keyword lists of this module are matched by substring;
+        the terms of the other languages and of the caller on whole words
+        (:mod:`admina.domains.compliance.ai_act_terms`). The result adds to
+        the class ``matched_terms`` (``lang``, ``risk``, ``area``, ``term``
+        of every match; English keywords have the area ``"keywords"``) and
+        ``matched_areas`` (the areas of the class returned). The class is a
+        proposal for a person to confirm.
         """
         description_lower = system_description.lower()
         use_case_lower = use_case.lower()
 
-        # Check for unacceptable risk indicators
-        if any(
-            kw in description_lower or kw in use_case_lower for kw in UNACCEPTABLE_RISK_KEYWORDS
-        ):
+        def keywords(risk: str, keyword_list: list[str]) -> list[dict[str, str]]:
+            return [
+                {"lang": "en", "risk": risk, "area": "keywords", "term": kw}
+                for kw in keyword_list
+                if kw in description_lower or kw in use_case_lower
+            ]
+
+        matches = (
+            keywords("unacceptable", UNACCEPTABLE_RISK_KEYWORDS)
+            + keywords("high", HIGH_RISK_KEYWORDS)
+            + keywords("limited", LIMITED_RISK_KEYWORDS)
+            + [m.as_dict() for m in find_terms(f"{system_description}\n{use_case}", self._terms)]
+        )
+
+        def result(category: str) -> dict:
+            areas = sorted({m["area"] for m in matches if m["risk"] == category})
             return {
-                "risk_category": "unacceptable",
-                **RISK_CATEGORIES["unacceptable"],
+                "risk_category": category,
+                **RISK_CATEGORIES[category],
+                "matched_terms": matches,
+                "matched_areas": areas,
             }
+
+        risks = {m["risk"] for m in matches}
+
+        # Check for unacceptable risk indicators
+        if "unacceptable" in risks:
+            return result("unacceptable")
 
         # Check for high-risk indicators
         high_risk_score = 0
-        if any(kw in description_lower or kw in use_case_lower for kw in HIGH_RISK_KEYWORDS):
+        if "high" in risks:
             high_risk_score += 2
         if any(dt in HIGH_RISK_SENSITIVE_DATA for dt in [d.lower() for d in data_types]):
             high_risk_score += 1
 
         if high_risk_score >= 2:
-            return {
-                "risk_category": "high",
-                **RISK_CATEGORIES["high"],
-            }
+            return result("high")
 
         # Check for limited risk
-        if any(kw in description_lower or kw in use_case_lower for kw in LIMITED_RISK_KEYWORDS):
-            return {
-                "risk_category": "limited",
-                **RISK_CATEGORIES["limited"],
-            }
+        if "limited" in risks:
+            return result("limited")
 
-        return {
-            "risk_category": "minimal",
-            **RISK_CATEGORIES["minimal"],
-        }
+        return result("minimal")
 
     def gap_analysis(self, risk_category: str, current_compliance: dict[str, list[bool]]) -> dict:
         """

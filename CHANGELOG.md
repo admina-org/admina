@@ -36,6 +36,16 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   canonical JSON text whose SHA-256 is `ruleset_sha256()`, to compare two
   rulesets member by member. `GET /v1/admina/ruleset` returns it as
   `ruleset_document`, with `ruleset_format`.
+- **EU AI Act risk classification in Italian, French and German.**
+  `classify_risk()` also matches the phrases of
+  `admina.domains.compliance.ai_act_terms` (Art. 5 practices, the areas of
+  Annex III, the cases of Art. 50) on whole words of a normalised text, so
+  a description of a CV-screening system in Italian is `high` rather than
+  `minimal`. `EUAIActCompliance(term_languages=[...], extra_terms={...})`
+  narrows the languages and adds terms of the caller. The result adds
+  `matched_terms` and `matched_areas`. The English keyword lists and their
+  results are unchanged; a non-English description can now get a higher
+  class than before.
 - `admina.sdk.active_ruleset_sha256()`: the ruleset hash of the firewall the
   SDK builds from `admina.yaml`, on the engine `get_firewall()` selects. For
   the same file and `ADMINA_ENGINE` it is the value the proxy reports in

@@ -875,6 +875,16 @@ Keyword-based scoring against three lists hard-coded in
 similarity. The lists were derived from the consolidated text of
 Regulation 2024/1689 as of January 2026.
 
+Descriptions in Italian, French and German are matched against the phrases
+of `admina/domains/compliance/ai_act_terms.py`, grouped by Art. 5 practice,
+Annex III area and Art. 50 case, on whole words of a normalised text
+(lower case, no accents). The English lists keep their substring matching.
+`EUAIActCompliance(term_languages=..., extra_terms=...)` narrows the
+languages and adds the caller's own terms; the result names the matched
+terms and areas (`matched_terms`, `matched_areas`). A description in
+another language, or one that uses none of the listed phrases, falls back
+to `minimal`.
+
 ### Known limitations and disclaimers
 
 - **This is a triage tool, not a legal determination.** Legal
