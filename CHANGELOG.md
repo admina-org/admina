@@ -1162,6 +1162,76 @@ first, since several defaults and failure modes change.
   assistant, and every change is reviewed and tested by the maintainers.
   See "AI-Assisted Contributions" in `CONTRIBUTING.md`.
 
+## [0.12.2] — 2026-10-05
+
+Patch release: the OpenAI-compatible gateway on the event bus, in the
+request counters and in ClickHouse; the dashboard feed, trend and
+suggestions without ClickHouse; the Presidio engine on text with many
+dots; and whole-word matching of the Rust `role_hijacking` pattern.
+Upgrading is recommended.
+
+### Security
+
+- The Presidio PII engine (`ADMINA_PII_ENGINE=presidio`) asks the analyzer
+  only for the entity types it maps to Admina categories. It ran every
+  Presidio recognizer and discarded the other results; the URL recognizer
+  took about 1.2 ms per character on text with many dots (80 seconds on
+  64,000 characters). Detected spans are unchanged.
+
+### Fixed
+
+- The `role_hijacking` pattern of the Rust firewall (`admina-core`) matches
+  whole words only. It matched "act as" inside longer words, so English
+  text such as "impact assessment" or "the AI Act asks" was reported as a
+  role-hijacking attempt. Attacks written with whole words ("act as",
+  "you are now", "pretend you are", "from now on you") are still matched.
+
+- **The OpenAI-compatible gateway now publishes governance decisions on
+  the event bus.** Every `/v1/chat/completions` request emits one
+  `GOVERNANCE_DECISION` event (`domain="gateway"`) for allow, block and
+  redaction outcomes; a streaming request emits it once, when the stream
+  completes. The dashboard live feed, bus-driven alerts and the OTel
+  exporter therefore see gateway traffic, as they already did for `/mcp`.
+  Emission is fire-and-forget (no added latency, a failing subscriber
+  cannot fail the request) and the event metadata carries the decision
+  only, never the request or response content.
+
+- **The OpenAI-compatible gateway now counts its requests and stores its
+  governance events.** `/v1/chat/completions` requests update the proxy
+  counters of `/api/stats` and `/metrics` (`requests_total`,
+  `requests_allowed`, `requests_blocked`, `requests_redacted` and the
+  average latency) as `/mcp` requests do, so the dashboard no longer shows
+  zero requests for gateway-only traffic. With ClickHouse configured, each
+  request also gets its `governance_events` row (event type
+  `gateway_request`, method `chat.completions`): the governance checks and
+  a truncated hash of the prompt, never the prompt. A failing analytics
+  store is logged and never fails the request.
+
+- **The dashboard feed, trend and suggestions work without ClickHouse.**
+  `/api/dashboard/feed`, `/api/dashboard/trend` and
+  `/api/dashboard/suggestions` used to answer empty, with
+  `"error": "ClickHouse not available"`, when no ClickHouse was configured.
+  They now read the recent records of the forensic black box: one event
+  per governed request (`/mcp` and the gateway), in the same columns as a
+  ClickHouse row, and the answer carries `"source": "forensic_recent"`.
+  `ForensicBlackBox.recent_records()` keeps the last 1,000 records written
+  by the running proxy, in memory, with every backend; records written
+  before a restart are not read back. The WebSocket live feed keeps
+  reading the event bus.
+
+- **The dashboard's EU AI Act help shows a command that works.** The
+  example `curl` for `POST /api/compliance/gap-analysis` targeted
+  `http://localhost:8080`; it now targets the origin that served the page,
+  and the help states that the route accepts `POST` only (a `GET`, such as
+  opening the address in the browser, answers `405 Method Not Allowed`).
+
+### Notes
+
+- As of 0.12.1, Admina is developed with AI assistance (Claude). Commits
+  written with it carry a `Co-Authored-By` trailer that names the
+  assistant, and every change is reviewed and tested by the maintainers.
+  See "AI-Assisted Contributions" in `CONTRIBUTING.md`.
+
 ## [0.12.1] — 2026-10-05
 
 Patch release: hardened dashboard session handling. Upgrading is
@@ -2002,7 +2072,8 @@ environment in `docker-compose.benchmark.yml`.
 ---
 
 [Unreleased]: https://github.com/admina-org/admina/compare/v0.13.0...HEAD
-[0.13.0]: https://github.com/admina-org/admina/compare/v0.12.1...v0.13.0
+[0.13.0]: https://github.com/admina-org/admina/compare/v0.12.2...v0.13.0
+[0.12.2]: https://github.com/admina-org/admina/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/admina-org/admina/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/admina-org/admina/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/admina-org/admina/compare/v0.11.0...v0.11.1
