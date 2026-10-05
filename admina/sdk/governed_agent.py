@@ -75,10 +75,11 @@ def _load_pii_redactor() -> Any:
     return get_pii_engine()
 
 
-def _redact_value(obj: Any, pii_redactor: Any) -> tuple[Any, int]:
-    """Collision-safe deep redaction returning (redacted, pii_count)."""
+def _redact_value(obj: Any, pii_redactor: Any, *, redact_keys: bool = False) -> tuple[Any, int]:
+    """Deep redaction of the string values of *obj* (and of its dict keys,
+    collision-safe, with *redact_keys*), returning (redacted, pii_count)."""
     acc: dict[str, Any] = {"redacted_text": "", "entities": [], "count": 0}
-    redacted = _deep_redact(obj, acc, pii_redactor)
+    redacted = _deep_redact(obj, acc, pii_redactor, redact_keys=redact_keys)
     return redacted, acc["count"]
 
 
@@ -96,6 +97,7 @@ class GovernedAgent:
         pii_redaction: Whether to run PII redaction.
         firewall_enabled: Whether to run the injection firewall.
         loop_detection: Whether to run loop detection.
+        redact_keys: Whether PII redaction also reads dict keys.
     """
 
     def __init__(
@@ -106,6 +108,7 @@ class GovernedAgent:
         firewall_enabled: bool = True,
         loop_detection: bool = True,
         retry: RetryPolicy | None = None,
+        redact_keys: bool = False,
     ) -> None:
         """Initialize GovernedAgent.
 
@@ -119,6 +122,10 @@ class GovernedAgent:
                 None (single attempt, unchanged behaviour). Retry is opt-in
                 because the upstream callable may be non-idempotent (e.g. a
                 tool call that triggers a payment or a git push).
+            redact_keys: If True, PII redaction reads the dict keys of the
+                params and of the result as well as their values (two keys
+                redacted to the same text get a numeric suffix). Default
+                False: keys are kept as they are.
         """
         self._upstream = upstream
         self._audit = audit
@@ -126,6 +133,7 @@ class GovernedAgent:
         self._firewall_enabled = firewall_enabled
         self._loop_detection = loop_detection
         self._retry = retry
+        self._redact_keys = redact_keys
         self._session_id = str(uuid.uuid4())
         self._firewall: Any = None
         self._loop_breaker: Any = None
@@ -219,7 +227,9 @@ class GovernedAgent:
         # 4. PII redaction on request (inbound)
         redacted_params = params
         if self._pii_redaction:
-            redacted_params, pii_count = _redact_value(params, self._get_pii_redactor())
+            redacted_params, pii_count = _redact_value(
+                params, self._get_pii_redactor(), redact_keys=self._redact_keys
+            )
             governance["pii_request"] = {
                 "redacted": pii_count > 0,
                 "count": pii_count,
@@ -234,7 +244,9 @@ class GovernedAgent:
         # 6. PII redaction on response (outbound)
         redacted_result = upstream_result
         if self._pii_redaction:
-            redacted_result, pii_count = _redact_value(upstream_result, self._get_pii_redactor())
+            redacted_result, pii_count = _redact_value(
+                upstream_result, self._get_pii_redactor(), redact_keys=self._redact_keys
+            )
             governance["pii_response"] = {
                 "redacted": pii_count > 0,
                 "count": pii_count,

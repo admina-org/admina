@@ -29,6 +29,7 @@ leaves the deployment perimeter.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
 
 from admina.plugins.base import BaseGovernanceGuard
@@ -98,6 +99,10 @@ class GuardrailsAIGuard(BaseGovernanceGuard):
     them against request/response content.  All inference is local by
     default — no data leaves the deployment perimeter.
 
+    One validation runs at a time: the gateway calls a guard from several
+    worker threads at once, and the shared ``guardrails.Guard`` and its
+    validators are used under a lock.
+
     Args:
         config: Guard configuration dict from ``admina.yaml``.
             Expected keys:
@@ -137,6 +142,7 @@ class GuardrailsAIGuard(BaseGovernanceGuard):
 
         self._guard: Any = Guard().use_many(*validators) if validators else Guard()
         self._validator_count = len(validators)
+        self._lock = threading.Lock()
 
     async def inspect_request(self, request: dict[str, Any]) -> dict[str, Any]:
         """Validate inbound request content with GuardrailsAI."""
@@ -151,7 +157,8 @@ class GuardrailsAIGuard(BaseGovernanceGuard):
         if not text:
             return {"action": "ALLOW", "risk_level": "LOW", "guard": "guardrailsai"}
 
-        outcome = self._guard.validate(text)
+        with self._lock:
+            outcome = self._guard.validate(text)
 
         if outcome.validation_passed:
             return {

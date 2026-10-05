@@ -1,0 +1,13 @@
+{
+  "description": "CRLF line endings, JSON with spaces after separators.",
+  "request": {
+    "stream": true
+  },
+  "chunks": [
+    "data: {\"id\": \"chatcmpl-0003\", \"object\": \"chat.completion.chunk\", \"created\": 1767225602, \"model\": \"example-model\", \"choices\": [{\"index\": 0, \"delta\": {\"role\": \"assistant\", \"content\": \"\"}, \"finish_reason\": null}]}\r\n\r\n",
+    "data: {\"id\": \"chatcmpl-0003\", \"object\": \"chat.completion.chunk\", \"created\": 1767225602, \"model\": \"example-model\", \"choices\": [{\"index\": 0, \"delta\": {\"content\": \"Line one.\"}, \"finish_reason\": null}]}\r\n\r\n",
+    "data: {\"id\": \"chatcmpl-0003\", \"object\": \"chat.completion.chunk\", \"created\": 1767225602, \"model\": \"example-model\", \"choices\": [{\"index\": 0, \"delta\": {\"content\": \" Line two.\"}, \"finish_reason\": null}]}\r\n\r\n",
+    "data: {\"id\": \"chatcmpl-0003\", \"object\": \"chat.completion.chunk\", \"created\": 1767225602, \"model\": \"example-model\", \"choices\": [{\"index\": 0, \"delta\": {}, \"finish_reason\": \"stop\"}]}\r\n\r\n",
+    "data: [DONE]\r\n\r\n"
+  ]
+}

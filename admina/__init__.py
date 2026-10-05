@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from admina.sdk import ComplianceKit, GovernedAgent, GovernedData, GovernedModel
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 __all__ = [
     "__version__",

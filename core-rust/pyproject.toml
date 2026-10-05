@@ -19,7 +19,7 @@ build-backend = "maturin"
 
 [project]
 name = "admina-core"
-version = "0.12.0"
+version = "0.13.0"
 description = "Admina governance engines — Rust core with Python bindings (firewall, PII, loop breaker, hash chain)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -59,3 +59,13 @@ Security = "https://github.com/admina-org/admina/blob/main/SECURITY.md"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
+
+[tool.uv]
+# Rebuild the extension when the Rust sources change; uv otherwise reuses a
+# cached build of this directory until pyproject.toml changes.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "Cargo.lock" },
+    { file = "src/**/*.rs" },
+]

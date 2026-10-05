@@ -254,6 +254,47 @@ class TestPluginList:
         assert "Total: 2 plugin(s)" in result.output
 
 
+class TestPluginsOfAdminaYaml:
+    """The ``plugins:`` modules of admina.yaml, read by ``admina plugin
+    list`` and ``admina doctor``: a value of the wrong type anywhere in the
+    file is reported with its key, not read as a file without plugins."""
+
+    WRONG_TYPE = 'plugins: [example_plugin]\ndashboard:\n  port: "3000"\n'
+
+    @pytest.fixture(autouse=True)
+    def _wrong_type_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("ADMINA_CONFIG", raising=False)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "admina.yaml").write_text(self.WRONG_TYPE, encoding="utf-8")
+
+    def test_the_modules_raise_the_schema_error(self) -> None:
+        from admina.cli.main import _config_extra_modules
+
+        with pytest.raises(ValueError, match=r"dashboard\.port: must be an integer") as caught:
+            _config_extra_modules()
+        # By name: other tests import the package again.
+        assert type(caught.value).__name__ == "ConfigSchemaError"
+
+    def test_list_fails_with_the_key(self, runner: CliRunner) -> None:
+        result = runner.invoke(app, ["plugin", "list"])
+        assert result.exit_code == 1, result.output
+        assert "Error: admina.yaml" in result.output
+        assert "dashboard.port: must be an integer" in result.output
+
+    def test_list_fails_on_a_named_file_that_cannot_be_read(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ADMINA_CONFIG", str(tmp_path / "missing.yaml"))
+        result = runner.invoke(app, ["plugin", "list"])
+        assert result.exit_code == 1, result.output
+        assert "Error: ADMINA_CONFIG: cannot read" in result.output
+
+    def test_doctor_reports_the_key(self, runner: CliRunner) -> None:
+        result = runner.invoke(app, ["doctor"], env={"ADMINA_API_KEY": "test-key-for-doctor"})
+        assert "Plugin discovery failed: admina.yaml" in result.output
+        assert "dashboard.port: must be an integer" in result.output
+
+
 # ── admina plugin create ──────────────────────────────────
 
 

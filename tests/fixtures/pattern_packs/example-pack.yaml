@@ -1,0 +1,13 @@
+# Firewall pattern pack used by the tests.
+name: example-pack
+version: "1.0.0"
+description: Example patterns for the tests.
+patterns:
+  - id: internal_notes
+    regex: "\\b(?:show|reveal|print)\\s++(?:me\\s++)?(?:the\\s++)?internal\\s++(?:ticket\\s++)?notes\\b"
+    category: example_disclosure
+    risk_level: high
+  - id: admin_role
+    regex: "\\byou\\s++are\\s++(?:now\\s++)?(?:the\\s++)?(?:system\\s++)?administrator\\b"
+    category: example_role
+    risk_level: medium

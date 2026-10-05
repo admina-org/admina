@@ -1,9 +1,19 @@
 # Admina configuration
 # Copy to admina.yaml and customize for your deployment.
+# Admina loads the file named by the ADMINA_CONFIG environment variable when
+# it is set (for example /etc/admina/admina.yaml; a missing or invalid file is
+# an error), otherwise admina.yaml in the current directory, then in the
+# directory of the admina package.
 # If admina.yaml is absent, Admina falls back to .env variables.
 #
 # schema_version is an incremental integer bumped only on breaking
 # config-format changes; unrelated to the Admina product version.
+#
+# The file is checked against its schema: a value of the wrong type stops
+# the proxy (the error names the key); an unknown key, such as a typo, is
+# logged as a warning at startup, or stops the proxy with
+# ADMINA_CONFIG_STRICT=true. An empty value (key: with nothing after it) is
+# not checked.
 
 schema_version: 1
 
@@ -42,7 +52,19 @@ domains:
       upstream: "http://localhost:9000"
     firewall:
       enabled: true
-      heuristic_threshold: 0.7
+      # The firewall is a heuristic signal, not a guarantee. custom_patterns,
+      # disabled_categories, disabled_patterns and pattern_packs (below)
+      # apply to the Python firewall only: set to a non-empty list, any of
+      # them makes ADMINA_ENGINE=auto run the Python firewall, and stops the
+      # proxy under ADMINA_ENGINE=rust.
+      # Deep-path (heuristic) score from which a text is flagged, 0.5 by
+      # default (Python engine). INJECTION_DEEP_PATH_ENABLED=false turns the
+      # deep path off.
+      heuristic_threshold: 0.5
+      # Tags of your own prompt format that the deep path must not count
+      # as context switches, e.g. the tag around retrieved documents:
+      #   <source>…</source>  →  allowed_tags: [source]
+      allowed_tags: []
       # Governance reaction mode (see ADMINA_GOVERNANCE_MODE):
       #   enforce  → block flagged requests (default, restrictive)
       #   observe  → never block, log "would have blocked" (use for the
@@ -54,12 +76,47 @@ domains:
       # they trigger too many FPs in your domain). Builtin set:
       # instruction_override, role_hijack, prompt_extraction, jailbreak,
       # delimiter_injection, data_exfiltration, tool_abuse, obfuscation,
-      # multilang_evasion. Stays empty = all categories active.
+      # multilang_evasion, it_instruction_override, it_role_hijack,
+      # it_prompt_extraction, it_model_addressing. Stays empty = all
+      # categories active.
       disabled_categories: []
+      # Single patterns you want SILENCED, by id (Python engine). Each
+      # match reports its pattern's id in `patterns[].id` of the firewall
+      # check (and of the forensic record): builtin ids such as
+      # instruction_override.en.1 or multilang_evasion.it.2, pack ids such
+      # as example-pack:internal_notes, and custom.1, custom.2, ... for
+      # custom_patterns in their order. An unknown id is logged as a warning.
+      disabled_patterns: []
+      # Pattern packs: named, versioned pattern files added to the builtin
+      # patterns (Python engine). Each name is looked up among the entry
+      # points of the admina.pattern_packs group of installed packages, then
+      # in pattern_pack_dirs as <name>.yaml, <name>.yml or <name>.json
+      # (ADMINA_PATTERN_PACK_DIRS, separated by ":", replaces the list). A
+      # pack that is missing, found twice or invalid stops the proxy at
+      # startup. A pack pattern over 50 ms on long inputs is logged as a
+      # warning, or stops the proxy with strict_pack_timing: true.
+      pattern_packs: []
+      pattern_pack_dirs: []
+      strict_pack_timing: false
+      # Example (examples/pattern_packs/example-pack.yaml):
+      # pattern_pack_dirs: [examples/pattern_packs]
+      # pattern_packs: [example-pack]
+      # where the pack file is:
+      #   name: example-pack
+      #   version: "1.0.0"
+      #   description: Requests to disclose internal ticket notes.
+      #   patterns:
+      #     - id: internal_notes      # known as example-pack:internal_notes
+      #       regex: "\\binternal\\s++(?:ticket\\s++)?notes\\b"
+      #       category: example_disclosure
+      #       risk_level: high        # low | medium | high | critical
       # Add domain-specific rules here without forking. Each entry:
       #   - regex: a Python regex (case-insensitive)
       #     category: short label shown in dashboards/logs
       #     risk_level: low | medium | high | critical
+      # Check each regex on long inputs before deploying it (worst search
+      # time in ms; keep it at or under 50):
+      #   python -c "from admina.domains.agent_security.pattern_timing import probe_pattern; print(probe_pattern(r'delete\s+user\s+\d+'))"
       custom_patterns: []
       # Example:
       # custom_patterns:
@@ -79,6 +136,11 @@ domains:
       # ARGUMENTS, not what the tool actually dials — a tool that assembles
       # a URL from parts is not covered (see MODEL_CARD.md).
       enabled: true
+      # Surfaces the stage runs on, among gateway (the text of the chat
+      # messages of /v1/chat/completions), mcp (/mcp tool calls),
+      # integration (/api/v1/validate) and sdk (GovernedModel). Unset: all
+      # of them; [] none. An unknown name stops the proxy at startup.
+      # surfaces: [mcp]
       # Reaction mode is a SEPARATE env var, ADMINA_EGRESS_MODE:
       #   observe  → record destinations, never block (DEFAULT)
       #   enforce  → default-deny: anything not in `allow` is blocked, and
@@ -167,17 +229,20 @@ domains:
   compliance:
     enabled: true
     forensic:
-      # backend: memory | filesystem | s3
+      # backend: memory | filesystem | s3 (older name: storage)
       # Default is "memory" — events hashed and chained but LOST on
       # restart. Set explicitly to opt in to persistence.
+      # FORENSIC_BACKEND and FORENSIC_BASE_DIR, when set, take precedence
+      # over backend and base_dir (a difference is logged at startup).
       backend: memory
       bucket: forensic-blackbox
       # Required when backend=filesystem (no default — explicit opt-in)
       # base_dir: /var/lib/admina/forensic
-      # Required when backend=s3 (boto3-based, works with any
-      # S3-compatible store: AWS S3, R2, B2, SeaweedFS, Garage, …)
-      # s3_endpoint: ""
-      # s3_object_lock: false           # WORM (COMPLIANCE mode, 7y default)
+      # backend=s3 (boto3-based, works with any S3-compatible store: AWS
+      # S3, R2, B2, SeaweedFS, Garage, …) is configured with the
+      # FORENSIC_S3_* variables (endpoint, bucket, keys, Object Lock).
+      # A record that cannot be written: ADMINA_FORENSIC_FAIL_MODE=open
+      # (default: logged, request served) or closed (503, not forwarded).
     eu_ai_act:
       enabled: true
     nis2:
@@ -195,15 +260,64 @@ domains:
       # NIS2, GDPR. No configuration — exposed at GET /api/compliance/matrix.
       enabled: true
     otel:
+      # The proxy exports its spans to OTEL_ENDPOINT, and OTEL_ENABLED=false
+      # turns the export off (environment variables; see .env.example).
       endpoint: "http://localhost:4317"
 
+# ── OpenAI-compatible gateway (/v1) ─────────────────────────
+# Named upstream routes. A request picks one with the X-Admina-Upstream
+# header (an unknown name is answered with 400); without the header the
+# gateway uses default_upstream, or else the first route. Route names:
+# lowercase letters, digits and "_". api_key_file names a file holding the
+# key sent to that route as "Authorization: Bearer <key>" (read once at
+# startup, one trailing newline removed).
+# No routes here and no ADMINA_GATEWAY_UPSTREAMS: one route, "default", to
+# ADMINA_GATEWAY_UPSTREAM. ADMINA_GATEWAY_UPSTREAMS, when set, replaces
+# `upstreams` (URLs and key files). Key of a route, first match wins:
+# ADMINA_GATEWAY_UPSTREAM_<NAME>_API_KEY[_FILE], api_key_file below,
+# ADMINA_GATEWAY_UPSTREAM_API_KEY[_FILE].
+gateway:
+  upstreams: {}
+  # upstreams:
+  #   main: { url: "http://main.upstream.test/v1", api_key_file: /run/secrets/upstream_api_key }
+  #   util: { url: "http://util.upstream.test/v1", api_key_file: /run/secrets/upstream_api_key }
+  # default_upstream: main
+  # How streamed chat completions are relayed. passthrough (default): the
+  # upstream bytes, unchanged, while PII redaction is off (otherwise as
+  # governed); governed: each chunk parsed and re-serialised.
+  # ADMINA_GATEWAY_STREAM_MODE, when set, takes precedence.
+  # stream_mode: passthrough
+  # Tags whose blocks (<tag ...>...</tag> in message text) a request may
+  # declare as already scanned in X-Admina-Scan-Policy; the firewall then
+  # skips them. Tag names are case-sensitive. None by default. The header is
+  # honoured only with ADMINA_GATEWAY_SCAN_POLICY_ENABLED=true.
+  # prescan_tags: [source, document]
+  # Rulesets (SHA-256, 64 hex characters) a request may declare in
+  # X-Admina-Scan-Policy besides the proxy's own, e.g. the ruleset of an SDK
+  # that scanned part of the prompt with other rules.
+  # prescan_rulesets: []
+
 dashboard:
+  # false: the proxy stops serving the bundled dashboard and its browser
+  # sign-in (same as ADMINA_DASHBOARD_ENABLED=false).
   enabled: true
   port: 3000
 
 forensic_store: filesystem
 auth_provider: apikey
+# spacy-regex (default) | presidio | an engine of the admina.pii_engines
+# entry-point group (its plugin_config block below is passed to it).
 pii_engine: spacy-regex
+# typed (default: [EMAIL], [PERSON], ...) | omissis ([OMISSIS] for every span,
+# the whole sentence for the sentence categories of an engine).
+pii_mask_style: typed
+# spaCy pipeline of each language of the presidio engine: an installed model or
+# blank (a tokenizer with no model and no NER). Unset: en_core_web_sm and
+# it_core_news_sm, those that are installed. ADMINA_PRESIDIO_NLP_MODELS wins.
+# presidio:
+#   nlp_models:
+#     it: blank
+#     en: en_core_web_sm
 alert_channels:
   - type: log
   - type: webhook

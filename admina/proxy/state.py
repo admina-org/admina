@@ -19,10 +19,9 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
-import redis.asyncio as aioredis
 
 from admina.domains.compliance.eu_ai_act import EUAIActCompliance
 from admina.domains.compliance.forensic import ForensicBlackBox
@@ -30,7 +29,18 @@ from admina.domains.compliance.gdpr import ProcessingActivitiesRegistry
 from admina.domains.compliance.nis2 import NIS2Compliance
 from admina.domains.compliance.otel import OTELGovernanceExporter
 from admina.plugins.registry import PluginRegistry
+from admina.proxy.forensic_probe import ForensicWriteProbe
+from admina.proxy.gateway_scan import GatewayScanConfig
+from admina.proxy.gateway_transport import DEFAULT_STREAM_MODE
+from admina.proxy.gateway_upstreams import GatewayUpstreams
+from admina.proxy.loop_lag import EventLoopLagMonitor
 from admina.proxy.multi_upstream import MultiUpstreamRouter
+from admina.proxy.pipeline_executor import PipelineExecutor
+from admina.proxy.request_metrics import RequestMetrics
+
+if TYPE_CHECKING:
+    # Only for the annotation: redis is imported when REDIS_URL is set.
+    import redis.asyncio as aioredis
 
 
 @dataclass
@@ -43,7 +53,11 @@ class ProxyState:
     # Connections
     redis: aioredis.Redis | None = None
     clickhouse: Any = None
+    # Upstream client of /mcp and the dashboard's health checks.
     http_client: httpx.AsyncClient | None = None
+    # Upstream client of the OpenAI-compatible gateway: its own timeouts
+    # and connection pool (admina.proxy.gateway_transport).
+    gateway_http_client: httpx.AsyncClient | None = None
 
     # Governance engines (set by engine_bridge)
     firewall: Any = None
@@ -55,10 +69,23 @@ class ProxyState:
 
     # Subsystems
     forensic_box: ForensicBlackBox | None = None
+    # forensic_writable of /health: the store's write check, at most once
+    # per interval, off the event loop (admina.proxy.forensic_probe).
+    forensic_probe: ForensicWriteProbe = field(default_factory=ForensicWriteProbe)
     compliance: EUAIActCompliance = field(default_factory=EUAIActCompliance)
     nis2: NIS2Compliance = field(default_factory=NIS2Compliance)
     gdpr: ProcessingActivitiesRegistry = field(default_factory=ProcessingActivitiesRegistry)
     router: MultiUpstreamRouter | None = None
+    # Upstream routes of the OpenAI-compatible gateway, resolved at startup.
+    gateway_upstreams: GatewayUpstreams | None = None
+    # How the gateway relays streamed responses, resolved at startup.
+    gateway_stream_mode: str = DEFAULT_STREAM_MODE
+    # Firewall ruleset and prescan settings of the gateway, resolved at startup.
+    gateway_scan: GatewayScanConfig | None = None
+    # Worker threads of the gateway's governance pipeline, built at startup.
+    pipeline_executor: PipelineExecutor | None = None
+    # admina_event_loop_lag_seconds, sampled from startup.
+    loop_lag: EventLoopLagMonitor = field(default_factory=EventLoopLagMonitor)
     registry: PluginRegistry = field(default_factory=PluginRegistry)
 
     # Plugins
@@ -83,20 +110,54 @@ class ProxyState:
             "coordination_confirmed": 0,
             "coordination_suspected": 0,
             "coordination_degraded": 0,
+            # X-Admina-Scan-Policy of gateway requests, per outcome.
+            "prescan_accepted": 0,
+            "prescan_ruleset_mismatch": 0,
+            "prescan_malformed": 0,
+            "prescan_ignored": 0,
             "avg_latency_ms": 0.0,
             "started_at": datetime.now(UTC).isoformat(),
         }
     )
     _metrics_lock: threading.Lock = field(default_factory=threading.Lock)
+    # Samples averaged in avg_latency_ms.
+    _latency_samples: int = 0
+    # admina_requests_total{surface,action} and the duration histograms of
+    # the governed surfaces (the enabled ones are set at startup).
+    request_metrics: RequestMetrics = field(default_factory=RequestMetrics)
 
     def inc_metric(self, key: str, value: int = 1) -> None:
         with self._metrics_lock:
             self.metrics[key] += value
 
-    def update_avg_latency(self, latency_ms: float) -> None:
+    def count_request(self, surface: str, action: str) -> None:
+        """Count one governed request of *surface* with *action* (see
+        :mod:`admina.proxy.request_metrics`), in the labelled counter and in
+        the counters of every surface: ``requests_total``,
+        ``requests_blocked`` (BLOCK, CIRCUIT_BREAK), ``requests_allowed``
+        (ALLOW, REDACT) and ``requests_redacted`` (REDACT)."""
+        self.request_metrics.count(surface, action)
         with self._metrics_lock:
-            n = self.metrics["requests_total"]
-            if n <= 1:
+            self.metrics["requests_total"] += 1
+            if action in ("BLOCK", "CIRCUIT_BREAK"):
+                self.metrics["requests_blocked"] += 1
+            elif action in ("ALLOW", "REDACT"):
+                self.metrics["requests_allowed"] += 1
+            if action == "REDACT":
+                self.metrics["requests_redacted"] += 1
+
+    def observe_request_duration(self, surface: str, seconds: float) -> None:
+        """Record the duration of one governed request of *surface*, in its
+        histogram and in ``avg_latency_ms``."""
+        self.request_metrics.observe_request(surface, seconds)
+        self.update_avg_latency(seconds * 1000)
+
+    def update_avg_latency(self, latency_ms: float) -> None:
+        """Add *latency_ms* to the running average ``avg_latency_ms``."""
+        with self._metrics_lock:
+            self._latency_samples += 1
+            n = self._latency_samples
+            if n == 1:
                 self.metrics["avg_latency_ms"] = latency_ms
             else:
                 self.metrics["avg_latency_ms"] = round(

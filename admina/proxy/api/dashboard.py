@@ -27,7 +27,7 @@ import io as _io
 import json
 import logging
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Query, Response, WebSocket, WebSocketDisconnect
@@ -74,6 +74,122 @@ def _suggestions_to_csv(payload: dict) -> Response:
             ]
         )
     return Response(content=buf.getvalue(), media_type="text/csv")
+
+
+# ── Recent forensic records (feed without ClickHouse) ─────────
+# Forensic record types that stand for one governed request, as a ClickHouse
+# governance_events row does. Other records (coordination verdicts, response
+# guard errors, events posted to /api/v1/audit) are not feed events.
+_FEED_EVENT_TYPES = frozenset({"mcp_request", "gateway_request", "validate_request"})
+# The source named in feed, trend and suggestions answers built from them.
+_FORENSIC_SOURCE = "forensic_recent"
+
+
+def _plain(value: Any) -> str:
+    """*value* as a plain string (the value of an enum member)."""
+    return str(getattr(value, "value", value) or "")
+
+
+def _parse_utc(value: Any) -> datetime | None:
+    """An ISO 8601 timestamp as an aware UTC datetime; None if unreadable."""
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _row_from_forensic(record: dict) -> dict[str, Any] | None:
+    """A forensic record of a governed request in the shape of a ClickHouse
+    ``governance_events`` row; None for any other record.
+
+    ``details`` is the JSON of the record's governance checks, plus
+    ``would_action`` when set, as in the ClickHouse row. Hashes are left
+    empty: the forensic record of a request does not carry them.
+    """
+    event = record.get("event")
+    if not isinstance(event, dict) or _plain(event.get("event_type")) not in _FEED_EVENT_TYPES:
+        return None
+    details = dict(event.get("checks") or {})
+    if event.get("would_action") is not None:
+        details["would_action"] = _plain(event["would_action"])
+    return {
+        "event_id": str(event.get("event_id", "")),
+        "timestamp": str(record.get("timestamp_utc", "")),
+        "event_type": _plain(event.get("event_type")),
+        "agent_id": str(event.get("agent_id", "")),
+        "session_id": str(event.get("session_id", "")),
+        "method": str(event.get("method", "")),
+        "tool_name": str(event.get("tool_name", "")),
+        "action": _plain(event.get("action")).lower(),
+        "risk_level": _plain(event.get("risk_level")).lower(),
+        "details": json.dumps(details, default=str),
+        "latency_ms": event.get("governance_latency_ms", 0.0),
+        "request_hash": "",
+        "response_hash": "",
+    }
+
+
+def _recent_rows(forensic_box: Any) -> list[dict[str, Any]] | None:
+    """The governed requests among the recent records of *forensic_box*,
+    newest first, as ``governance_events`` rows; None when the store keeps
+    no recent records."""
+    recent = getattr(forensic_box, "recent_records", None)
+    if not callable(recent):
+        return None
+    rows = []
+    for record in recent():
+        row = _row_from_forensic(record)
+        if row is not None:
+            rows.append(row)
+    return rows
+
+
+def _rows_between(
+    rows: list[dict[str, Any]], start: datetime, end: datetime | None = None
+) -> list[dict[str, Any]]:
+    """The *rows* with a timestamp at or after *start* (and before *end*)."""
+    out = []
+    for row in rows:
+        ts = _parse_utc(row["timestamp"])
+        if ts is not None and ts >= start and (end is None or ts < end):
+            out.append(row)
+    return out
+
+
+def _trend_from_rows(
+    rows: list[dict[str, Any]], window_hours: int, bucket_minutes: int
+) -> dict[str, Any]:
+    """The ``/trend`` answer computed from ``governance_events`` rows: counts
+    per action in buckets of *bucket_minutes* (aligned to the Unix epoch, as
+    ClickHouse's ``toStartOfInterval``) over the last *window_hours*."""
+    bucket_s = bucket_minutes * 60
+    start = datetime.now(UTC) - timedelta(hours=window_hours)
+    buckets: dict[datetime, dict[str, int]] = {}
+    for row in _rows_between(rows, start):
+        ts = _parse_utc(row["timestamp"])
+        if ts is None:
+            continue
+        key = datetime.fromtimestamp(int(ts.timestamp()) // bucket_s * bucket_s, UTC)
+        counts = buckets.setdefault(key, {})
+        counts[row["action"]] = counts.get(row["action"], 0) + 1
+    series = [
+        {
+            "ts": key.isoformat(),
+            "allow": counts.get("allow", 0),
+            "block": counts.get("block", 0),
+            "circuit_break": counts.get("circuit_break", 0),
+            "redact": counts.get("redact", 0),
+            "total": sum(counts.values()),
+        }
+        for key, counts in sorted(buckets.items())
+    ]
+    return {
+        "window_hours": window_hours,
+        "bucket_minutes": bucket_minutes,
+        "bucket_count": len(series),
+        "buckets": series,
+    }
 
 
 # ── Governance score ─────────────────────────────────────────
@@ -175,6 +291,7 @@ def create_dashboard_endpoints(
     get_governance_guards: Any = None,
     get_config: Any = None,
     verify_credential: Any = None,
+    session_expiry: Any = None,
 ) -> APIRouter:
     """Create a new APIRouter with dashboard endpoints.
 
@@ -200,6 +317,11 @@ def create_dashboard_endpoints(
             Shared credential verifier for header/query/cookie auth.  When
             provided, the WebSocket live endpoint routes all auth through it
             so the signed session cookie is validated correctly.
+        session_expiry: Callable(headers, query_params, cookies) -> int | None.
+            Expiry (Unix seconds) of the browser session that authorized a
+            live-feed connection, or None when the API key itself was
+            presented. A connection opened with a session is closed when the
+            session expires.
 
     Returns:
         The configured APIRouter.
@@ -231,34 +353,49 @@ def create_dashboard_endpoints(
                 return
 
         expected = getattr(settings, "ADMINA_API_KEY", "") or ""
+        # Unix time at which the connection must end: set when a browser
+        # session (not the API key) authorized it, so the feed never
+        # outlives the session.
+        deadline: int | None = None
         if expected:
-            ok = (
-                bool(
-                    verify_credential(
-                        headers=dict(websocket.headers),
-                        query_params=dict(websocket.query_params),
-                        cookies=dict(websocket.cookies),
-                    )
-                )
-                if verify_credential is not None
-                else False
-            )
+            credentials = {
+                "headers": dict(websocket.headers),
+                "query_params": dict(websocket.query_params),
+                "cookies": dict(websocket.cookies),
+            }
+            ok = bool(verify_credential(**credentials)) if verify_credential is not None else False
             if not ok:
                 await websocket.close(code=1008)
                 return
+            if session_expiry is not None:
+                deadline = session_expiry(**credentials)
         elif not getattr(settings, "ALLOW_UNAUTHENTICATED", False):
             await websocket.close(code=1008)
             return
 
         await websocket.accept()
         _ws_clients.add(websocket)
+        expired = False
         try:
             while True:
-                await websocket.receive_text()
+                if deadline is None:
+                    await websocket.receive_text()
+                    continue
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    expired = True
+                    break
+                try:
+                    await asyncio.wait_for(websocket.receive_text(), timeout=remaining)
+                except TimeoutError:
+                    expired = True
+                    break
         except WebSocketDisconnect:
             pass
         finally:
             _ws_clients.discard(websocket)
+        if expired:
+            await websocket.close(code=1008)
 
     @router.get("/score")
     async def dashboard_score() -> dict[str, Any]:
@@ -274,10 +411,19 @@ def create_dashboard_endpoints(
         limit: int = Query(50, ge=1, le=1000),
         offset: int = Query(0, ge=0),
     ) -> dict[str, Any]:
-        """Recent governance events (paginated)."""
+        """Recent governance events (paginated).
+
+        Without ClickHouse the events are the governed requests among the
+        recent records of the forensic store, newest first (records written
+        since the proxy started, up to the store's in-memory limit).
+        """
         ch = get_clickhouse()
         if not ch:
-            return {"events": [], "count": 0, "error": "ClickHouse not available"}
+            rows = _recent_rows(get_forensic_box())
+            if rows is None:
+                return {"events": [], "count": 0, "error": "ClickHouse not available"}
+            events = rows[offset : offset + limit]
+            return {"events": events, "count": len(events), "source": _FORENSIC_SOURCE}
         try:
             loop = asyncio.get_running_loop()
             db = get_settings().CLICKHOUSE_DB
@@ -562,7 +708,8 @@ def create_dashboard_endpoints(
             min_count: skip categories with fewer than this many events.
         """
         ch = get_clickhouse()
-        if not ch:
+        recent = None if ch else _recent_rows(get_forensic_box())
+        if not ch and recent is None:
             return {
                 "window_hours": window_hours,
                 "events_analyzed": 0,
@@ -574,19 +721,28 @@ def create_dashboard_endpoints(
             loop = asyncio.get_running_loop()
             db = get_settings().CLICKHOUSE_DB
             mode = getattr(get_settings(), "GOVERNANCE_MODE", "enforce")
+            now = datetime.now(UTC)
+            window = timedelta(hours=window_hours)
 
             # Aggregate by action + risk + a flat category extracted from details.
             # Schema: (event_id, timestamp, event_type, agent_id, session_id,
             #          method, tool_name, action, risk_level, details, ...)
-            query = (
-                f"SELECT action, risk_level, details "
-                f"FROM {db}.governance_events "
-                f"WHERE timestamp >= now() - INTERVAL {int(window_hours)} HOUR"
-            )
-            async with _ch_lock:
-                result = await loop.run_in_executor(None, lambda: ch.query(query))
+            if ch:
+                query = (
+                    f"SELECT action, risk_level, details "
+                    f"FROM {db}.governance_events "
+                    f"WHERE timestamp >= now() - INTERVAL {int(window_hours)} HOUR"
+                )
+                async with _ch_lock:
+                    result = await loop.run_in_executor(None, lambda: ch.query(query))
+                window_rows = list(result.result_rows)
+            else:
+                window_rows = [
+                    (r["action"], r["risk_level"], r["details"])
+                    for r in _rows_between(recent, now - window)
+                ]
 
-            total = len(result.result_rows)
+            total = len(window_rows)
             if total == 0:
                 return {
                     "window_hours": window_hours,
@@ -609,7 +765,7 @@ def create_dashboard_endpoints(
             cat_total: dict[str, int] = {}
             cat_blocked: dict[str, int] = {}
             cat_would_blocked: dict[str, int] = {}
-            for row in result.result_rows:
+            for row in window_rows:
                 action, _risk, details_raw = row[0], row[1], row[2]
                 # Action is stored lowercase in ClickHouse — normalise once.
                 action_upper = (action or "").upper()
@@ -745,19 +901,27 @@ def create_dashboard_endpoints(
             # immediately-preceding equal window. If a category's blocked
             # rate has surged ≥2x with absolute count ≥ min_count, flag it.
             try:
-                prev_query = (
-                    f"SELECT details FROM {db}.governance_events "
-                    f"WHERE timestamp >= now() - INTERVAL {int(window_hours * 2)} HOUR "
-                    f"  AND timestamp <  now() - INTERVAL {int(window_hours)} HOUR "
-                    f"  AND lower(action) IN ('block','circuit_break')"
-                )
-                async with _ch_lock:
-                    prev_res = await loop.run_in_executor(
-                        None,
-                        lambda: ch.query(prev_query),
+                if ch:
+                    prev_query = (
+                        f"SELECT details FROM {db}.governance_events "
+                        f"WHERE timestamp >= now() - INTERVAL {int(window_hours * 2)} HOUR "
+                        f"  AND timestamp <  now() - INTERVAL {int(window_hours)} HOUR "
+                        f"  AND lower(action) IN ('block','circuit_break')"
                     )
+                    async with _ch_lock:
+                        prev_res = await loop.run_in_executor(
+                            None,
+                            lambda: ch.query(prev_query),
+                        )
+                    prev_rows = list(prev_res.result_rows)
+                else:
+                    prev_rows = [
+                        (r["details"],)
+                        for r in _rows_between(recent, now - 2 * window, now - window)
+                        if r["action"] in ("block", "circuit_break")
+                    ]
                 prev_blocked: dict[str, int] = {}
-                for (det_raw,) in prev_res.result_rows:
+                for (det_raw,) in prev_rows:
                     try:
                         d = json.loads(det_raw) if det_raw else {}
                     except (TypeError, ValueError):
@@ -827,6 +991,8 @@ def create_dashboard_endpoints(
                 "would_blocked_by_category": cat_would_blocked,
                 "suggestions": suggestions,
             }
+            if not ch:
+                payload["source"] = _FORENSIC_SOURCE
             if format == "csv":
                 return _suggestions_to_csv(payload)
             return payload
@@ -857,11 +1023,17 @@ def create_dashboard_endpoints(
         """
         ch = get_clickhouse()
         if not ch:
+            recent = _recent_rows(get_forensic_box())
+            if recent is None:
+                return {
+                    "window_hours": window_hours,
+                    "bucket_minutes": bucket_minutes,
+                    "buckets": [],
+                    "error": "ClickHouse not available",
+                }
             return {
-                "window_hours": window_hours,
-                "bucket_minutes": bucket_minutes,
-                "buckets": [],
-                "error": "ClickHouse not available",
+                **_trend_from_rows(recent, window_hours, bucket_minutes),
+                "source": _FORENSIC_SOURCE,
             }
         try:
             loop = asyncio.get_running_loop()

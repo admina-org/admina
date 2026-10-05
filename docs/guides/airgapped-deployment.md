@@ -96,6 +96,19 @@ uv pip install ./en_core_web_sm-3.7.1-py3-none-any.whl
 Without the `[nlp]` extra, the PII scanner falls back to regex-only
 mode (still detects email/phone/SSN/CC/IBAN/IP/EU national IDs).
 
+The PII engines never download a model: a model that is not installed is
+an error at startup. The `presidio` engine checks e-mail domains against
+the public suffix list bundled with `tldextract` and makes no network
+access. Its spaCy pipelines are set per language with
+`ADMINA_PRESIDIO_NLP_MODELS` (for example `it:blank,en:en_core_web_sm`,
+where `blank` is a tokenizer that needs no model).
+
+Set `ADMINA_OFFLINE=true` on the air-gapped host: `HF_HUB_OFFLINE`,
+`TRANSFORMERS_OFFLINE` and `HF_DATASETS_OFFLINE` are then set to `1` before
+a PII engine is built (engines of other packages that use Hugging Face
+libraries load only local files), and the proxy starts without the
+OpenTelemetry exporter.
+
 ### 4. Rust toolchain (optional, only if you build `admina-core` from source)
 
 The pre-built `admina-core` wheels on PyPI are sufficient for most
@@ -155,9 +168,18 @@ domains:
   compliance:
     forensic:
       backend: s3
-      endpoint: http://seaweedfs:8333
-      bucket: forensic-blackbox
 ```
+
+```bash
+# .env — the S3 connection is configured with the FORENSIC_S3_* variables
+FORENSIC_S3_ENDPOINT=http://seaweedfs:8333
+FORENSIC_S3_BUCKET=forensic-blackbox
+```
+
+`FORENSIC_BACKEND` and `FORENSIC_BASE_DIR`, when set, take precedence over
+`backend` and `base_dir` of `admina.yaml`. With
+`ADMINA_FORENSIC_FAIL_MODE=closed` a backend that cannot be opened stops the
+proxy, and a request whose record cannot be written is answered `503`.
 
 > **Note**: the legacy MinIO-SDK backend was removed in 0.9.5. MinIO
 > servers remain fully supported through the `s3` backend — point

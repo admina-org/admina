@@ -99,10 +99,12 @@ class TestExtractTextFields:
         assert result == ["a", "b"]
 
     def test_depth_limit(self):
-        # DoS cap: content nested beyond _MAX_SCAN_DEPTH is not returned.
-        # Build 10 levels deep; the leaf string "hello" at depth 10 must be dropped.
+        # DoS cap: content nested beyond SCAN_DEPTH is not returned (the
+        # pipeline refuses such a request, see test_scan_depth.py).
+        from admina.domains.governance import SCAN_DEPTH
+
         deep = "hello"
-        for _ in range(10):
+        for _ in range(SCAN_DEPTH + 4):
             deep = {"nested": deep}
         result = _extract_text_fields(deep)
         assert "hello" not in result
@@ -240,6 +242,36 @@ async def test_failing_guard_does_not_crash():
     assert result.action.value == "allow"
     assert result.checks["guard_failing"]["action"] == "ERROR"
     assert result.checks["guard_failing"].get("error") is not None
+
+
+class QuotingGuard:
+    """Breaks its contract with an exception that quotes its input."""
+
+    name = "quoting"
+
+    async def inspect_request(self, payload):
+        raise ValueError(f"cannot check {payload['content']}")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("fail_mode", ["open", "closed"])
+async def test_a_failing_guard_is_logged_and_recorded_by_its_exception_class(caplog, fail_mode):
+    import logging
+
+    marker = "zqmarkerinthegovernedtext"
+    caplog.set_level(logging.DEBUG)
+    result = await run_pipeline(
+        **_base_kwargs(
+            content_str=f"hello {marker}",
+            governance_guards=[QuotingGuard()],
+            guard_fail_mode=fail_mode,
+        )
+    )
+    assert result.checks["guard_quoting"] == {"action": "ERROR", "error": "ValueError"}
+    assert "Guard 'quoting' failed its contract" in caplog.text
+    assert "ValueError" in caplog.text
+    assert all(r.exc_info is None for r in caplog.records)
+    assert marker not in caplog.text
 
 
 @pytest.mark.anyio

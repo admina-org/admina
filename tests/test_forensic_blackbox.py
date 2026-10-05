@@ -40,6 +40,8 @@ import asyncio
 import json
 from pathlib import Path
 
+from _forensic_chain import no_such_key
+
 from admina.domains.compliance.forensic import ForensicBlackBox
 from admina.plugins.base import BaseForensicStore
 
@@ -126,7 +128,12 @@ class TestVerifyChain:
         # Re-point the second record's previous_hash and re-seal its own hash
         # so the per-record hash check passes but the chain link is broken.
         records[1]["previous_hash"] = "0" * 64
-        resealed = {k: v for k, v in records[1].items() if k != "record_hash"}
+        # record_hash covers the record without itself and its signature.
+        resealed = {
+            k: v
+            for k, v in records[1].items()
+            if k not in ("record_hash", "record_sig", "record_sig_alg")
+        }
         records[1]["record_hash"] = box._compute_hash(
             json.dumps(resealed, sort_keys=True, default=str)
         )
@@ -176,7 +183,7 @@ class TestS3ObjectLock:
             return {}
 
         def get_object(self, **kwargs):
-            raise RuntimeError("no existing state")  # forces a fresh chain
+            raise no_such_key()  # no existing state: a fresh chain
 
         def list_objects_v2(self, **kwargs):
             # No records exist yet → reconstruction finds nothing → stays GENESIS/0.
@@ -271,8 +278,9 @@ class TestBaseForensicStoreContract:
 
 
 class TestS3ChainStateReconstruction:
-    """When the S3 chain-state key is missing the chain must be reconstructed
-    from the immutable record objects — not silently restarted from GENESIS."""
+    """When the S3 chain-state key is missing, the chain state is rebuilt
+    from the record objects when they all verify with the key — never
+    restarted from GENESIS, and never taken from records without a key."""
 
     class _FullFakeS3:
         """In-memory S3 fake that stores all objects in a dict keyed by Key.
@@ -294,7 +302,7 @@ class TestS3ChainStateReconstruction:
         def get_object(self, **kwargs):
             key = kwargs["Key"]
             if key not in self._store:
-                raise KeyError(f"no object: {key}")
+                raise no_such_key()
             import io
 
             return {"Body": io.BytesIO(self._store[key])}
@@ -309,53 +317,84 @@ class TestS3ChainStateReconstruction:
     def test_s3_reconstructs_chain_from_existing_records(self):
 
         s3 = self._FullFakeS3()
-        box = ForensicBlackBox(boto3_client=s3, bucket="b")
+        box = ForensicBlackBox(boto3_client=s3, bucket="b", state_signing_key="k")
 
         box.record({"i": 1})
         box.record({"i": 2})
         box.record({"i": 3})
 
         head_before = box.chain_head
-        count_before = box.record_count  # 3
 
         # Simulate lost state key — the record objects remain intact.
         del s3._store[_STATE_FILE]
 
-        # A fresh instance must reconstruct from the 3 S3 record objects.
+        # A fresh instance rebuilds from the 3 S3 record objects, which
+        # verify with the key, and records the rebuild as record 4.
+        box2 = ForensicBlackBox(boto3_client=s3, bucket="b", state_signing_key="k")
+        assert box2.chain_status == "rebuilt"
+        assert box2.record_count == 4  # reconstructed, not 0
+        (key,) = [k for k in s3._store if k.endswith("/00000004.json")]
+        rebuilt = json.loads(s3._store[key])
+        assert rebuilt["previous_hash"] == head_before  # reconstructed, not GENESIS
+        assert rebuilt["event"]["event_type"] == "chain_state_rebuilt"
+
+    def test_s3_without_a_key_the_records_are_not_adopted(self, monkeypatch):
+        monkeypatch.delenv("ADMINA_FORENSIC_STATE_KEY", raising=False)
+        s3 = self._FullFakeS3()
+        box = ForensicBlackBox(boto3_client=s3, bucket="b")
+        box.record({"i": 1})
+        del s3._store[_STATE_FILE]
+
         box2 = ForensicBlackBox(boto3_client=s3, bucket="b")
-        assert box2.record_count == count_before  # reconstructed, not 0
-        assert box2.chain_head == head_before  # reconstructed, not GENESIS
+        assert box2.chain_status == "invalid"
+        assert box2.record({"i": 2})["stored"] is False
 
 
 class TestChainStateReconstruction:
-    """When the mutable state file is missing or corrupt, the chain must be
-    reconstructed from the immutable records on disk — not silently restarted
-    from GENESIS (which would fork the audit trail)."""
+    """When the mutable state file is missing or corrupt, the chain is
+    rebuilt from the records on disk when they all verify with the key — not
+    silently restarted from GENESIS (which would fork the audit trail), and
+    not taken from records that cannot be verified."""
 
     def test_forensic_reconstructs_chain_after_state_file_lost(self, tmp_path):
-        fb = ForensicBlackBox(filesystem_dir=str(tmp_path))
+        fb = ForensicBlackBox(filesystem_dir=str(tmp_path), state_signing_key="k")
         fb.record({"event": "a"})
         fb.record({"event": "b"})
         head_before = fb.chain_head
-        count_before = fb.record_count  # 2
 
         (tmp_path / "_chain_state.json").unlink()  # lose the state file
 
-        fb2 = ForensicBlackBox(filesystem_dir=str(tmp_path))
-        assert fb2.record_count == count_before  # reconstructed, not 0
-        assert fb2.chain_head == head_before  # reconstructed, not GENESIS
+        fb2 = ForensicBlackBox(filesystem_dir=str(tmp_path), state_signing_key="k")
+        # Rebuilt from the two verified records; the rebuild is record 3.
+        assert fb2.chain_status == "rebuilt"
+        assert fb2.record_count == 3  # reconstructed, not 0
+        rebuilt = _stored_records(tmp_path)[-1]
+        assert rebuilt["previous_hash"] == head_before  # reconstructed, not GENESIS
 
         r = fb2.record({"event": "c"})
-        assert r["sequence_number"] == 3  # chain CONTINUES
-        assert r["previous_hash"] == head_before
+        assert r["sequence_number"] == 4  # chain CONTINUES
+        assert r["previous_hash"] == rebuilt["record_hash"]
+
+    def test_forensic_without_a_key_does_not_adopt_the_records(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("ADMINA_FORENSIC_STATE_KEY", raising=False)
+        fb = ForensicBlackBox(filesystem_dir=str(tmp_path))
+        fb.record({"event": "a"})
+        (tmp_path / "_chain_state.json").unlink()
+
+        fb2 = ForensicBlackBox(filesystem_dir=str(tmp_path))
+        assert fb2.chain_status == "invalid"
+        assert fb2.record({"event": "b"})["stored"] is False
+        assert len(_stored_records(tmp_path)) == 1
 
     def test_forensic_reconstructs_on_corrupt_state(self, tmp_path):
-        fb = ForensicBlackBox(filesystem_dir=str(tmp_path))
+        fb = ForensicBlackBox(filesystem_dir=str(tmp_path), state_signing_key="k")
         fb.record({"event": "a"})
         head, count = fb.chain_head, fb.record_count
         (tmp_path / "_chain_state.json").write_text("{ corrupt json")  # tamper/corruption
-        fb2 = ForensicBlackBox(filesystem_dir=str(tmp_path))
-        assert fb2.record_count == count and fb2.chain_head == head
+        fb2 = ForensicBlackBox(filesystem_dir=str(tmp_path), state_signing_key="k")
+        assert fb2.chain_status == "rebuilt"
+        assert fb2.record_count == count + 1
+        assert _stored_records(tmp_path)[-1]["previous_hash"] == head
 
     def test_forensic_empty_store_starts_at_genesis(self, tmp_path):
         fb = ForensicBlackBox(filesystem_dir=str(tmp_path))
@@ -452,6 +491,8 @@ class TestSignedChainStateFilesystem:
         box2 = ForensicBlackBox(filesystem_dir=str(tmp_path), state_signing_key="k")
         assert box2.record_count == count
         assert box2.chain_head == head
+        # The records the state counts are gone: the chain is invalid.
+        assert box2.chain_status == "invalid"
 
     def test_invalid_signature_reconstructs_and_logs_critical(self, tmp_path, caplog):
         import logging
@@ -467,9 +508,10 @@ class TestSignedChainStateFilesystem:
         )
         with caplog.at_level(logging.CRITICAL):
             box2 = ForensicBlackBox(filesystem_dir=str(tmp_path), state_signing_key="k")
-        # Reconstructed from the 2 intact records — NOT the forged 99.
-        assert box2.record_count == count
-        assert box2.chain_head == head
+        # Reconstructed from the 2 intact records — NOT the 99 of that state — and
+        # the rebuild recorded as record 3.
+        assert box2.record_count == count + 1
+        assert _stored_records(tmp_path)[-1]["previous_hash"] == head
         assert any(
             "signature" in r.getMessage().lower()
             for r in caplog.records
@@ -482,9 +524,10 @@ class TestSignedChainStateFilesystem:
         head, count = box1.chain_head, box1.record_count
         (tmp_path / "_chain_state.json.sig").unlink()  # drop the sidecar
         box2 = ForensicBlackBox(filesystem_dir=str(tmp_path), state_signing_key="k")
-        # No trusted sidecar → reconstructed from the intact record.
-        assert box2.record_count == count
-        assert box2.chain_head == head
+        # No trusted sidecar → reconstructed from the intact record, the
+        # rebuild recorded after it.
+        assert box2.record_count == count + 1
+        assert _stored_records(tmp_path)[-1]["previous_hash"] == head
 
     def test_env_var_supplies_signing_key(self, tmp_path, monkeypatch):
         monkeypatch.setenv("ADMINA_FORENSIC_STATE_KEY", "envkey")
@@ -515,7 +558,7 @@ class TestSignedChainStateS3:
         def get_object(self, **kwargs):
             key = kwargs["Key"]
             if key not in self._store:
-                raise KeyError(f"no object: {key}")
+                raise no_such_key()
             import io
 
             return {"Body": io.BytesIO(self._store[key])}
@@ -553,6 +596,8 @@ class TestSignedChainStateS3:
         box2 = ForensicBlackBox(boto3_client=s3, bucket="b", state_signing_key="k")
         assert box2.record_count == count
         assert box2.chain_head == head
+        # The records the state counts are gone: the chain is invalid.
+        assert box2.chain_status == "invalid"
 
     def test_s3_invalid_signature_reconstructs(self):
         from admina.domains.compliance.forensic import _CHAIN_STATE_KEY
@@ -567,8 +612,10 @@ class TestSignedChainStateS3:
             {"chain_head": "0" * 64, "record_count": 99}
         ).encode("utf-8")
         box2 = ForensicBlackBox(boto3_client=s3, bucket="b", state_signing_key="k")
-        assert box2.record_count == count  # reconstructed, not 99
-        assert box2.chain_head == head
+        assert box2.record_count == count + 1  # reconstructed, not 99; rebuild recorded
+        assert box2.chain_status == "rebuilt"
+        (key,) = [k for k in s3._store if k.endswith("/00000003.json")]
+        assert json.loads(s3._store[key])["previous_hash"] == head
 
     def test_s3_no_key_writes_no_sidecar(self):
         from admina.domains.compliance.forensic import _CHAIN_STATE_SIG_KEY
@@ -577,3 +624,44 @@ class TestSignedChainStateS3:
         box = ForensicBlackBox(boto3_client=s3, bucket="b")
         box.record({"i": 1})
         assert _CHAIN_STATE_SIG_KEY not in s3._store
+
+
+class TestRecentRecords:
+    """recent_records(): the last records written by this process, in memory."""
+
+    def test_newest_first_with_chain_metadata(self, tmp_path):
+        box = ForensicBlackBox(filesystem_dir=str(tmp_path / "f"))
+        for i in range(3):
+            box.record({"event_id": f"e{i}"})
+        recent = box.recent_records()
+        assert [r["event"]["event_id"] for r in recent] == ["e2", "e1", "e0"]
+        assert [r["sequence_number"] for r in recent] == [3, 2, 1]
+        assert recent[0]["record_hash"] == box.chain_head
+
+    def test_limit(self):
+        box = ForensicBlackBox()
+        for i in range(5):
+            box.record({"event_id": f"e{i}"})
+        assert [r["event"]["event_id"] for r in box.recent_records(2)] == ["e4", "e3"]
+        assert box.recent_records(0) == []
+
+    def test_kept_with_the_in_memory_ledger(self):
+        box = ForensicBlackBox()
+        box.record({"event_id": "only"})
+        assert len(box.recent_records()) == 1
+
+    def test_bounded(self, monkeypatch):
+        from collections import deque
+
+        box = ForensicBlackBox()
+        monkeypatch.setattr(box, "_recent", deque(maxlen=3))
+        for i in range(5):
+            box.record({"event_id": f"e{i}"})
+        assert [r["event"]["event_id"] for r in box.recent_records()] == ["e4", "e3", "e2"]
+
+    def test_not_read_back_after_a_restart(self, tmp_path):
+        base = tmp_path / "f"
+        ForensicBlackBox(filesystem_dir=str(base)).record({"event_id": "before"})
+        restarted = ForensicBlackBox(filesystem_dir=str(base))
+        assert restarted.record_count == 1
+        assert restarted.recent_records() == []

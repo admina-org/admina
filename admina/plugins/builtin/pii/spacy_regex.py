@@ -25,13 +25,15 @@ import logging
 import re
 from typing import Any
 
+from admina.domains.data_sovereignty.email_matching import EMAIL_RX, iter_email_matches
+from admina.domains.data_sovereignty.masking import replace_spans
 from admina.plugins.base import BasePIIEngine
 
 logger = logging.getLogger("admina.plugins.pii.spacy_regex")
 
 # Regex patterns for structured PII
 _PATTERNS: dict[str, re.Pattern[str]] = {
-    "EMAIL": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"),
+    "EMAIL": EMAIL_RX,  # matched with iter_email_matches (see email_matching)
     "PHONE": re.compile(r"(?<!\d)(\+\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?!\d)"),
     "CREDIT_CARD": re.compile(r"\b(?:\d{4}[-\s]?){3}\d{4}\b"),
     "SSN": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
@@ -102,7 +104,8 @@ class SpaCyRegexPIIEngine(BasePIIEngine):
         for pii_type, pattern in _PATTERNS.items():
             if allowed and pii_type not in allowed:
                 continue
-            for m in pattern.finditer(text):
+            found = iter_email_matches(text) if pattern is EMAIL_RX else pattern.finditer(text)
+            for m in found:
                 matches.append(
                     {
                         "type": pii_type,
@@ -154,11 +157,9 @@ class SpaCyRegexPIIEngine(BasePIIEngine):
         Returns:
             Redacted text.
         """
-        # Process in reverse order to preserve positions
-        for m in sorted(matches, key=lambda x: x["start"], reverse=True):
-            placeholder = f"[{m['type']}]"
-            text = text[: m["start"]] + placeholder + text[m["end"] :]
-        return text
+        # The matches of detect() do not overlap: one pass, in order.
+        ordered = sorted(matches, key=lambda x: x["start"])
+        return replace_spans(text, ((m["start"], m["end"], f"[{m['type']}]") for m in ordered))
 
     @staticmethod
     def _resolve_overlaps(matches: list[dict]) -> list[dict]:

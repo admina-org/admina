@@ -41,6 +41,9 @@
 #   git tag -a v0.9.0 -m "v0.9.0"
 #   git push origin v0.9.0
 # A single tag triggers both this workflow and release-core.yml in parallel.
+# The tag is `v` + the pyproject.toml version; a PEP 440 pre-release
+# (v0.13.0rc1) is published as a GitHub pre-release. Nothing is published
+# unless the test gate (the CI workflow) passes on the tagged commit.
 
 name: Release
 
@@ -75,7 +78,14 @@ jobs:
             exit 1
           fi
 
-  # ── 2. Build root admina package (pure Python sdist + wheel) ────────────
+  # ── 2. Test gate: the CI workflow on the tagged commit ─────────────────
+  tests:
+    name: Test gate
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  # ── 3. Build root admina package (pure Python sdist + wheel) ────────────
   build-root:
     name: admina sdist + wheel (pure Python)
     needs: check-version
@@ -100,10 +110,10 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # ── 3. Publish root admina-framework to PyPI ────────────────────────────
+  # ── 4. Publish root admina-framework to PyPI ────────────────────────────
   publish-root:
     name: Publish admina-framework to PyPI
-    needs: [build-root]
+    needs: [build-root, tests]
     # admina-core (the optional Rust accelerator) is published by the
     # sibling workflow release-core.yml, in parallel with this one.
     # The two packages have no compile- or run-time dependency on
@@ -128,7 +138,7 @@ jobs:
           packages-dir: dist/
           skip-existing: true
 
-  # ── 4. Create GitHub Release ────────────────────────────────────────────
+  # ── 5. Create GitHub Release ────────────────────────────────────────────
   github-release:
     name: Create GitHub Release
     needs: [publish-root]
@@ -160,6 +170,18 @@ jobs:
           echo "Generated release notes:"
           cat release-notes.md
 
+      - name: Classify the release
+        id: kind
+        # Pre-releases: the PEP 440 forms 0.13.0a1, 0.13.0b1, 0.13.0rc1 and
+        # 0.13.0.dev1, and the SemVer suffixes -alpha, -beta and -rc.
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if printf '%s\n' "$VERSION" | grep -Eq '[0-9](a|b|rc)[0-9]+|\.dev[0-9]*|-(alpha|beta|rc)'; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64  # v3.0.3
         with:
@@ -167,4 +189,4 @@ jobs:
           body_path: release-notes.md
           generate_release_notes: false
           draft: false
-          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+          prerelease: ${{ steps.kind.outputs.prerelease == 'true' }}

@@ -20,6 +20,10 @@ Run from the repository root.  Exits non-zero (and prints a table) when
 any of the tracked manifests disagrees with the canonical version in
 ``pyproject.toml``.
 
+Versions are compared in their PEP 440 spelling: the Cargo (SemVer)
+spelling of a pre-release, such as ``0.13.0-rc.1``, matches ``0.13.0rc1``
+(see ``normalise()``).  Any other difference is drift.
+
 Tracked points of truth:
     1. pyproject.toml                 →  admina-framework  (canonical)
     2. admina/__init__.py             →  runtime __version__
@@ -27,7 +31,8 @@ Tracked points of truth:
     4. core-rust/Cargo.toml           →  admina_core crate
     5. core-rust/Cargo.lock           →  resolved admina_core entry
     6. uv.lock                        →  resolved admina-framework entry
-    7. core-rust/uv.lock              →  resolved admina-core entry
+    7. uv.lock                        →  resolved admina-core entry ([rust] extra)
+    8. core-rust/uv.lock              →  resolved admina-core entry
 
 Docker images and dashboard HTML derive their version dynamically from
 pyproject.toml at build time, so they need no separate check here.
@@ -41,6 +46,27 @@ import tomllib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+
+# A SemVer pre-release as Cargo writes it: 0.13.0-rc.1, 0.13.0-alpha.2 …
+_SEMVER_PRERELEASE = re.compile(
+    r"^(?P<release>\d+\.\d+\.\d+)-(?P<label>alpha|a|beta|b|rc)\.?(?P<number>\d+)$"
+)
+_PEP440_LABELS = {"alpha": "a", "a": "a", "beta": "b", "b": "b", "rc": "rc"}
+
+
+def normalise(version: str) -> str:
+    """Return ``version`` in its PEP 440 spelling.
+
+    ``X.Y.Z-alpha.N``, ``X.Y.Z-beta.N`` and ``X.Y.Z-rc.N`` (the dot is
+    optional) become ``X.Y.ZaN``, ``X.Y.ZbN`` and ``X.Y.ZrcN``.  Any other
+    version is returned unchanged, so it matches only the same string.  The
+    mapping is explicit rather than ``packaging.version`` so the check gives
+    the same answer with or without third-party packages installed.
+    """
+    m = _SEMVER_PRERELEASE.match(version)
+    if m is None:
+        return version
+    return f"{m['release']}{_PEP440_LABELS[m['label']]}{m['number']}"
 
 
 def _toml_version(path: Path, *, table: str = "project") -> str:
@@ -77,27 +103,29 @@ def _uv_lock_package(path: Path, pkg: str) -> str:
     raise RuntimeError(f"{pkg!r} entry not found in {path}")
 
 
-def main() -> int:
+def main(repo: Path = REPO) -> int:
     versions: dict[str, str] = {
-        "pyproject.toml": _toml_version(REPO / "pyproject.toml"),
-        "admina/__init__.py": _python_dunder_version(REPO / "admina" / "__init__.py"),
-        "uv.lock": _uv_lock_package(REPO / "uv.lock", "admina-framework"),
-        "core-rust/pyproject.toml": _toml_version(REPO / "core-rust" / "pyproject.toml"),
-        "core-rust/Cargo.toml": _toml_version(REPO / "core-rust" / "Cargo.toml", table="package"),
-        "core-rust/Cargo.lock": _cargo_lock_admina_core(REPO / "core-rust" / "Cargo.lock"),
-        "core-rust/uv.lock": _uv_lock_package(REPO / "core-rust" / "uv.lock", "admina-core"),
+        "pyproject.toml": _toml_version(repo / "pyproject.toml"),
+        "admina/__init__.py": _python_dunder_version(repo / "admina" / "__init__.py"),
+        "uv.lock": _uv_lock_package(repo / "uv.lock", "admina-framework"),
+        "uv.lock (admina-core)": _uv_lock_package(repo / "uv.lock", "admina-core"),
+        "core-rust/pyproject.toml": _toml_version(repo / "core-rust" / "pyproject.toml"),
+        "core-rust/Cargo.toml": _toml_version(repo / "core-rust" / "Cargo.toml", table="package"),
+        "core-rust/Cargo.lock": _cargo_lock_admina_core(repo / "core-rust" / "Cargo.lock"),
+        "core-rust/uv.lock": _uv_lock_package(repo / "core-rust" / "uv.lock", "admina-core"),
     }
 
     canonical = versions["pyproject.toml"]
     width = max(len(p) for p in versions)
+    ver_width = max(9, *(len(v) for v in versions.values()))
     print(f"Canonical (pyproject.toml): {canonical}\n")
-    print(f"{'File':<{width}}  Version    Status")
-    print(f"{'-' * width}  {'-' * 9}  {'-' * 6}")
+    print(f"{'File':<{width}}  {'Version':<{ver_width}}  Status")
+    print(f"{'-' * width}  {'-' * ver_width}  {'-' * 6}")
     drift = []
     for path, ver in versions.items():
-        ok = ver == canonical
+        ok = normalise(ver) == normalise(canonical)
         status = "OK" if ok else "DRIFT"
-        print(f"{path:<{width}}  {ver:<9}  {status}")
+        print(f"{path:<{width}}  {ver:<{ver_width}}  {status}")
         if not ok:
             drift.append(path)
 

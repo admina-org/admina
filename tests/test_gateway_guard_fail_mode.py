@@ -97,6 +97,16 @@ def _settings(**over):
         PII_REDACTION_ENABLED=True,
         GOVERNANCE_MODE="enforce",
         GUARD_FAIL_MODE="open",
+        ADMINA_GATEWAY_MAX_PROMPT_CHARS=0,
+        ADMINA_GATEWAY_TIMEOUT_TOTAL=0.0,
+        ADMINA_GATEWAY_SCAN_ROLES="system,user,assistant,tool",
+        ADMINA_GATEWAY_PIPELINE_TIMEOUT=0.0,
+        ADMINA_GATEWAY_SCAN_RESPONSE=False,
+        ADMINA_GATEWAY_SCAN_POLICY_ENABLED=False,
+        ADMINA_GATEWAY_BLOCK_STATUS=200,
+        ADMINA_GATEWAY_REQUEST_ID_HEADER="",
+        ADMINA_GATEWAY_RECORD_HEADERS="",
+        ADMINA_GATEWAY_FORWARD_HEADERS="",
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -123,7 +133,7 @@ def _state(http, **over):
         egress_policy=None,
         governance_guards=[_RaisingGuard()],
         forensic_box=None,
-        http_client=http,
+        gateway_http_client=http,
     )
     base.update(over)
     return SimpleNamespace(**base)

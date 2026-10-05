@@ -436,6 +436,21 @@ def test_plugin_forensic_reconstructs_after_state_loss(tmp_path):
     assert '"sequence_number": 1' in original_rec1  # still the ORIGINAL record 1
 
 
+@pytest.mark.parametrize("data", ["é".encode() * 32, b"\xff" * 64], ids=["not-ascii", "not-utf-8"])
+def test_plugin_forensic_reconstructs_when_the_state_signature_is_not_hex(tmp_path, data):
+    from admina.plugins.builtin.forensic.filesystem import FilesystemForensicStore
+
+    key = "k" * 32
+    s = FilesystemForensicStore(base_dir=str(tmp_path), state_signing_key=key)
+    _run(s.append({"e": 1}))
+    _run(s.append({"e": 2}))
+    head, count = s._chain_head, s._record_count
+    (tmp_path / "_chain_state.json.sig").write_bytes(data)
+
+    s2 = FilesystemForensicStore(base_dir=str(tmp_path), state_signing_key=key)
+    assert (s2._record_count, s2._chain_head) == (count, head)
+
+
 def test_plugin_forensic_refuses_overwrite(tmp_path):
     from admina.plugins.builtin.forensic.filesystem import FilesystemForensicStore
 
@@ -537,54 +552,28 @@ class TestAPIKeyAuthProvider:
         assert _run(auth.authorize({"roles": ["admin"]}, "model.call")) is True
         assert _run(auth.authorize({"roles": []}, "model.call")) is False
 
-    def test_apikey_provider_accepts_signed_cookie(self):
-        import base64
-        import hashlib
-        import hmac
-        import time
-
+    def test_apikey_provider_ignores_cookies(self):
+        """The provider authenticates the API key only; dashboard browser
+        sessions are admitted by the proxy on the dashboard API alone."""
         from admina.plugins.builtin.auth.apikey import APIKeyAuthProvider
+        from admina.proxy import dashboard_session
 
         key = "supersecretkey123456"
         provider = APIKeyAuthProvider(api_key=key)
+        session = dashboard_session.issue_token(key, ttl=3600)
 
-        def _mint(k):
-            exp = int(time.time()) + 3600
-            payload = str(exp)
-            sig = hmac.new(k.encode(), payload.encode(), hashlib.sha256).hexdigest()
-            return base64.urlsafe_b64encode(f"{payload}.{sig}".encode()).decode("ascii")
-
-        # valid signed cookie → authenticated
-        user = _run(
-            provider.authenticate(
-                {"path": "/api/x", "headers": {}, "cookies": {"admina_session": _mint(key)}}
-            )
-        )
-        assert user and user.get("user_id")
-
-        # raw key as cookie → REJECTED (must be a signed token, not the raw key)
-        with pytest.raises(PermissionError):
-            _run(
-                provider.authenticate(
-                    {"path": "/api/x", "headers": {}, "cookies": {"admina_session": key}}
-                )
-            )
-
-        # tampered cookie → rejected
-        with pytest.raises(PermissionError):
-            _run(
-                provider.authenticate(
-                    {
-                        "path": "/api/x",
-                        "headers": {},
-                        "cookies": {"admina_session": "garbage.tampered"},
-                    }
-                )
-            )
+        for cookies in (
+            {dashboard_session.COOKIE_NAME: session},
+            {dashboard_session.LEGACY_COOKIE_NAME: session},
+            {dashboard_session.COOKIE_NAME: key},
+            {dashboard_session.LEGACY_COOKIE_NAME: key},
+        ):
+            with pytest.raises(PermissionError):
+                _run(provider.authenticate({"path": "/api/x", "headers": {}, "cookies": cookies}))
 
         # raw key via header still works
-        user2 = _run(provider.authenticate({"path": "/api/x", "headers": {"X-API-Key": key}}))
-        assert user2 and user2.get("user_id")
+        user = _run(provider.authenticate({"path": "/api/x", "headers": {"X-API-Key": key}}))
+        assert user and user.get("user_id")
 
     def test_is_configured_with_key(self):
         from admina.plugins.builtin.auth.apikey import APIKeyAuthProvider

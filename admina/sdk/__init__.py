@@ -21,6 +21,7 @@ Usage::
 
 from __future__ import annotations
 
+from admina.domains.agent_security.ruleset import active_ruleset_sha256
 from admina.sdk.compliance_kit import ComplianceKit
 from admina.sdk.errors import RetryableUpstreamError, TerminalUpstreamError
 from admina.sdk.governed_agent import GovernedAgent
@@ -39,4 +40,5 @@ __all__ = [
     "RetryableUpstreamError",
     "TerminalUpstreamError",
     "StreamRedactor",
+    "active_ruleset_sha256",
 ]

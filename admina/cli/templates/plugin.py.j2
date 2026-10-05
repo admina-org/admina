@@ -55,6 +55,11 @@ class {{ class_name }}({{ base_class }}):
         """Query the data store and return ranked results."""
         raise NotImplementedError("TODO: implement query()")
 {%- elif plugin_type == "governance_guard" %}
+    # Concurrency: one instance serves every request, and the gateway calls
+    # it from several worker threads at once, each on an event loop of its
+    # own. Keep shared state thread-safe (threading.Lock), and create objects
+    # bound to an event loop (asyncio.Lock, httpx.AsyncClient, ...) per call
+    # or per thread, not in __init__.
     async def inspect_request(self, request: dict) -> dict:
         """Inspect an inbound request."""
         return {"action": "ALLOW", "risk_level": "LOW", "details": ""}

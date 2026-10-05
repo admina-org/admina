@@ -12,11 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 mod firewall;
-mod pii;
-mod loop_breaker;
 mod forensic;
+mod loop_breaker;
+mod pii;
 
 use pyo3::prelude::*;
 
@@ -33,7 +32,10 @@ fn engine_info() -> PyResult<Py<PyAny>> {
         let dict = pyo3::types::PyDict::new(py);
         dict.set_item("engine", "rust")?;
         dict.set_item("version", env!("CARGO_PKG_VERSION"))?;
-        dict.set_item("modules", vec!["firewall", "pii", "loop_breaker", "forensic"])?;
+        dict.set_item(
+            "modules",
+            vec!["firewall", "pii", "loop_breaker", "forensic"],
+        )?;
         Ok(dict.unbind().into())
     })
 }

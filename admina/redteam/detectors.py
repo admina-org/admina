@@ -19,6 +19,11 @@ subset of ["python", "rust"] actually available), and ``.predict(engine, sample)
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from admina.core.config import FirewallConfig
+
 
 def rust_available() -> bool:
     try:
@@ -45,22 +50,69 @@ def presidio_available() -> bool:
 
 
 class InjectionAdapter:
+    """The injection firewall, with its default settings or with the
+    ``agent_security.firewall`` settings of an admina.yaml (*config*).
+
+    With *config*, the Python engine is the firewall the proxy builds from
+    those settings (custom patterns, pattern packs, disabled categories and
+    patterns, heuristic threshold, allowed tags); the Rust engine is
+    measured only when *config* sets none of
+    :data:`~admina.engines.PYTHON_ONLY_FIREWALL_KEYS`, which it cannot
+    apply (:func:`~admina.redteam.run_suite` refuses ``engines=["rust"]``
+    then). The deep path is on.
+
+    Raises:
+        ValueError: *config* names a pattern pack that cannot be loaded
+            (:class:`~admina.domains.agent_security.pattern_packs.PatternPackError`)
+            or a heuristic threshold that is not a number greater than 0.
+    """
+
     name = "injection"
     kind = "binary"
     positive_label = "attack"
 
+    def __init__(self, config: FirewallConfig | None = None) -> None:
+        self._config = config
+        self._firewalls: dict[str, Any] = {}
+        if config is not None:
+            self._firewall("python")  # a configuration that cannot be applied fails here
+
+    def python_only_keys(self) -> list[str]:
+        """The keys of *config* that only the Python firewall applies."""
+        if self._config is None:
+            return []
+        from admina.engines import _python_only_keys
+
+        return _python_only_keys(self._config)
+
     def engines(self) -> list[str]:
-        return ["python", "rust"] if rust_available() else ["python"]
+        if rust_available() and not self.python_only_keys():
+            return ["python", "rust"]
+        return ["python"]
+
+    def _firewall(self, engine: str) -> Any:
+        firewall = self._firewalls.get(engine)
+        if firewall is None:
+            if engine == "rust":
+                import admina_core
+
+                firewall = admina_core.RustFirewall()
+            elif self._config is None:
+                from admina.domains.agent_security.firewall import InjectionFirewall
+
+                firewall = InjectionFirewall()
+            else:
+                from admina.engines import _firewall_settings, _PythonFirewallBridge
+
+                firewall = _PythonFirewallBridge(_firewall_settings(self._config))
+            self._firewalls[engine] = firewall
+        return firewall
 
     def predict(self, engine: str, sample: dict) -> dict:
-        text = sample["text"]
+        result = self._firewall(engine).check(sample["text"])
         if engine == "rust":
-            import admina_core
-
-            return {"detected": bool(admina_core.RustFirewall().check(text).is_injection)}
-        from admina.domains.agent_security.firewall import InjectionFirewall
-
-        return {"detected": bool(InjectionFirewall().check(text)["is_injection"])}
+            return {"detected": bool(result.is_injection)}
+        return {"detected": bool(result["is_injection"])}
 
 
 class PiiAdapter:
@@ -166,8 +218,10 @@ class LoopAdapter:
         return {"detected": bool(tripped)}
 
 
-def all_detectors() -> list:
-    return [InjectionAdapter(), PiiAdapter(), LoopAdapter()]
+def all_detectors(firewall_config: FirewallConfig | None = None) -> list:
+    """The detectors; *firewall_config* configures the injection firewall
+    (see :class:`InjectionAdapter`)."""
+    return [InjectionAdapter(firewall_config), PiiAdapter(), LoopAdapter()]
 
 
 def get_detector(name: str):

@@ -87,3 +87,11 @@ def test_scaffolded_pyproject_metadata(tmp_path):
     assert 'requires-python = ">=3.11"' in text
     assert '[project.entry-points."admina.plugins"]' in text
     assert 'my-guard = "my_guard"' in text
+
+
+def test_scaffolded_guard_states_the_concurrency_contract(tmp_path):
+    _scaffold_plugin("my-guard", "governance_guard", tmp_path / "my-guard")
+    source = (tmp_path / "my-guard" / "my_guard.py").read_text()
+    assert "several worker threads at once" in source
+    assert "thread-safe" in source
+    assert "event loop" in source

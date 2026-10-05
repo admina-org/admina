@@ -20,9 +20,7 @@ import asyncio
 import json
 
 from admina.proxy.api.gateway import (
-    _delta_content,
     _extract_prompt_text,
-    _finish_reason,
     _parse_sse_data,
     _sse_format,
 )
@@ -64,23 +62,9 @@ def test_parse_sse_data_done_and_junk_return_none():
     assert _parse_sse_data("") is None
 
 
-def test_delta_content_extracts_or_empty():
-    assert _delta_content({"choices": [{"delta": {"content": "x"}}]}) == "x"
-    assert _delta_content({"choices": [{"delta": {}}]}) == ""
-    assert _delta_content({"choices": [{"delta": {"content": None}}]}) == ""
-    assert _delta_content({}) == ""
-
-
-def test_finish_reason_extracts_or_none():
-    assert _finish_reason({"choices": [{"finish_reason": "stop"}]}) == "stop"
-    assert _finish_reason({"choices": [{"delta": {"content": "x"}}]}) is None
-    assert _finish_reason({}) is None
-
-
-def test_parse_then_delta_content_matches_json():
+def test_parse_sse_data_matches_json():
     payload = {"choices": [{"delta": {"content": "abc"}, "finish_reason": None}]}
-    parsed = _parse_sse_data("data: " + json.dumps(payload))
-    assert _delta_content(parsed) == "abc"
+    assert _parse_sse_data("data: " + json.dumps(payload)) == payload
 
 
 def test_synthetic_completion_shape():
@@ -107,22 +91,12 @@ def test_synthetic_stream_shape():
     assert choice["finish_reason"] == "content_filter"
 
 
-class _FakeRedactor:
-    """Windowed fake: holds the last char as its window tail so tests can
-    prove cross-chunk reconstruction and the finish() flush."""
+class _EchoPII:
+    """PII engine that finds nothing: the stream's windows still hold text
+    back, so the tests prove cross-chunk reconstruction and the flush."""
 
-    def __init__(self):
-        self._tail = ""
-
-    def feed(self, delta: str) -> list[str]:
-        buf = self._tail + delta
-        self._tail = buf[-1:]
-        safe = buf[:-1]
-        return [safe] if safe else []
-
-    def finish(self):
-        tail, self._tail = self._tail, ""
-        return tail, {"pii_count": 0}
+    def redact(self, text: str) -> dict:
+        return {"redacted_text": text, "entities": [], "count": 0}
 
 
 async def _aiter(seq):
@@ -134,15 +108,15 @@ async def _collect(gen):
     return [chunk async for chunk in gen]
 
 
-def _reassemble(sse_chunks):
-    from admina.proxy.api.gateway import _delta_content, _parse_sse_data
-
-    text = ""
+def _first_choices(sse_chunks):
     for raw in sse_chunks:
         parsed = _parse_sse_data(raw.strip())
-        if parsed:
-            text += _delta_content(parsed)
-    return text
+        if parsed and parsed.get("choices"):
+            yield parsed["choices"][0]
+
+
+def _reassemble(sse_chunks):
+    return "".join(c.get("delta", {}).get("content") or "" for c in _first_choices(sse_chunks))
 
 
 def test_governed_sse_reassembles_across_chunks_and_terminates():
@@ -155,36 +129,29 @@ def test_governed_sse_reassembles_across_chunks_and_terminates():
         _sse_format({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
         "data: [DONE]\n\n",
     ]
-    out = asyncio.run(_collect(_governed_sse_stream(_aiter(upstream), _FakeRedactor(), "llama3")))
+    out = asyncio.run(_collect(_governed_sse_stream(_aiter(upstream), _EchoPII())))
     assert out[-1] == "data: [DONE]\n\n"
     assert _reassemble(out) == "Hello"
 
 
 def test_governed_sse_preserves_finish_reason():
-    from admina.proxy.api.gateway import (
-        _finish_reason,
-        _governed_sse_stream,
-        _parse_sse_data,
-        _sse_format,
-    )
+    from admina.proxy.api.gateway import _governed_sse_stream, _sse_format
 
     upstream = [
         _sse_format({"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]}),
         _sse_format({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
         "data: [DONE]\n\n",
     ]
-    out = asyncio.run(_collect(_governed_sse_stream(_aiter(upstream), _FakeRedactor(), "llama3")))
-    reasons = [
-        _finish_reason(_parse_sse_data(r.strip())) for r in out if _parse_sse_data(r.strip())
-    ]
+    out = asyncio.run(_collect(_governed_sse_stream(_aiter(upstream), _EchoPII())))
+    reasons = [c.get("finish_reason") for c in _first_choices(out)]
     assert "stop" in reasons
 
 
-def test_governed_sse_empty_stream_just_terminates():
+def test_governed_sse_empty_stream_sends_nothing():
     from admina.proxy.api.gateway import _governed_sse_stream
 
-    out = asyncio.run(_collect(_governed_sse_stream(_aiter([]), _FakeRedactor(), "llama3")))
-    assert out == ["data: [DONE]\n\n"]
+    out = asyncio.run(_collect(_governed_sse_stream(_aiter([]), _EchoPII())))
+    assert out == []
 
 
 def test_governed_sse_no_finish_chunk_still_flushes_tail():
@@ -195,15 +162,6 @@ def test_governed_sse_no_finish_chunk_still_flushes_tail():
         _sse_format({"choices": [{"delta": {"content": "Hello"}, "finish_reason": None}]}),
         "data: [DONE]\n\n",
     ]
-    out = asyncio.run(_collect(_governed_sse_stream(_aiter(upstream), _FakeRedactor(), "llama3")))
+    out = asyncio.run(_collect(_governed_sse_stream(_aiter(upstream), _EchoPII())))
     assert out[-1] == "data: [DONE]\n\n"
     assert _reassemble(out) == "Hello"
-
-
-def test_passthrough_redactor_echoes():
-    from admina.proxy.api.gateway import _PassthroughRedactor
-
-    r = _PassthroughRedactor()
-    assert r.feed("abc") == ["abc"]
-    assert r.feed("") == []
-    assert r.finish() == ("", {"pii_count": 0})

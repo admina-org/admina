@@ -1,0 +1,120 @@
+{
+  "description": "SHA-256 of the RFC 8785 (JCS) canonical form of a chat completion messages array, as forwarded upstream. jcs is the canonical text (its UTF-8 bytes are hashed); sha256 is 64 lowercase hex characters.",
+  "vectors": [
+    {
+      "name": "empty",
+      "description": "No messages.",
+      "messages": [],
+      "jcs": "[]",
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "name": "text",
+      "description": "System and user messages with string content.",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are a helpful assistant."
+        },
+        {
+          "role": "user",
+          "content": "Summarise the attached report in three bullet points."
+        }
+      ],
+      "jcs": "[{\"content\":\"You are a helpful assistant.\",\"role\":\"system\"},{\"content\":\"Summarise the attached report in three bullet points.\",\"role\":\"user\"}]",
+      "sha256": "26e08df8b7dda225bfacbecbde903009968c42e16ff49249e4f35ca193969138"
+    },
+    {
+      "name": "text_parts",
+      "description": "Content as a list of parts, with a named user.",
+      "messages": [
+        {
+          "role": "user",
+          "name": "example-user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Describe the chart."
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "https://example.com/chart.png",
+                "detail": "low"
+              }
+            }
+          ]
+        }
+      ],
+      "jcs": "[{\"content\":[{\"text\":\"Describe the chart.\",\"type\":\"text\"},{\"image_url\":{\"detail\":\"low\",\"url\":\"https://example.com/chart.png\"},\"type\":\"image_url\"}],\"name\":\"example-user\",\"role\":\"user\"}]",
+      "sha256": "d18fe8e889dea552b04771aa376014196d131c0c15fef59cfedd7625923fa6ff"
+    },
+    {
+      "name": "tool_calls",
+      "description": "An assistant tool call (null content) and the tool result.",
+      "messages": [
+        {
+          "role": "user",
+          "content": "What is the weather in Paris?"
+        },
+        {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_1",
+              "type": "function",
+              "function": {
+                "name": "get_weather",
+                "arguments": "{\"city\": \"Paris\", \"unit\": \"celsius\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call_1",
+          "content": "{\"temperature\": 18}"
+        }
+      ],
+      "jcs": "[{\"content\":\"What is the weather in Paris?\",\"role\":\"user\"},{\"content\":null,\"role\":\"assistant\",\"tool_calls\":[{\"function\":{\"arguments\":\"{\\\"city\\\": \\\"Paris\\\", \\\"unit\\\": \\\"celsius\\\"}\",\"name\":\"get_weather\"},\"id\":\"call_1\",\"type\":\"function\"}]},{\"content\":\"{\\\"temperature\\\": 18}\",\"role\":\"tool\",\"tool_call_id\":\"call_1\"}]",
+      "sha256": "455ea20f9c75fcc3cf84c808d5b4e667d451791854a3c5c54826e46cd85750cc"
+    },
+    {
+      "name": "unicode",
+      "description": "Non-ASCII text, an emoji, quotes, a backslash and control characters.",
+      "messages": [
+        {
+          "role": "user",
+          "content": "Caf\u00e9 \u2013 na\u00efve \ud83d\ude00 \u6f22\u5b57 \"quoted\" back\\slash\ttab\nnewline \u0001 \u007f \u2028"
+        }
+      ],
+      "jcs": "[{\"content\":\"Caf\u00e9 \u2013 na\u00efve \ud83d\ude00 \u6f22\u5b57 \\\"quoted\\\" back\\\\slash\\ttab\\nnewline \\u0001 \u007f \u2028\",\"role\":\"user\"}]",
+      "sha256": "634787dbb4efe55ffa15389f137bb25f84d452a4378a6d26ce138f162381df23"
+    },
+    {
+      "name": "numbers",
+      "description": "Numbers in message fields: integer, fractions, exponents, an integral float and negative zero.",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Score these."
+            }
+          ],
+          "score": 0.5,
+          "count": 3,
+          "large": 1e+21,
+          "small": 1e-07,
+          "negative": -2.5,
+          "integer_float": 10.0,
+          "zero": -0.0
+        }
+      ],
+      "jcs": "[{\"content\":[{\"text\":\"Score these.\",\"type\":\"text\"}],\"count\":3,\"integer_float\":10,\"large\":1e+21,\"negative\":-2.5,\"role\":\"user\",\"score\":0.5,\"small\":1e-7,\"zero\":0}]",
+      "sha256": "83e760605bc23b68a7bb8dfde038a0bd2b366212c74365959c71739c8b2073ce"
+    }
+  ]
+}

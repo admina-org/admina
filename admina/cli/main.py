@@ -37,6 +37,8 @@ import yaml
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from admina import __version__
+from admina.cli.forensic import forensic as forensic_commands
+from admina.cli.redteam import redteam as redteam_command
 from admina.core.secrets import SecretVault, validate_password
 
 logger = logging.getLogger(__name__)
@@ -643,6 +645,7 @@ def _run_local(
                 click.echo(f"    http://{ip}:{port}  ({label})")
         else:
             click.echo(f"  Ready → http://{display_host}:{port}")
+        click.echo("  Dashboard sign-in: the API key (show it with `admina password show`)")
         if not no_browser:
             webbrowser.open(f"http://{display_host}:{port}")
     else:
@@ -892,11 +895,21 @@ def _pip_install(package: str) -> subprocess.CompletedProcess[str]:
 
 
 def _config_extra_modules() -> list[str]:
-    """Module paths from admina.yaml ``plugins:`` — empty if no config."""
+    """Module paths from admina.yaml ``plugins:`` — empty if no config.
+
+    Raises:
+        ConfigFileError: the file named by ``ADMINA_CONFIG`` cannot be loaded.
+        ConfigSchemaError: a value of admina.yaml has the wrong type (the
+            message names its key).
+    """
+    from admina.core.config import ConfigSchemaError
+
     try:
         from admina.core.config import load_config
 
         return list(load_config().plugins)
+    except ConfigSchemaError:
+        raise
     except (ImportError, ValueError, OSError) as exc:
         logger.debug("Could not read plugins from admina.yaml: %s", exc)
         return []
@@ -1026,7 +1039,12 @@ def _plugin_install_path(cls: type) -> str:
 @plugin.command("list")
 def plugin_list() -> None:
     """List all installed Admina plugins by type, with their source path."""
-    all_plugins = _discover_and_list_plugins()
+    from admina.core.config import ConfigFileError, ConfigSchemaError
+
+    try:
+        all_plugins = _discover_and_list_plugins()
+    except (ConfigFileError, ConfigSchemaError) as exc:
+        raise click.ClickException(str(exc)) from exc
     total = 0
 
     click.echo("\n  Installed plugins:\n")
@@ -1352,13 +1370,17 @@ def doctor() -> None:
     forensic_backend = env.get("FORENSIC_BACKEND", os.environ.get("FORENSIC_BACKEND", "memory"))
     if forensic_backend in ("filesystem", "s3"):
         try:
-            import asyncio as _asyncio
+            from admina.core.secretfile import secret_from_env
+            from admina.domains.compliance.forensic import verify_bucket, verify_directory
 
-            from admina.domains.compliance.forensic import ForensicBlackBox
+            state_key = secret_from_env("ADMINA_FORENSIC_STATE_KEY")
 
             if forensic_backend == "filesystem":
                 base_dir = env.get("FORENSIC_BASE_DIR", os.environ.get("FORENSIC_BASE_DIR", ""))
-                fbox = ForensicBlackBox(filesystem_dir=base_dir if base_dir else None)
+                if not base_dir or not Path(base_dir).is_dir():
+                    raise FileNotFoundError(f"no forensic directory at {base_dir!r}")
+                # Read-only: nothing is written to the store.
+                chain = verify_directory(base_dir, state_key=state_key)
             else:
                 # s3 — needs boto3; construct without credentials (probe only)
                 try:
@@ -1375,15 +1397,19 @@ def doctor() -> None:
                 if s3_endpoint:
                     s3_kwargs["endpoint_url"] = s3_endpoint
                 client = _boto3.client("s3", **s3_kwargs)
-                fbox = ForensicBlackBox(boto3_client=client, bucket=s3_bucket)
-
-            chain = _asyncio.run(fbox.verify_chain())
+                # Read-only: nothing is written to the bucket.
+                chain = verify_bucket(client, s3_bucket, state_key=state_key)
             n = chain.get("records", 0)
             if chain.get("valid"):
                 click.echo(f"    {forensic_backend:20s} {ok_mark}  {n} records, valid")
             else:
+                where = (
+                    f"{chain['reason']} at record {chain.get('sequence_number')}"
+                    if chain.get("reason")
+                    else f"{n} records"
+                )
                 click.echo(
-                    f"    {forensic_backend:20s} {fail_mark}  chain verification FAILED ({n} records)"
+                    f"    {forensic_backend:20s} {fail_mark}  chain verification FAILED ({where})"
                 )
                 issues.append("Forensic hash-chain integrity check failed")
         except ImportError as _exc:
@@ -1484,6 +1510,16 @@ def password_set(new_password: str) -> None:
 
     click.echo("\n  Password updated across all services.")
     click.echo("  Restart services to apply: docker compose up --build -d\n")
+
+
+# ── admina forensic commands ─────────────────────────────────
+
+app.add_command(forensic_commands)
+
+
+# ── admina redteam command ───────────────────────────────────
+
+app.add_command(redteam_command)
 
 
 # ── admina egress commands ───────────────────────────────────

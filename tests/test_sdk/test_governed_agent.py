@@ -478,10 +478,34 @@ def test_governed_agent_redacts_pii_in_dict_key():
     async def _up(method, params, **kw):
         return params  # echo redacted params back
 
-    ga = GovernedAgent(_up, audit=False, firewall_enabled=False, loop_detection=False)
+    ga = GovernedAgent(
+        _up, audit=False, firewall_enabled=False, loop_detection=False, redact_keys=True
+    )
     ga._pii_redactor = _PII()
     resp = asyncio.run(ga.call("m", {"a@b.com": "v"}))  # PII in a KEY
     assert "a@b.com" not in str(resp.result)
+
+
+def test_governed_agent_keeps_dict_keys_by_default():
+    import asyncio
+
+    from admina.sdk.governed_agent import GovernedAgent
+
+    class _PII:
+        def redact(self, t):
+            return {
+                "redacted_text": t.replace("a@b.com", "[EMAIL]"),
+                "entities": [],
+                "count": t.count("a@b.com"),
+            }
+
+    async def _up(method, params, **kw):
+        return params  # echo redacted params back
+
+    ga = GovernedAgent(_up, audit=False, firewall_enabled=False, loop_detection=False)
+    ga._pii_redactor = _PII()
+    resp = asyncio.run(ga.call("m", {"a@b.com": "write to a@b.com"}))
+    assert resp.result == {"a@b.com": "write to [EMAIL]"}
 
 
 def test_governed_agent_redacts_non_dict_response():

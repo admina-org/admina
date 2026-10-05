@@ -44,7 +44,10 @@ fn get_pii_patterns() -> &'static Vec<PiiPattern> {
             },
             PiiPattern {
                 name: "phone",
-                regex: Regex::new(r"(?:\+?\d{1,3}[\s\-.]?)?\(?\d{2,4}\)?[\s\-.]?\d{3,4}[\s\-.]?\d{3,4}\b").unwrap(),
+                regex: Regex::new(
+                    r"(?:\+?\d{1,3}[\s\-.]?)?\(?\d{2,4}\)?[\s\-.]?\d{3,4}[\s\-.]?\d{3,4}\b",
+                )
+                .unwrap(),
                 mask: "[PHONE_REDACTED]",
             },
             PiiPattern {
@@ -54,7 +57,10 @@ fn get_pii_patterns() -> &'static Vec<PiiPattern> {
             },
             PiiPattern {
                 name: "ip_address",
-                regex: Regex::new(r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b").unwrap(),
+                regex: Regex::new(
+                    r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b",
+                )
+                .unwrap(),
                 mask: "[IP_REDACTED]",
             },
         ]

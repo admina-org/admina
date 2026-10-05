@@ -16,15 +16,26 @@
 
 Reads ``admina.yaml`` if present, falls back to ``.env`` variables for
 backward compatibility.  Exposes a typed :class:`AdminaConfig` object.
+The ``ADMINA_CONFIG`` environment variable names the file to read instead
+of searching for it (see :func:`load_config`).
+
+The file is checked against its schema (:mod:`admina.core.config_schema`):
+a value of the wrong type is a :class:`ConfigSchemaError` whenever it is
+loaded; :func:`check_config` also reports the keys the schema does not
+know (the proxy logs them at startup, or refuses to start with
+``ADMINA_CONFIG_STRICT=true``).
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from admina.core.config_schema import find_problems
 
 logger = logging.getLogger("admina.config")
 
@@ -37,7 +48,60 @@ except ImportError:  # pragma: no cover
     _HAS_YAML = False
 
 
-__all__ = ["AdminaConfig", "load_config"]
+__all__ = [
+    "CONFIG_ENV",
+    "GATEWAY_STREAM_MODES",
+    "PRESCAN_TAG_NAME",
+    "AdminaConfig",
+    "ConfigCheck",
+    "ConfigFileError",
+    "ConfigSchemaError",
+    "check_config",
+    "config_path",
+    "load_config",
+]
+
+#: Environment variable naming the admina.yaml to load (see :func:`load_config`).
+CONFIG_ENV = "ADMINA_CONFIG"
+
+
+class ConfigFileError(Exception):
+    """The file named by ``ADMINA_CONFIG`` cannot be loaded.
+
+    Deliberately neither a ``ValueError`` nor an ``OSError``: readers of the
+    configuration that fall back to the defaults on those errors must not do
+    so for a file that was named explicitly.
+    """
+
+
+class ConfigSchemaError(ValueError):
+    """admina.yaml does not match its schema: values of the wrong type
+    (or, for :func:`check_config` in strict mode, unknown keys). The message
+    names the file and the path of each key; ``problems`` lists them."""
+
+    def __init__(self, path: Path | str, problems: list[str]) -> None:
+        self.path = Path(path)
+        self.problems = list(problems)
+        super().__init__(f"admina.yaml {path}: " + "; ".join(self.problems))
+
+
+@dataclass(frozen=True)
+class ConfigCheck:
+    """What :func:`check_config` found: the file checked (None when there
+    is none) and the paths of its unknown keys."""
+
+    path: Path | None
+    unknown: tuple[str, ...] = ()
+
+
+# How the gateway relays streamed responses (``gateway.stream_mode`` and
+# ADMINA_GATEWAY_STREAM_MODE); the first one is the default.
+GATEWAY_STREAM_MODES = ("passthrough", "governed")
+
+# Name of a tag whose blocks a caller may declare as already scanned
+# (``gateway.prescan_tags``, ``X-Admina-Scan-Policy``).
+PRESCAN_TAG_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
+_HEX64 = re.compile(r"[0-9a-fA-F]{64}")
 
 # ── Section dataclasses ──────────────────────────────────────
 
@@ -60,6 +124,17 @@ class PIIConfig:
         ],
     )
     ner_model: str = "en_core_web_sm"
+
+
+@dataclass
+class PresidioConfig:
+    """``presidio``: the spaCy pipeline of each language of the Presidio PII
+    engine (``nlp_models``: language code → installed model or ``blank``;
+    empty = the default models that are installed). ``errors`` lists what
+    is malformed; the engine refuses to start with them."""
+
+    nlp_models: dict[str, str] = field(default_factory=dict)
+    errors: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -137,9 +212,21 @@ class FirewallConfig:
     """Anti-injection firewall settings."""
 
     enabled: bool = True
-    heuristic_threshold: float = 0.7
+    # Deep-path score from which a text is flagged.
+    heuristic_threshold: float = 0.5
     custom_patterns: list[dict] = field(default_factory=list)
     disabled_categories: list[str] = field(default_factory=list)
+    # Ids of the patterns left out (builtin, pack-qualified or custom.<n>).
+    disabled_patterns: list[str] = field(default_factory=list)
+    # Names of the pattern packs listed in admina.yaml, in order.
+    pattern_packs: list[str] = field(default_factory=list)
+    # Directories holding pack files <name>.yaml|.yml|.json
+    # (ADMINA_PATTERN_PACK_DIRS replaces them when set).
+    pattern_pack_dirs: list[str] = field(default_factory=list)
+    # True: a pack pattern over the time budget stops the firewall.
+    strict_pack_timing: bool = False
+    # Tag names the deep path does not count as context switches.
+    allowed_tags: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -159,6 +246,10 @@ class EgressConfig:
     enabled: bool = True
     allow: list[str] = field(default_factory=list)
     read_only_tools: list[str] = field(default_factory=list)
+    # Surfaces the stage runs on (gateway, mcp, integration, sdk); None =
+    # every surface. Checked when the egress policy is built, which raises
+    # on an unknown name.
+    surfaces: list[str] | None = None
     # Parsed now, consumed by the coordination detector.
     coordination_declared: list[str] = field(default_factory=list)
     fanin_window_seconds: int = 3600
@@ -183,6 +274,11 @@ class ForensicConfig:
 
     storage: str = "filesystem"
     bucket: str = "forensic-blackbox"
+    # domains.compliance.forensic.backend, else its older name ``storage``,
+    # lower case; empty when neither is set.
+    backend: str = ""
+    # domains.compliance.forensic.base_dir; empty when not set.
+    base_dir: str = ""
 
 
 @dataclass
@@ -211,6 +307,35 @@ class DashboardConfig:
 
 
 @dataclass
+class GatewayUpstreamConfig:
+    """One named upstream route of the OpenAI-compatible gateway."""
+
+    url: str = ""
+    # File holding the API key sent to this route as a Bearer token.
+    api_key_file: str = ""
+
+
+@dataclass
+class GatewayConfig:
+    """OpenAI-compatible gateway (``gateway`` section of ``admina.yaml``)."""
+
+    upstreams: dict[str, GatewayUpstreamConfig] = field(default_factory=dict)
+    # Route used when a request names none; empty = the first route.
+    default_upstream: str = ""
+    # One of GATEWAY_STREAM_MODES; empty = not set here.
+    stream_mode: str = ""
+    # Tags whose blocks a request may declare as already scanned.
+    prescan_tags: list[str] = field(default_factory=list)
+    # Rulesets (SHA-256, lowercase hex) accepted in X-Admina-Scan-Policy
+    # besides the proxy's own.
+    prescan_rulesets: list[str] = field(default_factory=list)
+    # Shape errors found while parsing the section. Parsing never raises, so
+    # the other readers of admina.yaml are unaffected; the proxy reports
+    # these at startup and does not start.
+    errors: list[str] = field(default_factory=list)
+
+
+@dataclass
 class AlertChannelConfig:
     """A single alert channel."""
 
@@ -233,9 +358,12 @@ class AdminaConfig:
     agent_security: AgentSecurityConfig = field(default_factory=AgentSecurityConfig)
     compliance: ComplianceConfig = field(default_factory=ComplianceConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
+    gateway: GatewayConfig = field(default_factory=GatewayConfig)
     forensic_store: str = "filesystem"
     auth_provider: str = "apikey"
     pii_engine: str = "spacy-regex"
+    pii_mask_style: str = "typed"
+    presidio: PresidioConfig = field(default_factory=PresidioConfig)
     alert_channels: list[AlertChannelConfig] = field(default_factory=list)
     plugins: list[str] = field(default_factory=list)
     plugin_config: dict[str, Any] = field(default_factory=dict)
@@ -265,6 +393,122 @@ def _parse_schema_version(data: dict) -> int:
         return int(raw)
     except (TypeError, ValueError):
         return 1
+
+
+def _parse_presidio(raw: Any) -> PresidioConfig:
+    """Parse the ``presidio`` section; shape errors go to ``errors``."""
+    if raw is None:
+        return PresidioConfig()
+    if not isinstance(raw, dict):
+        return PresidioConfig(errors=["presidio must be a mapping"])
+    models = raw.get("nlp_models")
+    if models is None:
+        return PresidioConfig()
+    if not isinstance(models, dict) or not all(
+        isinstance(lang, str) and lang and isinstance(model, str) and model
+        for lang, model in models.items()
+    ):
+        return PresidioConfig(
+            errors=["presidio.nlp_models must map language codes to spaCy model names or blank"]
+        )
+    return PresidioConfig(nlp_models=dict(models))
+
+
+def _parse_gateway(raw: Any) -> GatewayConfig:
+    """Parse the ``gateway`` section; shape errors go to ``errors``."""
+    if raw is None:
+        return GatewayConfig()
+    if not isinstance(raw, dict):
+        return GatewayConfig(errors=["gateway must be a mapping"])
+
+    errors: list[str] = []
+    upstreams: dict[str, GatewayUpstreamConfig] = {}
+    ups_raw = raw.get("upstreams")
+    if ups_raw is None:
+        ups_raw = {}
+    elif not isinstance(ups_raw, dict):
+        errors.append("gateway.upstreams must be a mapping of route names to {url, api_key_file}")
+        ups_raw = {}
+    for name, entry in ups_raw.items():
+        where = f"gateway.upstreams.{name}"
+        if not isinstance(entry, dict):
+            errors.append(f"{where} must be a mapping with a url")
+            continue
+        url = entry.get("url")
+        key_file = entry.get("api_key_file")
+        if not isinstance(url, str) or not url:
+            errors.append(f"{where}.url must be a non-empty string")
+        elif key_file is not None and not isinstance(key_file, str):
+            errors.append(f"{where}.api_key_file must be a file path")
+        else:
+            upstreams[str(name)] = GatewayUpstreamConfig(url=url, api_key_file=key_file or "")
+
+    default = raw.get("default_upstream")
+    if default is not None and not isinstance(default, str):
+        errors.append("gateway.default_upstream must be a route name")
+        default = None
+
+    stream_mode = raw.get("stream_mode")
+    if stream_mode is not None:
+        stream_mode = stream_mode.strip().lower() if isinstance(stream_mode, str) else None
+        if stream_mode not in ("", *GATEWAY_STREAM_MODES):
+            errors.append("gateway.stream_mode must be one of: " + " | ".join(GATEWAY_STREAM_MODES))
+            stream_mode = None
+    prescan_tags = _string_list(raw, "prescan_tags", PRESCAN_TAG_NAME, "tag names", errors)
+    prescan_rulesets = _string_list(
+        raw, "prescan_rulesets", _HEX64, "SHA-256 values (64 hex characters)", errors
+    )
+    return GatewayConfig(
+        upstreams=upstreams,
+        default_upstream=default or "",
+        stream_mode=stream_mode or "",
+        prescan_tags=prescan_tags,
+        prescan_rulesets=[value.lower() for value in prescan_rulesets],
+        errors=errors,
+    )
+
+
+def _string_list(
+    raw: dict, key: str, pattern: re.Pattern[str], what: str, errors: list[str]
+) -> list[str]:
+    """``gateway.<key>``: a list of strings matching *pattern*; else an
+    error in *errors* and an empty list."""
+    values = raw.get(key)
+    if values is None:
+        return []
+    if not isinstance(values, list) or not all(
+        isinstance(value, str) and pattern.fullmatch(value) for value in values
+    ):
+        errors.append(f"gateway.{key} must be a list of {what}")
+        return []
+    return list(values)
+
+
+def _firewall_strings(raw: dict, key: str) -> list[str]:
+    """``agent_security.firewall.<key>``: a list of strings (missing or
+    empty: ``[]``).
+
+    Raises:
+        ValueError: the value is not a list of strings.
+    """
+    values = raw.get(key)
+    if values is None:
+        return []
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise ValueError(f"admina.yaml: agent_security.firewall.{key} must be a list of strings")
+    return list(values)
+
+
+def _firewall_bool(raw: dict, key: str, default: bool) -> bool:
+    """``agent_security.firewall.<key>``: true or false (missing: *default*).
+
+    Raises:
+        ValueError: the value is not a boolean.
+    """
+    value = raw.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(f"admina.yaml: agent_security.firewall.{key} must be true or false")
+    return value
 
 
 def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
@@ -351,9 +595,14 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
         ),
         firewall=FirewallConfig(
             enabled=fw_raw.get("enabled", True),
-            heuristic_threshold=fw_raw.get("heuristic_threshold", 0.7),
+            heuristic_threshold=fw_raw.get("heuristic_threshold", 0.5),
             custom_patterns=list(fw_raw.get("custom_patterns") or []),
             disabled_categories=list(fw_raw.get("disabled_categories") or []),
+            disabled_patterns=_firewall_strings(fw_raw, "disabled_patterns"),
+            pattern_packs=_firewall_strings(fw_raw, "pattern_packs"),
+            pattern_pack_dirs=_firewall_strings(fw_raw, "pattern_pack_dirs"),
+            strict_pack_timing=_firewall_bool(fw_raw, "strict_pack_timing", False),
+            allowed_tags=_firewall_strings(fw_raw, "allowed_tags"),
         ),
         loop_breaker=LoopBreakerConfig(
             enabled=lb_raw.get("enabled", True),
@@ -365,6 +614,7 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
             enabled=eg_raw.get("enabled", True),
             allow=list(eg_raw.get("allow") or []),
             read_only_tools=list(eg_raw.get("read_only_tools") or []),
+            surfaces=eg_raw.get("surfaces"),
             coordination_declared=list(eg_raw.get("coordination_declared") or []),
             fanin_window_seconds=int(eg_fanin.get("window_seconds", 3600)),
             fanin_min_agents=int(eg_fanin.get("min_agents", 5)),
@@ -374,13 +624,15 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
 
     # compliance
     co_raw = domains.get("compliance", {})
-    fo_raw = co_raw.get("forensic", {})
+    fo_raw = co_raw.get("forensic") or {}
     ot_raw = co_raw.get("otel", {})
     comp = ComplianceConfig(
         enabled=co_raw.get("enabled", True),
         forensic=ForensicConfig(
             storage=fo_raw.get("storage", "filesystem"),
             bucket=fo_raw.get("bucket", "forensic-blackbox"),
+            backend=_forensic_backend(fo_raw),
+            base_dir=str(fo_raw.get("base_dir") or "").strip(),
         ),
         eu_ai_act_enabled=co_raw.get("eu_ai_act", {}).get("enabled", True),
         otel=OTELConfig(endpoint=ot_raw.get("endpoint", "http://localhost:4317")),
@@ -410,13 +662,31 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
         agent_security=agent_sec,
         compliance=comp,
         dashboard=dash,
+        gateway=_parse_gateway(data.get("gateway")),
         forensic_store=data.get("forensic_store", "filesystem"),
         auth_provider=data.get("auth_provider", "apikey"),
         pii_engine=data.get("pii_engine", "spacy-regex"),
+        pii_mask_style=str(data.get("pii_mask_style") or "typed"),
+        presidio=_parse_presidio(data.get("presidio")),
         alert_channels=alerts,
         plugins=data.get("plugins", []),
         plugin_config=data.get("plugin_config", {}),
     )
+
+
+def _forensic_backend(raw: dict) -> str:
+    """``backend`` of ``domains.compliance.forensic``, else ``storage``; the
+    two set to different values are logged, and ``backend`` is used."""
+    backend = str(raw.get("backend") or "").strip().lower()
+    storage = str(raw.get("storage") or "").strip().lower()
+    if backend and storage and backend != storage:
+        logger.warning(
+            "admina.yaml: domains.compliance.forensic.backend=%r and storage=%r differ; "
+            "backend is used",
+            backend,
+            storage,
+        )
+    return backend or storage
 
 
 def _build_from_env() -> AdminaConfig:
@@ -496,6 +766,13 @@ def load_config(
 ) -> AdminaConfig:
     """Load configuration from ``admina.yaml`` or ``.env`` fallback.
 
+    The file is, in this order: *yaml_path* when it is a file; else the
+    first ``admina.yaml`` in *search_paths* when they are given; else the
+    file named by the ``ADMINA_CONFIG`` environment variable when it is set
+    and not empty (it must load, see below); else ``admina.yaml`` in the
+    current directory, then in the directory of the ``admina`` package.
+    Without a file the configuration comes from the environment.
+
     Args:
         yaml_path: Explicit path to a YAML config file.
         search_paths: Directories to search for ``admina.yaml`` when
@@ -503,6 +780,10 @@ def load_config(
 
     Returns:
         A fully populated :class:`AdminaConfig` instance.
+
+    Raises:
+        ConfigFileError: ``ADMINA_CONFIG`` names a file that is missing,
+            unreadable or not a YAML mapping.
     """
     # 1. Explicit path
     if yaml_path is not None:
@@ -512,7 +793,10 @@ def load_config(
 
     # 2. Search common locations
     if search_paths is None:
-        search_paths = [Path.cwd(), Path(__file__).resolve().parent.parent]
+        named = os.environ.get(CONFIG_ENV, "")
+        if named:
+            return _load_named(named)
+        search_paths = _default_search_paths()
     for base in search_paths:
         candidate = Path(base) / "admina.yaml"
         if candidate.is_file() and _HAS_YAML:
@@ -523,11 +807,90 @@ def load_config(
     return _build_from_env()
 
 
+def _default_search_paths() -> list[Path]:
+    """Where :func:`load_config` looks for admina.yaml without
+    ``ADMINA_CONFIG``: the current directory, then the package directory."""
+    return [Path.cwd(), Path(__file__).resolve().parent.parent]
+
+
+def config_path() -> Path | None:
+    """The admina.yaml that :func:`load_config` reads when called without
+    arguments: the file named by ``ADMINA_CONFIG`` when it is set and not
+    empty, else the first ``admina.yaml`` found in the current directory,
+    then in the package directory; None without one."""
+    named = os.environ.get(CONFIG_ENV, "")
+    if named:
+        return Path(named)
+    if not _HAS_YAML:  # pragma: no cover — PyYAML is a core dependency
+        return None
+    for base in _default_search_paths():
+        candidate = base / "admina.yaml"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def check_config(path: str | Path | None = None, *, strict: bool = False) -> ConfigCheck:
+    """Check admina.yaml against its schema.
+
+    Args:
+        path: The file; default :func:`config_path` (nothing to check when
+            there is none).
+        strict: Unknown keys are an error instead of being returned.
+
+    Returns:
+        The file checked and the paths of its unknown keys, sorted.
+
+    Raises:
+        ConfigSchemaError: a value has the wrong type, or *strict* and a key
+            is unknown.
+        OSError, yaml.YAMLError, ValueError: the file cannot be read, parsed,
+            or is not a YAML mapping.
+    """
+    file = Path(path) if path is not None else config_path()
+    if file is None:
+        return ConfigCheck(path=None)
+    problems = find_problems(_read_yaml(file))
+    if problems.errors:
+        raise ConfigSchemaError(file, problems.errors)
+    unknown = tuple(sorted(problems.unknown))
+    if strict and unknown:
+        raise ConfigSchemaError(file, [f"unknown keys: {', '.join(unknown)}"])
+    return ConfigCheck(path=file, unknown=unknown)
+
+
+def _load_named(value: str) -> AdminaConfig:
+    """Load the file named by ``ADMINA_CONFIG``; any failure is a
+    :class:`ConfigFileError`, never a fallback to the defaults."""
+    if not _HAS_YAML:  # pragma: no cover — PyYAML is a core dependency
+        raise ConfigFileError(f"{CONFIG_ENV}: cannot load {value!r} (PyYAML is not installed)")
+    try:
+        return _load_yaml(Path(value))
+    except OSError as exc:
+        reason = exc.strerror or type(exc).__name__
+        raise ConfigFileError(f"{CONFIG_ENV}: cannot read {value!r} ({reason})") from None
+    except (yaml.YAMLError, ValueError) as exc:
+        raise ConfigFileError(f"{CONFIG_ENV}: {value!r} is not a valid admina.yaml: {exc}") from exc
+
+
 def _load_yaml(path: Path) -> AdminaConfig:
-    """Parse a YAML file and return :class:`AdminaConfig`."""
+    """Parse a YAML file and return :class:`AdminaConfig`.
+
+    Raises:
+        ConfigSchemaError: a value has the wrong type.
+    """
     logger.info("Loading config from %s", path)
+    data = _read_yaml(path)
+    errors = find_problems(data).errors
+    if errors:
+        raise ConfigSchemaError(path, errors)
+    return _build_from_yaml(data)
+
+
+def _read_yaml(path: Path) -> dict[str, Any]:
+    """The parsed YAML mapping of *path* (an empty file is ``{}``)."""
     with open(path) as fh:
         data = yaml.safe_load(fh) or {}
     if not isinstance(data, dict):
         raise ValueError(f"admina.yaml must be a YAML mapping, got {type(data).__name__}")
-    return _build_from_yaml(data)
+    return data

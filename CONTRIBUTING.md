@@ -74,6 +74,12 @@ uv run python -c "import admina; print('OK')"
 
 All tests must pass before submitting a PR. Do not skip or disable failing tests.
 
+A test that must run without network access takes the `no_network` fixture
+(`tests/conftest.py`): name lookups and outgoing connections then raise
+`OSError`, and the fixture's value lists every attempt, so the test can
+assert that there was none. A child interpreter installs the same guard with
+`_network_guard.install()` (`tests/_network_guard.py`).
+
 ### Build the Rust Engine (optional)
 
 The Rust engine lives in `core-rust/` and is a PyO3 extension module that accelerates
@@ -206,6 +212,22 @@ docs(contributing): add architecture overview
 ```
 
 Scopes: `sdk`, `proxy`, `domains`, `plugins`, `dashboard`, `cli`, `docker`, `config`, `integrations`, `docs`, `ci`, `core`.
+
+### AI-Assisted Contributions
+
+Since 0.12.1 the maintainers develop Admina with AI assistance (Claude).
+A commit written with an AI assistant names it in a trailer:
+
+```
+Co-Authored-By: Claude <noreply@anthropic.com>
+```
+
+Contributions written with an AI assistant are accepted under the same
+rules as any other. The author of the pull request is responsible for the
+change: they have read and understood it, and the tests and linters above
+pass. Add a `Co-Authored-By` trailer that names the assistant when it
+wrote part of the change. Every change is reviewed and tested by the
+maintainers before it is merged.
 
 ### Areas Where Help Is Welcome
 

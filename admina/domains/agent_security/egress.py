@@ -19,6 +19,13 @@ Destination-based control over outbound tool calls. The HTTP method is never
 consulted: a call is judged by where it goes and whether it carries data,
 because a method is an assertion by the resource being evaluated, not a
 security boundary.
+
+The stage runs on the surfaces the policy lists
+(``agent_security.egress.surfaces``, default every one of
+:data:`EGRESS_SURFACES`): ``gateway`` (``/v1/chat/completions``, the text of
+the chat messages), ``mcp`` (``/mcp`` tool calls), ``integration``
+(``/api/v1/validate``) and ``sdk`` (``GovernedModel.ask()`` and
+``stream()``). Each surface asks :func:`egress_policy_for` for its policy.
 """
 
 from __future__ import annotations
@@ -27,6 +34,7 @@ import ipaddress
 import logging
 import os
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -35,16 +43,22 @@ from urllib.parse import urlsplit
 from admina.core.types import RiskLevel
 
 __all__ = [
+    "EGRESS_SURFACES",
     "EgressStatus",
     "EgressIntent",
     "analyze",
     "payload_fields",
     "EgressDecision",
     "EgressPolicy",
+    "egress_policy_for",
+    "parse_egress_surfaces",
     "resolve_egress_mode",
 ]
 
 logger = logging.getLogger("admina.egress")
+
+#: Surfaces the egress stage can run on (``agent_security.egress.surfaces``).
+EGRESS_SURFACES = ("gateway", "mcp", "integration", "sdk")
 
 # Mirrors _MAX_SCAN_DEPTH in admina/domains/governance.py so the egress walk
 # and the PII/firewall walk agree on how deep a payload is inspected.
@@ -436,6 +450,12 @@ class EgressPolicy:
     ``read_only_tools`` holds the tool names the operator has declared
     non-mutating. It is carried here rather than looked up per call so the
     pipeline stage reads no configuration on the request path.
+
+    ``surfaces`` are the surfaces the stage runs on (see
+    :func:`parse_egress_surfaces`; None = every surface).
+
+    Raises:
+        ValueError: ``surfaces`` is not a list of surface names.
     """
 
     def __init__(
@@ -443,6 +463,7 @@ class EgressPolicy:
         allow: list[str],
         quarantine: frozenset[str] = frozenset(),
         read_only_tools: frozenset[str] = frozenset(),
+        surfaces: Iterable[str] | None = None,
     ) -> None:
         self._exact: set[str] = set()
         self._wildcards: list[str] = []
@@ -451,6 +472,7 @@ class EgressPolicy:
             self._compile_entry(entry)
         self._quarantine = quarantine
         self.read_only_tools = read_only_tools
+        self.surfaces = parse_egress_surfaces(surfaces)
 
     def _compile_entry(self, entry: str) -> None:
         value = (entry or "").strip().lower()
@@ -544,6 +566,50 @@ class EgressPolicy:
             )
 
         return EgressDecision(allowed=True)
+
+
+def parse_egress_surfaces(value: Any) -> frozenset[str]:
+    """The surfaces of ``agent_security.egress.surfaces``.
+
+    None (not set) = every surface of :data:`EGRESS_SURFACES`; a list = the
+    surfaces it names (case-insensitive, surrounding blanks ignored), an
+    empty list none.
+
+    Raises:
+        ValueError: *value* is not a list of strings, or names an unknown
+            surface.
+    """
+    if value is None:
+        return frozenset(EGRESS_SURFACES)
+    if isinstance(value, str | bytes | dict) or not isinstance(value, Iterable):
+        raise ValueError(
+            "agent_security.egress.surfaces must be a list of surface names among "
+            f"{', '.join(EGRESS_SURFACES)} (got {type(value).__name__})"
+        )
+    names = list(value)
+    if not all(isinstance(name, str) for name in names):
+        raise ValueError(
+            "agent_security.egress.surfaces must be a list of surface names among "
+            f"{', '.join(EGRESS_SURFACES)}"
+        )
+    surfaces = frozenset(name.strip().lower() for name in names)
+    unknown = sorted(surfaces.difference(EGRESS_SURFACES))
+    if unknown:
+        raise ValueError(
+            f"agent_security.egress.surfaces: unknown surface(s) {', '.join(unknown)}; "
+            f"the surfaces are: {', '.join(EGRESS_SURFACES)}"
+        )
+    return surfaces
+
+
+def egress_policy_for(policy: Any, surface: str) -> Any:
+    """*policy* when the egress stage runs on *surface*, else None (the
+    stage is skipped there). A policy without ``surfaces`` runs on every
+    surface."""
+    if policy is None:
+        return None
+    surfaces = getattr(policy, "surfaces", None)
+    return policy if surfaces is None or surface in surfaces else None
 
 
 _VALID_EGRESS_MODES = frozenset({"observe", "enforce"})

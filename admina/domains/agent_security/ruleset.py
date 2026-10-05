@@ -1,0 +1,269 @@
+# Copyright © 2025–2026 Stefano Noferi & Admina contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Admina — firewall ruleset identity.
+
+:func:`ruleset_sha256` names the set of firewall rules a configuration
+applies: two processes that compute the same value scan text with the same
+rules. The proxy reports it (``X-Admina-Ruleset``, ``GET /v1/admina/ruleset``)
+and a caller that has already scanned part of a prompt with the SDK declares
+it (``X-Admina-Scan-Policy``).
+
+The value is the SHA-256, as 64 lowercase hex characters, of the RFC 8785
+(JCS, :mod:`admina.core.jcs`) serialisation of this object, which holds
+strings and integers only::
+
+    {
+      "ruleset_format": 1,
+      "admina_version": "<admina.__version__>",
+      "engine": "python" | "rust",
+      "builtin": [{"regex": "...", "category": "...", "risk_level": "..."}, ...],
+      "pattern_packs": [{"name": "...", "version": "...",
+                         "patterns": [{"id": "...", "regex": "...",
+                                       "category": "...", "risk_level": "..."}, ...]}, ...],
+      "custom_patterns": [{"regex": "...", "category": "...", "risk_level": "..."}, ...],
+      "disabled_categories": ["<category>", ...],
+      "disabled_patterns": ["<pattern id>", ...],
+      "allowed_tags": ["<tag>", ...],
+      "heuristic_threshold_milli": <int>
+    }
+
+- ``ruleset_format``: :data:`RULESET_FORMAT`, the version of this shape. A
+  change of the shape (a member added, removed or computed differently)
+  increments it, so two hashes of different formats are never compared as
+  if they named different rules.
+- ``builtin``: for the ``python`` engine, the builtin patterns of
+  :data:`~admina.domains.agent_security.firewall.INJECTION_PATTERNS` in
+  their order, without those of a disabled category; ``risk_level`` is the
+  lowercase level name. For the ``rust`` engine, whose patterns are compiled
+  into ``admina-core``, the object ``{"admina_core_version": "<version>"}``.
+- ``pattern_packs``: the packs named by ``agent_security.firewall.pattern_packs``,
+  in their order, as loaded from their sources
+  (:mod:`~admina.domains.agent_security.pattern_packs`, directories from
+  ``pattern_pack_dirs`` or ``ADMINA_PATTERN_PACK_DIRS``): the pack's
+  ``name``, ``version`` and every pattern in its order with its ``id`` (as
+  written in the pack, not qualified), ``regex``, ``category`` and
+  ``risk_level``. The ``description`` is left out. A changed pack file
+  changes the hash.
+- ``custom_patterns``: the entries of ``agent_security.firewall.custom_patterns``
+  as the firewall loads them (:func:`~admina.domains.agent_security.firewall.
+  parse_custom_patterns`): in their order, ``category`` defaulted to
+  ``user_custom``, ``risk_level`` lowercase and defaulted to ``medium``,
+  malformed entries left out.
+- ``disabled_categories``: ``agent_security.firewall.disabled_categories``,
+  sorted by code point, without duplicates.
+- ``disabled_patterns``: ``agent_security.firewall.disabled_patterns``,
+  sorted by code point, without duplicates (``builtin`` keeps the patterns
+  they name).
+- ``allowed_tags``: ``agent_security.firewall.allowed_tags`` in lower case,
+  sorted by code point, without duplicates.
+- ``heuristic_threshold_milli``: ``agent_security.firewall.heuristic_threshold``
+  × 1000, rounded to the nearest integer (Python :func:`round`).
+
+JCS sorts the members, so the order of keys in ``admina.yaml`` does not
+matter. :func:`ruleset_document` is that serialisation as text, to compare
+two rulesets member by member; :func:`active_ruleset_sha256` is the hash of
+the firewall that :func:`admina.engines.get_firewall` builds from
+``admina.yaml``, which the proxy reports for the same file and engine. This module does not import FastAPI or the proxy.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import math
+from typing import Any
+
+import admina
+from admina.core.config import AdminaConfig, FirewallConfig
+from admina.core.jcs import canonicalize
+from admina.domains.agent_security import firewall as _firewall
+from admina.domains.agent_security.pattern_packs import PatternPack, load_pattern_packs, pack_dirs
+
+__all__ = [
+    "RULESET_ENGINES",
+    "RULESET_FORMAT",
+    "active_ruleset_sha256",
+    "ruleset_document",
+    "ruleset_object",
+    "ruleset_sha256",
+]
+
+#: Firewall engines a ruleset can be computed for.
+RULESET_ENGINES = ("python", "rust")
+
+#: Version of the shape of the hashed object (its ``ruleset_format``).
+RULESET_FORMAT = 1
+
+
+def ruleset_object(
+    config: AdminaConfig | FirewallConfig | None = None,
+    *,
+    engine: str = "python",
+    admina_core_version: str | None = None,
+    admina_version: str | None = None,
+) -> dict[str, Any]:
+    """The object :func:`ruleset_sha256` hashes (see the module docstring).
+
+    Args:
+        config: The configuration, or its ``agent_security.firewall``
+            section; ``None`` = the defaults.
+        engine: ``"python"`` or ``"rust"``: the firewall engine the rules
+            run on.
+        admina_core_version: Version of ``admina-core`` (``rust`` only);
+            defaults to the installed one.
+        admina_version: Defaults to the installed ``admina.__version__``.
+
+    Raises:
+        ValueError: Unknown engine; ``rust`` without a version and without
+            ``admina-core``; a threshold that is not a finite number; a
+            pack or category name that is not a string; a pack that cannot
+            be loaded
+            (:class:`~admina.domains.agent_security.pattern_packs.PatternPackError`).
+    """
+    if engine not in RULESET_ENGINES:
+        raise ValueError(f"engine must be one of {', '.join(RULESET_ENGINES)} (got {engine!r})")
+    fw = _firewall_section(config)
+    disabled = _names(fw.disabled_categories, "disabled_categories")
+    if engine == "python":
+        builtin: Any = [
+            _pattern(regex, category, level)
+            for regex, category, level in _firewall.INJECTION_PATTERNS
+            if category not in disabled
+        ]
+    else:
+        builtin = {"admina_core_version": admina_core_version or _installed_core_version()}
+    return {
+        "ruleset_format": RULESET_FORMAT,
+        "admina_version": admina_version or admina.__version__,
+        "engine": engine,
+        "builtin": builtin,
+        "pattern_packs": [
+            _pack(pack)
+            for pack in load_pattern_packs(
+                _names(fw.pattern_packs, "pattern_packs"), pack_dirs(fw.pattern_pack_dirs)
+            )
+        ],
+        "custom_patterns": [
+            _pattern(regex, category, level)
+            for regex, category, level in _firewall.parse_custom_patterns(fw.custom_patterns)
+        ],
+        "disabled_categories": sorted(set(disabled)),
+        "disabled_patterns": sorted(set(_names(fw.disabled_patterns, "disabled_patterns"))),
+        "allowed_tags": sorted({tag.lower() for tag in _names(fw.allowed_tags, "allowed_tags")}),
+        "heuristic_threshold_milli": _milli(fw.heuristic_threshold),
+    }
+
+
+def ruleset_sha256(
+    config: AdminaConfig | FirewallConfig | None = None,
+    *,
+    engine: str = "python",
+    admina_core_version: str | None = None,
+    admina_version: str | None = None,
+) -> str:
+    """SHA-256 (64 lowercase hex characters) of the ruleset of *config*.
+
+    Arguments as :func:`ruleset_object`.
+    """
+    document = ruleset_document(
+        config,
+        engine=engine,
+        admina_core_version=admina_core_version,
+        admina_version=admina_version,
+    )
+    return hashlib.sha256(document.encode("utf-8")).hexdigest()
+
+
+def ruleset_document(
+    config: AdminaConfig | FirewallConfig | None = None,
+    *,
+    engine: str = "python",
+    admina_core_version: str | None = None,
+    admina_version: str | None = None,
+) -> str:
+    """The canonical JSON text (RFC 8785) of :func:`ruleset_object`: the
+    UTF-8 encoding of this text is what :func:`ruleset_sha256` hashes.
+
+    Arguments as :func:`ruleset_object`.
+    """
+    obj = ruleset_object(
+        config,
+        engine=engine,
+        admina_core_version=admina_core_version,
+        admina_version=admina_version,
+    )
+    return canonicalize(obj).decode("utf-8")
+
+
+def active_ruleset_sha256(config: AdminaConfig | None = None) -> str:
+    """:func:`ruleset_sha256` of the firewall :func:`admina.engines.get_firewall`
+    builds (its engine) for *config*, by default ``admina.yaml``
+    (:func:`~admina.core.config.load_config`).
+
+    For the same file and ``ADMINA_ENGINE``, the proxy reports this value in
+    ``X-Admina-Ruleset`` and ``GET /v1/admina/ruleset``.
+    """
+    from admina.core.config import load_config
+    from admina.engines import get_firewall
+
+    config = config if config is not None else load_config()
+    engine = getattr(get_firewall(), "engine", "python")
+    return ruleset_sha256(config, engine=engine)
+
+
+def _firewall_section(config: AdminaConfig | FirewallConfig | None) -> FirewallConfig:
+    if config is None:
+        return FirewallConfig()
+    if isinstance(config, FirewallConfig):
+        return config
+    return config.agent_security.firewall
+
+
+def _pattern(regex: Any, category: Any, level: Any) -> dict[str, Any]:
+    return {"regex": regex, "category": category, "risk_level": getattr(level, "value", level)}
+
+
+def _pack(pack: PatternPack) -> dict[str, Any]:
+    return {
+        "name": pack.name,
+        "version": pack.version,
+        "patterns": [
+            {"id": p.id, **_pattern(p.regex, p.category, p.risk_level)} for p in pack.patterns
+        ],
+    }
+
+
+def _names(values: Any, key: str) -> list[str]:
+    names = list(values or ())
+    if not all(isinstance(name, str) for name in names):
+        raise ValueError(f"agent_security.firewall.{key} must list strings")
+    return names
+
+
+def _milli(threshold: Any) -> int:
+    if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+        raise ValueError("agent_security.firewall.heuristic_threshold must be a number")
+    if not math.isfinite(threshold):
+        raise ValueError("agent_security.firewall.heuristic_threshold must be finite")
+    return round(threshold * 1000)
+
+
+def _installed_core_version() -> str:
+    try:
+        import admina_core  # type: ignore[import-untyped]
+    except ImportError as exc:
+        raise ValueError(
+            "admina_core_version is required for the rust engine when admina-core is not installed"
+        ) from exc
+    return str(admina_core.version())

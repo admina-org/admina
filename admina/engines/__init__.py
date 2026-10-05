@@ -17,17 +17,35 @@
 Single point where every surface (proxy, SDK, integrations) obtains the
 governance engines: Rust auto-detection, ``ADMINA_ENGINE=auto|python|rust``
 override, admina.yaml firewall overrides, ``pii_engine`` selection.
+
+``ADMINA_ENGINE``:
+
+- ``auto`` (default): the Rust firewall and loop breaker when ``admina-core``
+  is installed, else the Python ones; the Python firewall whenever
+  admina.yaml sets a key of :data:`PYTHON_ONLY_FIREWALL_KEYS` (a warning is
+  logged); the PII engine stays Python.
+- ``python``: the Python engines.
+- ``rust``: the Rust engines. A factory raises :class:`EngineSelectionError`
+  when ``admina-core`` is not installed or when admina.yaml sets a key of
+  :data:`PYTHON_ONLY_FIREWALL_KEYS`, so the proxy does not start.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from admina.core.offline import apply_offline_environment
+from admina.engines.pii_plugins import PIIEngineBridge, load_plugin_engine, plugin_engine_names
+
 if TYPE_CHECKING:
+    from admina.core.config import AdminaConfig, FirewallConfig
     from admina.domains.agent_security.egress import EgressPolicy
+    from admina.domains.agent_security.pattern_packs import PatternPack
 
 logger = logging.getLogger("admina.engines")
 
@@ -56,6 +74,37 @@ except ImportError:
 # ── Engine selector ─────────────────────────────────────────────────────────
 
 
+class EngineSelectionError(ValueError):
+    """``ADMINA_ENGINE=rust`` cannot be honoured: ``admina-core`` is not
+    installed, or admina.yaml sets a firewall key that only the Python
+    firewall applies. The engines are not built and the proxy does not
+    start."""
+
+
+#: Keys of ``agent_security.firewall`` that only the Python firewall
+#: applies. Under ``ADMINA_ENGINE=auto`` any of them makes the firewall
+#: Python; under ``ADMINA_ENGINE=rust`` it is an :class:`EngineSelectionError`.
+PYTHON_ONLY_FIREWALL_KEYS = (
+    "custom_patterns",
+    "disabled_categories",
+    "disabled_patterns",
+    "pattern_packs",
+)
+
+
+def _engine_mode() -> str:
+    """``ADMINA_ENGINE`` in lower case: ``auto`` (also when unset),
+    ``python`` or ``rust``.
+
+    Raises:
+        ValueError: any other value.
+    """
+    mode = os.environ.get("ADMINA_ENGINE", "auto").lower()
+    if mode not in ("auto", "python", "rust"):
+        raise ValueError(f"ADMINA_ENGINE must be auto|python|rust, got {mode!r}")
+    return mode
+
+
 def _resolve_engine() -> str:
     """Return the effective engine name based on ADMINA_ENGINE env override.
 
@@ -63,19 +112,26 @@ def _resolve_engine() -> str:
 
     Raises:
         ValueError: if ``ADMINA_ENGINE`` is set to an unrecognised value.
+        EngineSelectionError: ``ADMINA_ENGINE=rust`` and ``admina-core`` is
+            not installed.
     """
-    mode = os.environ.get("ADMINA_ENGINE", "auto").lower()
-    if mode not in ("auto", "python", "rust"):
-        raise ValueError(f"ADMINA_ENGINE must be auto|python|rust, got {mode!r}")
-    if mode == "rust" and not _rust_available:
-        logger.warning(
-            "ADMINA_ENGINE=rust but admina-core is not installed — "
-            "falling back to python (pip install 'admina-framework[rust]')"
-        )
-        return "python"
+    mode = _engine_mode()
+    if mode == "rust":
+        _require_rust()
     if mode == "auto":
         return "rust" if _rust_available else "python"
     return mode
+
+
+def _require_rust() -> None:
+    """Raise :class:`EngineSelectionError` when ``admina-core`` is not
+    installed (``ADMINA_ENGINE=rust``)."""
+    if not _rust_available:
+        raise EngineSelectionError(
+            "ADMINA_ENGINE=rust, but admina-core is not installed: install "
+            "admina-framework[rust], or set ADMINA_ENGINE=python (or auto) to run "
+            "the Python engines"
+        )
 
 
 def _resolve_pii_engine() -> str:
@@ -88,17 +144,15 @@ def _resolve_pii_engine() -> str:
     under 'auto' (the default) the PII path stays on Python for full
     recall. Firewall and loop breaker are unaffected — they use
     _resolve_engine() and keep Rust acceleration under 'auto'.
+
+    Raises:
+        ValueError: if ``ADMINA_ENGINE`` is set to an unrecognised value.
+        EngineSelectionError: ``ADMINA_ENGINE=rust`` and ``admina-core`` is
+            not installed.
     """
-    mode = os.environ.get("ADMINA_ENGINE", "auto").lower()
-    if mode not in ("auto", "python", "rust"):
-        raise ValueError(f"ADMINA_ENGINE must be auto|python|rust, got {mode!r}")
+    mode = _engine_mode()
     if mode == "rust":
-        if not _rust_available:
-            logger.warning(
-                "ADMINA_ENGINE=rust but admina-core is not installed — "
-                "PII falls back to python (pip install 'admina-framework[rust]')"
-            )
-            return "python"
+        _require_rust()
         return "rust"
     if mode == "auto" and _rust_available:
         logger.debug(
@@ -112,33 +166,109 @@ def _resolve_pii_engine() -> str:
 # ── Firewall YAML overrides ─────────────────────────────────────────────────
 
 
-def _load_firewall_yaml_overrides() -> tuple[list, list]:
-    """Read agent_security.firewall.{custom_patterns,disabled_categories}
-    from admina.yaml if present. Falls back to no overrides on any error.
-    Each custom pattern in YAML is ``{regex, category, risk_level}``.
-    """
-    extras: list = []
-    disabled: list = []
+def _firewall_config() -> FirewallConfig | None:
+    """``agent_security.firewall`` of admina.yaml (or of the .env fallback);
+    None when the file cannot be read, except for a file named by
+    ``ADMINA_CONFIG``, whose failure raises
+    :class:`~admina.core.config.ConfigFileError`, and a value of the wrong
+    type anywhere in admina.yaml, which raises
+    :class:`~admina.core.config.ConfigSchemaError`."""
     try:
         from admina.core.config import load_config
-        from admina.core.types import RiskLevel
 
-        fw_cfg = load_config().agent_security.firewall
-        disabled = list(fw_cfg.disabled_categories)
-        for entry in fw_cfg.custom_patterns:
-            try:
-                extras.append(
-                    (
-                        entry["regex"],
-                        entry.get("category", "user_custom"),
-                        RiskLevel(entry.get("risk_level", "medium").lower()),
-                    )
-                )
-            except (KeyError, ValueError, TypeError) as exc:
-                logger.warning("Skipping malformed custom_pattern %r: %s", entry, exc)
+        return load_config().agent_security.firewall
     except (ImportError, AttributeError, OSError) as exc:
         logger.debug("Firewall YAML overrides unavailable: %s", exc)
-    return extras, disabled
+        return None
+
+
+def _custom_patterns(fw_cfg: FirewallConfig) -> list:
+    from admina.domains.agent_security.firewall import parse_custom_patterns
+
+    return parse_custom_patterns(
+        fw_cfg.custom_patterns,
+        on_error=lambda entry, exc: logger.warning(
+            "Skipping malformed custom_pattern %r: %s", entry, exc
+        ),
+    )
+
+
+def _load_firewall_yaml_overrides() -> tuple[list, list]:
+    """Read agent_security.firewall.{custom_patterns,disabled_categories}
+    from admina.yaml if present. Falls back to no overrides when the file
+    cannot be read, except for a file named by ``ADMINA_CONFIG``, whose
+    failure raises :class:`~admina.core.config.ConfigFileError`.
+    Each custom pattern in YAML is ``{regex, category, risk_level}``.
+    """
+    fw_cfg = _firewall_config()
+    if fw_cfg is None:
+        return [], []
+    return _custom_patterns(fw_cfg), list(fw_cfg.disabled_categories)
+
+
+@dataclass(frozen=True)
+class _FirewallSettings:
+    """The firewall settings of admina.yaml that the Python firewall applies."""
+
+    extras: list = field(default_factory=list)
+    disabled_categories: list[str] = field(default_factory=list)
+    disabled_patterns: list[str] = field(default_factory=list)
+    packs: tuple[PatternPack, ...] = ()
+    heuristic_threshold: float = 0.5
+    allowed_tags: list[str] = field(default_factory=list)
+
+    @property
+    def python_only(self) -> bool:
+        """True when a setting only the Python firewall applies is set."""
+        return bool(self.extras or self.disabled_categories or self.disabled_patterns or self.packs)
+
+
+_NO_CONFIG: Any = object()
+
+
+def _firewall_settings(fw_cfg: FirewallConfig | None = _NO_CONFIG) -> _FirewallSettings:
+    """The :class:`_FirewallSettings` of *fw_cfg* (by default the
+    ``agent_security.firewall`` of admina.yaml, as :func:`_firewall_config`;
+    none when it cannot be read), with its pattern packs loaded and timed.
+
+    Raises:
+        PatternPackError: a pattern pack cannot be loaded, or is too slow
+            with ``strict_pack_timing``.
+    """
+    from admina.domains.agent_security.pattern_packs import configured_packs
+
+    if fw_cfg is _NO_CONFIG:
+        fw_cfg = _firewall_config()
+    if fw_cfg is None:
+        return _FirewallSettings()
+    return _FirewallSettings(
+        extras=_custom_patterns(fw_cfg),
+        disabled_categories=list(fw_cfg.disabled_categories),
+        disabled_patterns=list(fw_cfg.disabled_patterns),
+        packs=tuple(configured_packs(fw_cfg)),
+        heuristic_threshold=fw_cfg.heuristic_threshold,
+        allowed_tags=list(fw_cfg.allowed_tags),
+    )
+
+
+def _python_only_keys(fw_cfg: FirewallConfig | None) -> list[str]:
+    """The keys of :data:`PYTHON_ONLY_FIREWALL_KEYS` that *fw_cfg* sets (a
+    non-empty value), in that order."""
+    if fw_cfg is None:
+        return []
+    return [key for key in PYTHON_ONLY_FIREWALL_KEYS if getattr(fw_cfg, key, None)]
+
+
+#: Environment variable that turns the firewall's deep path off.
+DEEP_PATH_ENV = "INJECTION_DEEP_PATH_ENABLED"
+_FALSE_WORDS = frozenset({"0", "false", "no", "off", "f", "n"})
+
+
+def _deep_path_from_env() -> bool:
+    """``INJECTION_DEEP_PATH_ENABLED``: False for 0, false, f, no, n, off
+    (any case, as the proxy settings read it); True otherwise, and when
+    unset or empty."""
+    return os.environ.get(DEEP_PATH_ENV, "").strip().lower() not in _FALSE_WORDS
 
 
 # ── Bridge Protocols ────────────────────────────────────────────────────────
@@ -171,20 +301,32 @@ class LoopBreakerBridge(Protocol):
 class _PythonFirewallBridge:
     """Wraps the existing Python InjectionFirewall with a compatible interface."""
 
-    def __init__(self, extras: list | None = None, disabled: list | None = None):
+    engine = "python"
+
+    def __init__(
+        self, settings: _FirewallSettings | None = None, *, deep_path_enabled: bool = True
+    ):
         from admina.domains.agent_security.firewall import InjectionFirewall
 
-        if extras is None and disabled is None:
-            extras, disabled = _load_firewall_yaml_overrides()
-        if extras or disabled:
+        if settings is None:
+            settings = _firewall_settings()
+        if settings.python_only:
             logger.info(
-                "Loaded %d custom firewall pattern(s); disabled: %s",
-                len(extras),
-                disabled or "(none)",
+                "Loaded %d custom firewall pattern(s); pattern packs: %s; "
+                "disabled categories: %s; disabled patterns: %s",
+                len(settings.extras),
+                ", ".join(f"{p.name} {p.version}" for p in settings.packs) or "(none)",
+                settings.disabled_categories or "(none)",
+                settings.disabled_patterns or "(none)",
             )
         self._impl = InjectionFirewall(
-            extra_patterns=extras or None,
-            disabled_categories=disabled or None,
+            extra_patterns=settings.extras or None,
+            disabled_categories=settings.disabled_categories or None,
+            disabled_patterns=settings.disabled_patterns,
+            pattern_packs=settings.packs,
+            heuristic_threshold=settings.heuristic_threshold,
+            allowed_tags=settings.allowed_tags,
+            deep_path_enabled=deep_path_enabled,
         )
 
     def check(self, text: str) -> dict:
@@ -203,8 +345,10 @@ class _RustFirewallBridge:
     with no per-type breakdown; mapped to the Python key set.
     """
 
-    def __init__(self):
-        self._impl = admina_core.RustFirewall()
+    engine = "rust"
+
+    def __init__(self, *, deep_path_enabled: bool = True):
+        self._impl = admina_core.RustFirewall(deep_path=deep_path_enabled)
 
     def check(self, text: str) -> dict:
         result = self._impl.check(text)
@@ -236,10 +380,12 @@ class _RustFirewallBridge:
 class _PythonPiiBridge:
     """Wraps the Python PIIRedactor."""
 
-    def __init__(self):
+    engine = "python"
+
+    def __init__(self, mask_style: str = "typed"):
         from admina.domains.data_sovereignty.pii import PIIRedactor
 
-        self._impl = PIIRedactor()
+        self._impl = PIIRedactor(mask_style=mask_style)
 
     def redact(self, text: str) -> dict:
         return self._impl.redact(text)
@@ -254,16 +400,28 @@ class _RustPiiBridge:
     """Wraps Rust RustPiiScanner, returns dicts for compatibility.
 
     Stats normalization: Rust tracks ``total_scans``/``total_redactions``
-    with no per-type breakdown; mapped to the Python key set.
+    with no per-type breakdown; mapped to the Python key set. In the
+    ``omissis`` mask style the scanner's masks (``[EMAIL_REDACTED]``, …)
+    become ``[OMISSIS]``.
     """
 
-    def __init__(self):
+    engine = "rust"
+
+    def __init__(self, mask_style: str = "typed"):
+        from admina.domains.data_sovereignty.masking import normalize_mask_style
+
         self._impl = admina_core.RustPiiScanner()
+        self._omissis = normalize_mask_style(mask_style) == "omissis"
 
     def redact(self, text: str) -> dict:
         result = self._impl.redact(text)
+        redacted = result.redacted_text
+        if self._omissis and result.count:
+            from admina.domains.data_sovereignty.masking import OMISSIS
+
+            redacted = _RUST_PII_MASK_RX.sub(OMISSIS, redacted)
         return {
-            "redacted_text": result.redacted_text,
+            "redacted_text": redacted,
             "count": result.count,
             "categories": result.categories,
             "entities": [{"type": cat, "method": "rust_regex"} for cat in result.categories],
@@ -282,14 +440,27 @@ class _RustPiiBridge:
         }
 
 
+# Masks of the Rust PII scanner (admina_core).
+_RUST_PII_MASK_RX = re.compile(r"\[(?:EMAIL|CC|SSN|PHONE|IBAN|IP)_REDACTED\]")
+
+
 # ── Loop breaker bridges ────────────────────────────────────────────────────
 
 
 class _PythonLoopBridge:
     """Wraps the Python LoopBreaker."""
 
+    engine = "python"
+
     def __init__(self, **kwargs):
-        from admina.domains.agent_security.loop_breaker import LoopBreaker
+        try:
+            from admina.domains.agent_security.loop_breaker import LoopBreaker
+        except ImportError as exc:
+            raise ImportError(
+                "The Python loop breaker needs numpy and scikit-learn: "
+                "pip install 'admina-framework[proxy]' (or 'admina-framework[rust]' "
+                "for the Rust loop breaker)"
+            ) from exc
 
         self._impl = LoopBreaker(**kwargs)
 
@@ -309,6 +480,8 @@ class _RustLoopBridge:
     similarity_threshold, total_checks) beyond the Python key set;
     mapped to the Python key set only.
     """
+
+    engine = "rust"
 
     def __init__(self, window_size=10, similarity_threshold=0.85, max_consecutive=3, **kwargs):
         self._impl = admina_core.RustLoopBreaker(
@@ -333,26 +506,56 @@ class _RustLoopBridge:
 # ── Factory functions ───────────────────────────────────────────────────────
 
 
-def get_firewall() -> FirewallBridge:
+def get_firewall(*, deep_path_enabled: bool | None = None) -> FirewallBridge:
     """Get the configured firewall engine.
 
-    If YAML overrides (custom_patterns or disabled_categories) are present,
-    the Python bridge is used even when Rust is available — Rust cannot
-    receive operator-defined patterns, so using it would silently ignore them.
+    ``ADMINA_ENGINE=auto``: the Rust firewall when ``admina-core`` is
+    installed, unless admina.yaml sets a key of
+    :data:`PYTHON_ONLY_FIREWALL_KEYS` (``custom_patterns``,
+    ``disabled_categories``, ``disabled_patterns``, ``pattern_packs``): the
+    Rust engine cannot apply them, so the Python firewall is used and a
+    warning is logged. ``python``: the Python firewall. ``rust``: the Rust
+    firewall, or :class:`EngineSelectionError`.
+
+    *deep_path_enabled* switches the deep path (heuristic scoring) of either
+    engine; ``None`` reads ``INJECTION_DEEP_PATH_ENABLED`` (default on).
+    ``heuristic_threshold`` and ``allowed_tags`` apply to the Python
+    firewall; the Rust engine scores with signals and a threshold of its own.
+
+    Raises:
+        EngineSelectionError: ``ADMINA_ENGINE=rust`` and ``admina-core`` is
+            not installed, or admina.yaml sets a key of
+            :data:`PYTHON_ONLY_FIREWALL_KEYS` (the message names them).
+        ConfigSchemaError: a value of admina.yaml has the wrong type (the
+            message names its key).
+        ValueError: ``ADMINA_ENGINE`` has another value;
+            ``heuristic_threshold`` is not a finite number greater than 0; a
+            pattern pack cannot be loaded, or is too slow with
+            ``strict_pack_timing``
+            (:class:`~admina.domains.agent_security.pattern_packs.PatternPackError`).
     """
-    extras, disabled = _load_firewall_yaml_overrides()
-    if extras or disabled:
-        resolved = _resolve_engine()
-        if resolved == "rust":
-            logger.warning(
-                "YAML firewall overrides (custom_patterns/disabled_categories) are set "
-                "but the Rust engine cannot apply them — falling back to the Python bridge "
-                "so operator rules are enforced. Remove overrides to use Rust acceleration."
+    if deep_path_enabled is None:
+        deep_path_enabled = _deep_path_from_env()
+    resolved = _resolve_engine()
+    fw_cfg = _firewall_config()
+    python_only = _python_only_keys(fw_cfg)
+    if resolved == "rust" and python_only:
+        if _engine_mode() == "rust":
+            keys = ", ".join(f"agent_security.firewall.{key}" for key in python_only)
+            raise EngineSelectionError(
+                f"ADMINA_ENGINE=rust, but admina.yaml sets {keys}, which only the Python "
+                "firewall applies: remove them, or set ADMINA_ENGINE=python (or auto) to "
+                "run the Python firewall"
             )
-        return _PythonFirewallBridge(extras=extras, disabled=disabled)
-    if _resolve_engine() == "rust":
-        return _RustFirewallBridge()
-    return _PythonFirewallBridge()
+        logger.warning(
+            "YAML firewall overrides (%s) are set but the Rust engine cannot apply them — "
+            "falling back to the Python bridge so operator rules are enforced. "
+            "Remove overrides to use Rust acceleration.",
+            ", ".join(python_only),
+        )
+    if resolved == "rust" and not python_only:
+        return _RustFirewallBridge(deep_path_enabled=deep_path_enabled)
+    return _PythonFirewallBridge(_firewall_settings(fw_cfg), deep_path_enabled=deep_path_enabled)
 
 
 def get_loop_breaker(**kwargs: Any) -> LoopBreakerBridge:
@@ -371,13 +574,28 @@ def get_egress_policy() -> EgressPolicy | None:
 
     There is no Rust variant: the stage is a set lookup and a handful of
     string comparisons, so acceleration would not pay for itself.
+
+    A configuration that cannot be read gives an empty allowlist, except a
+    file named by ``ADMINA_CONFIG``, whose failure raises
+    :class:`~admina.core.config.ConfigFileError`, and a value of the wrong
+    type anywhere in admina.yaml, which raises
+    :class:`~admina.core.config.ConfigSchemaError`.
+
+    Raises:
+        ConfigSchemaError: a value of admina.yaml has the wrong type (the
+            message names its key).
+        ValueError: ``agent_security.egress.surfaces`` is not a list of
+            surface names.
     """
+    from admina.core.config import ConfigFileError, ConfigSchemaError
     from admina.domains.agent_security.egress import EgressPolicy
 
     try:
         from admina.core.config import load_config
 
         cfg = load_config().agent_security.egress
+    except (ConfigFileError, ConfigSchemaError):
+        raise
     except Exception as exc:
         logger.warning("Egress config unavailable or malformed, using an empty allowlist: %s", exc)
         return EgressPolicy(allow=[])
@@ -389,6 +607,7 @@ def get_egress_policy() -> EgressPolicy | None:
     return EgressPolicy(
         allow=list(cfg.allow),
         read_only_tools=frozenset(cfg.read_only_tools),
+        surfaces=cfg.surfaces,
     )
 
 
@@ -398,9 +617,10 @@ _PII_ENGINE_FACTORIES: dict[str, Callable[[], PIIBridge]] = {}
 
 
 def _spacy_regex_pii() -> PIIBridge:
+    style = pii_mask_style()
     if _resolve_pii_engine() == "rust":
-        return _RustPiiBridge()
-    return _PythonPiiBridge()
+        return _RustPiiBridge(mask_style=style)
+    return _PythonPiiBridge(mask_style=style)
 
 
 _PII_ENGINE_FACTORIES["spacy-regex"] = _spacy_regex_pii
@@ -415,6 +635,46 @@ def _presidio_pii() -> PIIBridge:
 _PII_ENGINE_FACTORIES["presidio"] = _presidio_pii
 
 
+def _admina_config() -> AdminaConfig | None:
+    """admina.yaml (or the .env fallback), or None when it cannot be read.
+
+    A file named by ``ADMINA_CONFIG`` that cannot be loaded raises
+    :class:`~admina.core.config.ConfigFileError`; a value of the wrong type
+    anywhere in admina.yaml raises
+    :class:`~admina.core.config.ConfigSchemaError`, as :func:`get_firewall`
+    does.
+    """
+    from admina.core.config import ConfigSchemaError
+
+    try:
+        from admina.core.config import load_config
+
+        return load_config()
+    except ConfigSchemaError:
+        raise
+    except (ImportError, ValueError, OSError) as exc:
+        logger.debug("admina.yaml unavailable, using the PII engine defaults: %s", exc)
+        return None
+
+
+def pii_mask_style() -> str:
+    """The mask style of the PII engines: ``ADMINA_PII_MASK_STYLE`` env >
+    admina.yaml ``pii_mask_style`` > ``typed``.
+
+    Raises:
+        ConfigSchemaError: a value of admina.yaml has the wrong type (the
+            message names its key).
+        ValueError: the value is not ``typed`` or ``omissis``.
+    """
+    from admina.domains.data_sovereignty.masking import normalize_mask_style
+
+    value = os.environ.get("ADMINA_PII_MASK_STYLE")
+    if not (value or "").strip():
+        config = _admina_config()
+        value = config.pii_mask_style if config is not None else None
+    return normalize_mask_style(value)
+
+
 def get_pii_engine(name: str | None = None) -> PIIBridge:
     """Get the configured PII engine.
 
@@ -422,23 +682,40 @@ def get_pii_engine(name: str | None = None) -> PIIBridge:
     admina.yaml ``pii_engine`` > ``spacy-regex``. An engine selected by name
     takes precedence over Rust auto-detection (Rust accelerates only the
     ``spacy-regex`` path).
+
+    A name is looked up among the built-in engines (``spacy-regex``,
+    ``presidio``) first, then among the entry points of the
+    ``admina.pii_engines`` group (see :mod:`admina.engines.pii_plugins`),
+    whose engine runs through a :class:`PIIEngineBridge` and receives its
+    ``plugin_config`` block of admina.yaml. Every engine masks in the style
+    of :func:`pii_mask_style`. With ``ADMINA_OFFLINE`` the variables of
+    :data:`admina.core.offline.OFFLINE_ENVIRONMENT` are set first.
+
+    Raises:
+        ConfigSchemaError: a value of admina.yaml has the wrong type (the
+            message names its key).
+        ValueError: no engine has that name (the message lists the names
+            available).
     """
+    apply_offline_environment()
+    mask_style = pii_mask_style()
+    config = None
     if name is None:
         name = os.environ.get("ADMINA_PII_ENGINE") or None
     if name is None:
-        try:
-            from admina.core.config import load_config
-
-            name = load_config().pii_engine
-        except (ImportError, ValueError, OSError) as exc:
-            logger.debug("pii_engine config unavailable, defaulting to spacy-regex: %s", exc)
-            name = "spacy-regex"
+        config = _admina_config()
+        name = config.pii_engine if config is not None else "spacy-regex"
     factory = _PII_ENGINE_FACTORIES.get(name)
-    if factory is None:
-        raise ValueError(
-            f"Unknown pii_engine {name!r}. Available: {sorted(_PII_ENGINE_FACTORIES)}."
-        )
-    return factory()
+    if factory is not None:
+        return factory()
+    if config is None:
+        config = _admina_config()
+    plugin_config = (config.plugin_config or {}) if config is not None else {}
+    bridge = load_plugin_engine(name, mask_style=mask_style, config=plugin_config.get(name))
+    if bridge is None:
+        available = sorted({*_PII_ENGINE_FACTORIES, *plugin_engine_names()})
+        raise ValueError(f"Unknown pii_engine {name!r}. Available: {available}.")
+    return bridge
 
 
 def get_pii_scanner() -> PIIBridge:
@@ -449,8 +726,33 @@ def get_pii_scanner() -> PIIBridge:
 # ── Status / diagnostics ────────────────────────────────────────────────────
 
 
-def engine_status() -> dict[str, Any]:
-    """Get engine status for diagnostics."""
+def engine_status(
+    *,
+    firewall: Any = None,
+    loop_breaker: Any = None,
+    pii_engine: Any = None,
+) -> dict[str, Any]:
+    """Get engine status for diagnostics.
+
+    ``engine``: ``rust`` when ``admina-core`` is installed, else ``python``;
+    ``rust_available`` and ``rust_version`` (``admina_core.version()``, or
+    None); ``selection``: ``ADMINA_ENGINE`` as set (``auto`` when unset);
+    ``active``: the engine that selection resolves to for the firewall and
+    the loop breaker, and ``pii_active`` for the ``spacy-regex`` PII engine.
+
+    ``firewall``, ``loop_breaker`` and ``pii``: the engine of the objects
+    given, the ones actually built (the proxy passes its own): ``rust`` or
+    ``python`` for the firewall (``python`` for a firewall that names no
+    engine) and the loop breaker; ``rust``, ``python``, ``presidio`` or the
+    name of a plugin engine for the PII engine; None for an object not
+    given. With admina.yaml overrides, ``firewall`` is ``python`` while
+    ``active`` is ``rust``.
+
+    Raises:
+        ValueError: ``ADMINA_ENGINE`` has an unknown value.
+        EngineSelectionError: ``ADMINA_ENGINE=rust`` and ``admina-core`` is
+            not installed.
+    """
     return {
         "engine": ENGINE,
         "rust_available": _rust_available,
@@ -458,18 +760,39 @@ def engine_status() -> dict[str, Any]:
         "selection": os.environ.get("ADMINA_ENGINE", "auto"),
         "active": _resolve_engine(),
         "pii_active": _resolve_pii_engine(),
+        "firewall": None if firewall is None else getattr(firewall, "engine", "python"),
+        "loop_breaker": _engine_of(loop_breaker),
+        "pii": _engine_of(pii_engine),
     }
+
+
+def _engine_of(component: Any) -> str | None:
+    """The engine of a built loop breaker or PII engine: its ``engine``
+    name, else the ``engine`` of its statistics (a Presidio or plugin PII
+    engine), else ``python``; None for None."""
+    if component is None:
+        return None
+    name = getattr(component, "engine", None)
+    if isinstance(name, str):
+        return name
+    get_stats = getattr(component, "get_stats", None)
+    stats_engine = get_stats().get("engine") if callable(get_stats) else None
+    return str(stats_engine) if stats_engine else "python"
 
 
 __all__ = [
     "ENGINE",
+    "PYTHON_ONLY_FIREWALL_KEYS",
+    "EngineSelectionError",
     "FirewallBridge",
     "LoopBreakerBridge",
     "PIIBridge",
+    "PIIEngineBridge",
     "engine_status",
     "get_egress_policy",
     "get_firewall",
     "get_loop_breaker",
     "get_pii_engine",
     "get_pii_scanner",
+    "pii_mask_style",
 ]

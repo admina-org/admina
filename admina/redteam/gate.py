@@ -93,6 +93,16 @@ def compare(committed: dict, current: dict) -> dict:
                 (failures if engine == "python" else notes).append(msg)
                 continue
 
+            # Raw fp counts compare only over the same benign samples: a
+            # corpus whose benign set changed size needs a new baseline.
+            base_samples, cur_samples = base.get("fp_samples"), cur.get("fp_samples")
+            if base_samples is not None and cur_samples is not None and cur_samples != base_samples:
+                failures.append(
+                    f"{detector}/{engine} fp_samples {cur_samples} != baseline "
+                    f"{base_samples} (the benign samples changed: regenerate the baseline)"
+                )
+                continue
+
             base_key, base_recall = recall_item(base)
             cur_key, cur_recall = recall_item(cur)
             if base_key != cur_key:

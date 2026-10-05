@@ -19,7 +19,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "admina-framework"
-version = "0.12.0"
+version = "0.13.0"
 description = "Admina — governed AI development framework"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -81,6 +81,18 @@ proxy = [
     "numpy>=1.24,<2",
     "scikit-learn>=1.3,<2",
 ]
+# The proxy without Redis, ClickHouse, S3 (boto3), typer and the scientific
+# stack of the Python loop breaker. Serves the OpenAI-compatible gateway
+# (ADMINA_ENABLED_SURFACES=gateway, REDIS_URL= and CLICKHOUSE_HOST= empty);
+# the mcp and integration surfaces need [proxy] or [rust].
+proxy-minimal = [
+    "fastapi>=0.104,<1",
+    "uvicorn[standard]>=0.24,<1",
+    "httpx>=0.25,<1",
+    "pydantic>=2.5,<3",
+    "pydantic-settings>=2.3,<3",
+    "python-dotenv>=1.0,<2",
+]
 nlp = [
     # spacy 3.7.x ships an old blis (0.7.11) that fails to build on Python 3.13
     # because of CPython API churn (_PyDict_SetItem_KnownHash, _PyLong_AsByteArray).
@@ -100,26 +112,28 @@ telemetry = [
     "opentelemetry-instrumentation-fastapi>=0.40b0,<1",
 ]
 rust = [
-    # Optional Rust accelerator. Pure-Python engines remain the default;
-    # installing this extra makes `import admina_core` succeed, so the
-    # engine bridge (admina/proxy/engine_bridge.py) auto-detects and uses
-    # the Rust firewall / PII scanner / loop breaker / hash chain.
+    # Optional Rust accelerator. Without it the engines are pure Python;
+    # with it `import admina_core` succeeds, and under ADMINA_ENGINE=auto
+    # (the default) admina.engines runs the Rust firewall and loop breaker
+    # (the PII engine stays Python unless ADMINA_ENGINE=rust). The official
+    # proxy image installs it.
     #
-    # NOTE: the Rust firewall currently has a narrower pattern set than the
-    # pure-Python InjectionFirewall (see docs/guides on the Rust engine). It
-    # is opt-in precisely so the default install keeps the broader Python
-    # detection coverage; enable [rust] when latency matters more than the
-    # extra evasion-normalisation patterns.
+    # NOTE: the Rust firewall has a narrower pattern set than the pure-Python
+    # InjectionFirewall (15 patterns against 44, no evasion normalisation;
+    # see MODEL_CARD.md), and does not apply the admina.yaml keys
+    # custom_patterns, disabled_categories, disabled_patterns and
+    # pattern_packs (the Python firewall runs under auto; ADMINA_ENGINE=rust
+    # stops). It is opt-in so the default install keeps the broader Python
+    # detection coverage; enable [rust] when latency matters more.
     #
     # admina-core and admina-framework are released in lockstep from the same
-    # tag (scripts/check-versions.py enforces manifest alignment), but the pin
-    # is a compatible range rather than `==`: a strict pin would create a
-    # release chicken-and-egg (a bumped framework would require an
-    # admina-core of the new version that is not on PyPI until the tag is
-    # pushed, breaking local `uv sync`). The engine-bridge ABI is stable
-    # across the 0.9.x–0.12.x line, so any 0.9.x through 0.12.x core works
-    # with this framework.
-    "admina-core>=0.9.3,<0.13",
+    # tag (scripts/check-versions.py enforces manifest alignment). The
+    # published metadata carries the version range below; uv.lock resolves
+    # admina-core from ./core-rust instead ([tool.uv.sources]), so
+    # `uv sync --extra rust` (or --all-extras) builds the engine of the same
+    # checkout, which needs a Rust toolchain. The range takes the 0.13.x
+    # releases of admina-core, the line released with this framework.
+    "admina-core>=0.13.0,<0.14",
 ]
 # NOTE: the [guardrailsai] extra was removed in v0.9.0 because the
 # upstream `guardrails-ai` package is currently in PyPI quarantine
@@ -139,8 +153,11 @@ bedrock = ["boto3>=1.34,<2"]
 adapters = ["admina-framework[openai,ollama,anthropic,mistral,gemini,bedrock]"]
 # Microsoft Presidio as a selectable PII engine. Presidio does detection only;
 # Admina keeps its own masking, so the output format matches the default
-# spaCy+regex engine. The NER models are downloaded separately, like [nlp]:
-#   python -m spacy download en_core_web_sm it_core_news_sm
+# spaCy+regex engine. ADMINA_PRESIDIO_NLP_MODELS sets the spaCy pipeline of each
+# language (an installed model, or blank: a tokenizer without a model); the
+# default uses en_core_web_sm and it_core_news_sm when installed. Models are
+# installed separately, like [nlp]:
+#   python -m spacy download en_core_web_sm
 presidio = ["presidio-analyzer>=2.2,<3"]
 all = ["admina-framework[proxy,nlp,telemetry,adapters,presidio]"]
 
@@ -172,6 +189,12 @@ dev = [
 # silently skipping when those deps are absent.
 default-extras = ["proxy", "nlp", "telemetry"]
 
+[tool.uv.sources]
+# uv.lock and `uv sync` take admina-core from this checkout (a maturin build)
+# rather than from PyPI, so the tests run against the engine that the same
+# commit ships. Package builds ignore this table.
+admina-core = { path = "core-rust" }
+
 [tool.setuptools.packages.find]
 include = ["admina*"]
 
@@ -181,6 +204,7 @@ admina = [
     "dashboard/static/*",
     "dashboard/static/vendor/*",
     "cli/templates/*",
+    "domains/compliance/schemas/*.json",
     "redteam/corpora/*.jsonl",
     "redteam/corpora/SHA256SUMS",
     "redteam/baselines/*.json",

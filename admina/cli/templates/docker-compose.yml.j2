@@ -24,6 +24,10 @@ services:
       - FORENSIC_BASE_DIR=/app/.admina/forensic
       - OTEL_ENDPOINT=http://otel-collector:4317
       - LOG_LEVEL=INFO
+    volumes:
+      # Forensic records and chain state (FORENSIC_BASE_DIR), kept when the
+      # container is re-created.
+      - forensic-data:/app/.admina/forensic
     depends_on:
       redis:
         condition: service_healthy
@@ -208,6 +212,9 @@ services:
 {% endif %}
 
 volumes:
+{% if domains.agent_security %}
+  forensic-data:
+{% endif %}
 {% if domains.ai_infra and ai_infra_llm_enabled | default(true) %}
   ollama-data:
 {% endif %}
@@ -220,7 +227,7 @@ volumes:
 {% if domains.compliance %}
   clickhouse-data:
   grafana-data:
-{% elif not ((domains.ai_infra and ai_infra_llm_enabled | default(true)) or (domains.ai_infra and ai_infra_rag_enabled | default(true)) or (domains.ai_infra and ai_infra_webui_enabled | default(true))) %}
+{% elif not (domains.agent_security or (domains.ai_infra and ai_infra_llm_enabled | default(true)) or (domains.ai_infra and ai_infra_rag_enabled | default(true)) or (domains.ai_infra and ai_infra_webui_enabled | default(true))) %}
   {}
 {% endif %}
 

@@ -16,10 +16,8 @@ tests/
 !tests/test_benchmark_14us.py
 benchmark-reports/
 
-# Docs
+# Docs (LICENSE and NOTICE are copied into the images)
 *.md
-LICENSE
-NOTICE
 
 # IDE
 .idea/

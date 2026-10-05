@@ -91,6 +91,16 @@ def _settings(**over):
         PII_REDACTION_ENABLED=True,
         GOVERNANCE_MODE="enforce",
         GUARD_FAIL_MODE="open",
+        ADMINA_GATEWAY_MAX_PROMPT_CHARS=0,
+        ADMINA_GATEWAY_TIMEOUT_TOTAL=0.0,
+        ADMINA_GATEWAY_SCAN_ROLES="system,user,assistant,tool",
+        ADMINA_GATEWAY_PIPELINE_TIMEOUT=0.0,
+        ADMINA_GATEWAY_SCAN_RESPONSE=False,
+        ADMINA_GATEWAY_SCAN_POLICY_ENABLED=False,
+        ADMINA_GATEWAY_BLOCK_STATUS=200,
+        ADMINA_GATEWAY_REQUEST_ID_HEADER="",
+        ADMINA_GATEWAY_RECORD_HEADERS="",
+        ADMINA_GATEWAY_FORWARD_HEADERS="",
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -117,7 +127,7 @@ def _state(http, **over):
         egress_policy=None,
         governance_guards=[],
         forensic_box=None,
-        http_client=http,
+        gateway_http_client=http,
     )
     base.update(over)
     return SimpleNamespace(**base)
@@ -231,7 +241,7 @@ def test_chat_completions_nonstream_allow_upstream_unreachable_returns_502():
 
     resp = asyncio.run(go())
     assert resp.status_code == 502
-    assert resp.json()["detail"] == "Gateway upstream unreachable"
+    assert resp.json()["error"]["code"] == "upstream_error"
 
 
 # ── POST /v1/chat/completions — BLOCK ─────────────────────────
@@ -281,6 +291,9 @@ def test_chat_completions_stream_block_returns_synthetic_sse():
 
 
 class _FakeStreamCM:
+    status_code = 200
+    headers = {"content-type": "text/event-stream"}
+
     def __init__(self, lines):
         self._lines = lines
 
@@ -345,7 +358,7 @@ def test_chat_completions_stream_allow_upstream_unreachable_returns_502():
 
     resp = asyncio.run(go())
     assert resp.status_code == 502
-    assert resp.json()["detail"] == "Gateway upstream unreachable"
+    assert resp.json()["error"]["code"] == "upstream_error"
     assert http.last_stream is not None  # the connection attempt did happen
 
 
@@ -420,15 +433,17 @@ def test_chat_completions_records_forensic_gateway_request():
             return await c.post("/v1/chat/completions", json=body)
 
     asyncio.run(go())
-    assert len(fbox.records) == 1
+    kinds = [r["event_type"] for r in fbox.records]
+    assert kinds == [EventType.GATEWAY_REQUEST, EventType.GATEWAY_RESPONSE]
     rec = fbox.records[0]
-    assert rec["event_type"] == EventType.GATEWAY_REQUEST
     assert rec["method"] == "chat.completions"
     assert rec["action"] == "ALLOW"
     assert "checks" in rec
 
 
 def test_chat_completions_records_forensic_on_block():
+    from admina.core.types import EventType
+
     fbox = _RecordingForensic()
     app = _app(_state(_FakeHTTP(_json_response({})), forensic_box=fbox), _settings())
     body = {"model": "llama3", "messages": [{"role": "user", "content": "INJECT do bad"}]}
@@ -438,5 +453,6 @@ def test_chat_completions_records_forensic_on_block():
             return await c.post("/v1/chat/completions", json=body)
 
     asyncio.run(go())
-    assert len(fbox.records) == 1
+    kinds = [r["event_type"] for r in fbox.records]
+    assert kinds == [EventType.GATEWAY_REQUEST, EventType.GATEWAY_RESPONSE]
     assert fbox.records[0]["action"] == "BLOCK"

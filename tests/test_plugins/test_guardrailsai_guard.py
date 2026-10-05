@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
+import time
 from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
 
@@ -360,3 +362,46 @@ class TestGuardrailsAIValidatorLoading:
 
             with pytest.raises(ValueError, match="Unknown GuardrailsAI validator"):
                 _load_validator("not_real", {})
+
+
+class TestGuardrailsAIGuardConcurrency:
+    """The gateway calls a guard from several worker threads at once, each
+    on an event loop of its own: validations must not overlap."""
+
+    def test_validations_from_several_threads_do_not_overlap(self):
+        fake_mods = _make_fake_guardrails()
+        state = {"active": 0, "peak": 0}
+        lock = threading.Lock()
+
+        class CountingGuard(fake_mods["guardrails"].Guard):
+            def validate(self, text: str):
+                with lock:
+                    state["active"] += 1
+                    state["peak"] = max(state["peak"], state["active"])
+                time.sleep(0.05)
+                with lock:
+                    state["active"] -= 1
+                return super().validate(text)
+
+        fake_mods["guardrails"].Guard = CountingGuard
+        with patch.dict(sys.modules, fake_mods):
+            from admina.plugins.builtin.guards.guardrailsai_guard import (
+                GuardrailsAIGuard,
+            )
+
+            guard = GuardrailsAIGuard(config={"validators": []})
+            start = threading.Barrier(4)
+            results: list[dict] = []
+
+            def call() -> None:
+                start.wait(timeout=5)
+                results.append(asyncio.run(guard.inspect_request({"content": "some text"})))
+
+            threads = [threading.Thread(target=call) for _ in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+
+        assert [r["action"] for r in results] == ["ALLOW"] * 4
+        assert state["peak"] == 1

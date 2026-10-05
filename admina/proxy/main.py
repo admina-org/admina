@@ -19,9 +19,6 @@ https://admina.org
 """
 
 import asyncio
-import base64
-import hashlib
-import hmac
 import inspect
 import json
 import logging
@@ -31,27 +28,32 @@ import secrets as _secrets
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import clickhouse_connect
 import httpx
-import redis.asyncio as aioredis
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import admina.plugins.builtin.transports.mcp as mcp_transport
 from admina import __version__
+from admina.core.config import check_config
 from admina.core.event_bus import GovernanceEvent as BusGovernanceEvent
 from admina.core.event_bus import bus as governance_bus
+from admina.core.exception_log import log_frames
+from admina.core.offline import apply_offline_environment
 from admina.core.types import EventType, GovernanceAction, RiskLevel
-from admina.domains.agent_security.egress import payload_fields, resolve_egress_mode
-from admina.domains.compliance.forensic import ForensicBlackBox
+from admina.domains.agent_security.egress import (
+    egress_policy_for,
+    payload_fields,
+    resolve_egress_mode,
+)
+from admina.domains.compliance.forensic import ForensicWriteError
 from admina.domains.compliance.otel import OTELGovernanceExporter
 from admina.domains.governance import (
-    build_governance_details,
     redact_response_result,
     run_pipeline,
     safe_serialize,
@@ -63,12 +65,29 @@ from admina.engines import (
     get_loop_breaker,
     get_pii_engine,
 )
+from admina.proxy import dashboard_session
 from admina.proxy.api.dashboard import create_dashboard_endpoints
 from admina.proxy.api.gateway import create_gateway_endpoints
 from admina.proxy.api.integration import create_integration_endpoints
+from admina.proxy.body_limit import BodyLimitMiddleware
 from admina.proxy.config import GovernanceEvent, settings
+from admina.proxy.decisions import Decision, text_sha256
+from admina.proxy.engine_report import engine_banner, engine_info_lines
+from admina.proxy.env_check import UnknownVariablesError, plugin_prefixes, unknown_variables
+from admina.proxy.forensic_backend import build_forensic_store
+from admina.proxy.gateway_scan import (
+    RulesetHeaderMiddleware,
+    build_gateway_scan_config,
+    scan_config_of,
+)
+from admina.proxy.gateway_transport import build_gateway_http_client, resolve_stream_mode
+from admina.proxy.gateway_upstreams import build_gateway_upstreams, settings_environment
+from admina.proxy.log_format import configure_logging
 from admina.proxy.multi_upstream import MultiUpstreamRouter
+from admina.proxy.pipeline_executor import PipelineExecutor
+from admina.proxy.request_metrics import RequestMetrics
 from admina.proxy.state import ProxyState
+from admina.proxy.surfaces import parse_surfaces, surface_of
 
 # ── Admina config (for OISG score) ──────────────────────────
 try:
@@ -89,11 +108,40 @@ def _validate_identifier(name: str, label: str = "identifier") -> None:
 
 
 # ── Logging ──────────────────────────────────────────────────
-logging.basicConfig(
-    level=getattr(logging, settings.LOG_LEVEL),
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-)
+configure_logging(settings.LOG_LEVEL, settings.ADMINA_LOG_FORMAT)
 logger = logging.getLogger("admina.proxy")
+
+
+# ── Surfaces ─────────────────────────────────────────────────
+def enabled_surfaces() -> tuple[str, ...]:
+    """The surfaces ADMINA_ENABLED_SURFACES switches on (see admina.proxy.surfaces)."""
+    return parse_surfaces(settings.ADMINA_ENABLED_SURFACES)
+
+
+# Surfaces whose routes are mounted: fixed when the app is built.
+_MOUNTED_SURFACES = enabled_surfaces()
+
+# The surfaces that run the loop breaker.
+_LOOP_BREAKER_SURFACES = frozenset({"mcp", "integration"})
+
+
+# ── Optional backends ────────────────────────────────────────
+# redis, clickhouse_connect and boto3 are imported only when their backend
+# is configured, so a proxy without them installed starts as long as they
+# are not configured.
+def _redis_errors() -> tuple[type[Exception], ...]:
+    """What a Redis call raises. Evaluated only by the ``except`` clause of
+    code that runs with a Redis client, so redis is installed by then."""
+    from redis.exceptions import RedisError
+
+    return (OSError, RedisError)
+
+
+def _clickhouse_errors() -> tuple[type[Exception], ...]:
+    """What a ClickHouse call raises (see :func:`_redis_errors`)."""
+    from clickhouse_connect.driver.exceptions import DatabaseError
+
+    return (OSError, DatabaseError)
 
 
 # ── Background tasks ─────────────────────────────────────────
@@ -200,19 +248,37 @@ def build_coordination_detector(redis: Any, egress_cfg: Any, quarantine: Any) ->
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     logger.info("Admina Proxy starting...")
+    # admina.yaml and the ADMINA_* variables: a wrong type (or, with
+    # ADMINA_CONFIG_STRICT, an unknown key or variable) stops the proxy here.
+    _check_configuration()
+    # Before any engine is built: libraries read these variables on import.
+    offline = apply_offline_environment()
+
+    # Gateway upstream routes and keys: resolved (key files read) once, here.
+    # A misconfiguration raises and the proxy does not start.
+    gateway_config = _admina_config.gateway if _admina_config else None
+    gateway_upstreams = build_gateway_upstreams(settings, gateway_config)
+    surfaces = enabled_surfaces()
 
     # Build ProxyState
     state = ProxyState(
-        firewall=get_firewall(),
+        gateway_upstreams=gateway_upstreams,
+        gateway_stream_mode=resolve_stream_mode(settings, gateway_config),
+        firewall=get_firewall(deep_path_enabled=settings.INJECTION_DEEP_PATH_ENABLED),
         pii_redactor=get_pii_engine(),
-        loop_breaker=get_loop_breaker(
-            window_size=settings.LOOP_WINDOW_SIZE,
-            similarity_threshold=settings.LOOP_SIMILARITY_THRESHOLD,
-            max_consecutive=settings.LOOP_MAX_CONSECUTIVE,
+        loop_breaker=(
+            _build_loop_breaker() if _LOOP_BREAKER_SURFACES.intersection(surfaces) else None
         ),
         egress_policy=get_egress_policy(),
         router=MultiUpstreamRouter(default_upstream=settings.UPSTREAM_MCP_URL),
+        request_metrics=RequestMetrics(surfaces),
     )
+    # The ruleset of the firewall just built: its engine, admina.yaml rules.
+    state.gateway_scan = build_gateway_scan_config(state.firewall, _admina_config)
+    # The gateway's pipeline threads: started only when the gateway is served.
+    if "gateway" in surfaces:
+        state.pipeline_executor = PipelineExecutor(settings.ADMINA_GATEWAY_PIPELINE_WORKERS)
+    state.loop_lag.start()
 
     # ── Plugin discovery ──────────────────────────────────────
     _plugin_modules = list(_admina_config.plugins) if _admina_config else []
@@ -244,8 +310,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         )
 
     # ── OTEL exporter — subscribe to event bus ────────────────
+    # OTEL_ENABLED=false or ADMINA_OFFLINE (checked at the start of the
+    # lifespan): no exporter is built.
     otel_endpoint = getattr(settings, "OTEL_ENDPOINT", "http://localhost:4317")
-    state.otel_exporter = OTELGovernanceExporter(endpoint=otel_endpoint)
+    state.otel_exporter = OTELGovernanceExporter(
+        endpoint=otel_endpoint, enabled=settings.OTEL_ENABLED and not offline
+    )
+    if not settings.OTEL_ENABLED:
+        logger.info("OTEL_ENABLED=false: OpenTelemetry export off")
+    elif offline:
+        logger.info("ADMINA_OFFLINE: OpenTelemetry export off")
     if state.otel_exporter.enabled:
 
         async def _otel_subscriber(event: BusGovernanceEvent) -> None:
@@ -287,24 +361,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         )
 
     # Redis — optional, skip gracefully if URL is empty or malformed
-    state.redis = None
-    if settings.REDIS_URL and settings.REDIS_URL.startswith(("redis://", "rediss://", "unix://")):
-        try:
-            state.redis = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
-            await state.redis.ping()
-            logger.info("Redis connected")
-        except (OSError, ValueError, aioredis.RedisError) as e:
-            logger.warning("Redis not available: %s — continuing without rate-limit cache", e)
-            state.redis = None
-    else:
-        logger.info("Redis disabled (REDIS_URL is empty or non-redis scheme)")
+    state.redis = await _connect_redis(settings.REDIS_URL)
 
     # ── Coordination detector — feeds EgressPolicy's quarantine set ────
     # The event bus carries no agent_id (see admina/core/event_bus.py), so
     # the detector is fed here, the same way the forensic store, ClickHouse
     # and the alert channels already are: by the caller that holds identity.
+    # Only /mcp traffic feeds it: without the mcp surface neither the
+    # detector nor its refresh loop runs.
     _eg_cfg = _admina_config.agent_security.egress if _admina_config else None
-    if state.egress_policy is not None and _eg_cfg is not None:
+    if "mcp" in surfaces and state.egress_policy is not None and _eg_cfg is not None:
         from admina.domains.agent_security.coordination import (
             QuarantineStore,
             refresh_quarantine_once,
@@ -320,99 +386,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
         state.quarantine_refresh = _spawn(_refresh_loop())
 
-    # Forensic backend: filesystem (default) | s3 (boto3 generic) | memory.
+    # Forensic backend: memory (default) | filesystem | s3 (boto3 generic),
+    # from the environment or admina.yaml; see admina.proxy.forensic_backend.
     # MinIO servers are supported through the s3 backend (they speak the S3
     # API); the legacy minio-SDK backend was removed in 0.9.5.
-    boto3_client = None
-
-    if settings.FORENSIC_BACKEND == "s3":
-        try:
-            import boto3
-
-            kwargs = {
-                "service_name": "s3",
-                "region_name": settings.FORENSIC_S3_REGION,
-            }
-            if settings.FORENSIC_S3_ENDPOINT:
-                kwargs["endpoint_url"] = settings.FORENSIC_S3_ENDPOINT
-            if settings.FORENSIC_S3_ACCESS_KEY:
-                kwargs["aws_access_key_id"] = settings.FORENSIC_S3_ACCESS_KEY
-                kwargs["aws_secret_access_key"] = settings.FORENSIC_S3_SECRET_KEY
-            boto3_client = boto3.client(**kwargs)
-            boto3_client.list_buckets()
-            logger.info(
-                "S3 forensic backend connected (endpoint=%s)",
-                settings.FORENSIC_S3_ENDPOINT or "default AWS",
-            )
-        except ImportError:
-            logger.warning(
-                "FORENSIC_BACKEND=s3 requires boto3 (pip install boto3) — "
-                "falling back to filesystem"
-            )
-            boto3_client = None
-        except Exception as e:  # noqa: BLE001
-            logger.warning("S3 not reachable: %s — falling back to filesystem", e)
-            boto3_client = None
-
-    if boto3_client is not None:
-        state.forensic_box = ForensicBlackBox(
-            boto3_client=boto3_client,
-            bucket=settings.FORENSIC_S3_BUCKET,
-            s3_object_lock=settings.FORENSIC_S3_LOCK,
-            s3_lock_days=settings.FORENSIC_S3_LOCK_DAYS,
-            s3_auto_create_locked_bucket=settings.FORENSIC_S3_LOCK_AUTO_BUCKET,
-            s3_max_retries=settings.FORENSIC_S3_MAX_RETRIES,
-            s3_base_delay_s=settings.FORENSIC_S3_BASE_DELAY_S,
-        )
-        if settings.FORENSIC_S3_LOCK:
-            logger.info(
-                "Forensic Object Lock ENABLED: every record locked for %d days "
-                "in COMPLIANCE mode (WORM)",
-                settings.FORENSIC_S3_LOCK_DAYS,
-            )
-    elif settings.FORENSIC_BACKEND == "filesystem":
-        if not settings.FORENSIC_BASE_DIR:
-            logger.warning(
-                "FORENSIC_BACKEND=filesystem but FORENSIC_BASE_DIR is empty — "
-                "downgrading to in-memory backend (records will be lost on restart)"
-            )
-            state.forensic_box = ForensicBlackBox()
-        else:
-            state.forensic_box = ForensicBlackBox(filesystem_dir=settings.FORENSIC_BASE_DIR)
-            logger.info(
-                "Forensic backend: filesystem at %s",
-                settings.FORENSIC_BASE_DIR,
-            )
-    else:
-        # Default: in-memory only. Loud warning so the operator
-        # knows the proxy is running with no audit persistence.
-        state.forensic_box = ForensicBlackBox()
-        logger.warning(
-            "Forensic backend: IN-MEMORY ONLY — events will be LOST on restart. "
-            "Set FORENSIC_BACKEND=filesystem (with FORENSIC_BASE_DIR) or =s3 "
-            "for persistence."
-        )
+    state.forensic_box = build_forensic_store(settings, _admina_config)
 
     # ClickHouse — optional, skip if host is empty
-    state.clickhouse = None
-    if settings.CLICKHOUSE_HOST:
-        try:
-            state.clickhouse = clickhouse_connect.get_client(
-                host=settings.CLICKHOUSE_HOST,
-                port=settings.CLICKHOUSE_PORT,
-                database=settings.CLICKHOUSE_DB,
-                password=settings.CLICKHOUSE_PASSWORD,
-            )
-            _init_clickhouse_tables(state.clickhouse)
-            logger.info("ClickHouse connected")
-        except (OSError, clickhouse_connect.driver.exceptions.DatabaseError) as e:
-            logger.warning("ClickHouse not available: %s — analytics disabled", e)
-            state.clickhouse = None
-    else:
-        logger.info("ClickHouse disabled (CLICKHOUSE_HOST is empty)")
+    state.clickhouse = _connect_clickhouse()
 
     # HTTP Client for upstream MCP
     state.http_client = httpx.AsyncClient(timeout=30.0)
+    # HTTP client of the gateway: its own timeouts and connection pool.
+    state.gateway_http_client = build_gateway_http_client(settings)
 
     # Multi-upstream router (for OpenClaw integration)
     routing_path = os.environ.get("ROUTING_CONFIG_PATH", "")
@@ -425,30 +411,53 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     logger.info("=" * 60)
     logger.info("  Admina Governance Proxy — READY  v%s", __version__)
-    _eng = engine_status()
-    _eng_label = (
-        "%s v%s" % (_eng["engine"].upper(), _eng["rust_version"])
-        if _eng["rust_available"]
-        else "%s (install admina-core for Rust speed)" % _eng["engine"].upper()
+    engine_lines = engine_banner(
+        _engine_status(state),
+        firewall_on=settings.INJECTION_FAST_PATH_ENABLED,
+        pii_on=settings.PII_REDACTION_ENABLED,
     )
-    logger.info("  Engine: %s", _eng_label)
-    logger.info("  Upstream MCP: %s", settings.UPSTREAM_MCP_URL)
+    logger.info(engine_lines[0])
+    logger.info("  Surfaces: %s", ", ".join(surfaces))
+    if "mcp" in surfaces:
+        logger.info("  Upstream MCP: %s", settings.UPSTREAM_MCP_URL)
+    if state.pipeline_executor is not None:
+        logger.info(
+            "  Gateway upstream routes: %s (default: %s)",
+            ", ".join(gateway_upstreams.names()),
+            gateway_upstreams.default,
+        )
+        logger.info("  Gateway stream mode: %s", state.gateway_stream_mode)
+        logger.info(
+            "  Gateway pipeline: %d worker thread(s), time budget %s",
+            state.pipeline_executor.workers,
+            f"{settings.ADMINA_GATEWAY_PIPELINE_TIMEOUT:g} s"
+            if settings.ADMINA_GATEWAY_PIPELINE_TIMEOUT
+            else "none",
+        )
+    logger.info(
+        "  Firewall ruleset: %s (%s engine)",
+        state.gateway_scan.ruleset_sha256,
+        state.gateway_scan.engine,
+    )
     logger.info(
         "  Auth: %s",
         "ON" if settings.ADMINA_API_KEY else "OFF (set ADMINA_API_KEY for production)",
     )
     logger.info(
         "  Rate Limiting: %s",
-        "ON (Redis)" if state.redis else "OFF (Redis unavailable)",
+        "ON (Redis)"
+        if state.redis
+        else ("OFF (Redis unavailable)" if settings.REDIS_URL else "OFF (REDIS_URL not set)"),
     )
     if state.router.is_multi_upstream:
         logger.info("  OpenClaw mode: routing %d MCP servers", len(state.router.routes))
-    logger.info("  Firewall: ON | PII Redaction: ON | Loop Breaker: ON")
+    logger.info(engine_lines[1])
     logger.info("=" * 60)
 
     yield
 
     # Shutdown
+    await state.loop_lag.stop()
     if state.quarantine_refresh is not None:
         state.quarantine_refresh.cancel()
         with suppress(asyncio.CancelledError):
@@ -457,7 +466,129 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         await state.redis.close()
     if state.http_client:
         await state.http_client.aclose()
+    if state.gateway_http_client:
+        await state.gateway_http_client.aclose()
+    if state.pipeline_executor is not None:
+        state.pipeline_executor.shutdown()
     logger.info("Admina Proxy stopped")
+
+
+def _build_loop_breaker() -> Any:
+    """The loop breaker of the mcp and integration surfaces."""
+    try:
+        return get_loop_breaker(
+            window_size=settings.LOOP_WINDOW_SIZE,
+            similarity_threshold=settings.LOOP_SIMILARITY_THRESHOLD,
+            max_consecutive=settings.LOOP_MAX_CONSECUTIVE,
+        )
+    except ImportError as exc:
+        raise RuntimeError(
+            "The mcp and integration surfaces need the loop breaker, whose Python "
+            f"engine needs numpy and scikit-learn ({exc}). Install "
+            "admina-framework[proxy] (or admina-framework[rust]), or serve only the "
+            "gateway: ADMINA_ENABLED_SURFACES=gateway."
+        ) from exc
+
+
+def _check_configuration() -> None:
+    """Check admina.yaml against its schema and look for ADMINA_* variables
+    that nothing reads. Unknown keys and variables are logged as a warning,
+    or raised with ADMINA_CONFIG_STRICT.
+
+    Raises:
+        ConfigSchemaError: a value of admina.yaml has the wrong type, or an
+            unknown key with ADMINA_CONFIG_STRICT.
+        UnknownVariablesError: unknown variables with ADMINA_CONFIG_STRICT.
+    """
+    strict = settings.ADMINA_CONFIG_STRICT
+    check = check_config(strict=strict)
+    if check.unknown:
+        logger.warning(
+            "admina.yaml %s: unknown keys, not read: %s (ADMINA_CONFIG_STRICT=true makes "
+            "them an error)",
+            check.path,
+            ", ".join(check.unknown),
+        )
+    allowed = (
+        *plugin_prefixes(),
+        *(p for p in settings.ADMINA_ENV_ALLOW_PREFIXES.split(",") if p.strip()),
+    )
+    unknown = unknown_variables(settings_environment(settings), allow_prefixes=allowed)
+    if not unknown:
+        return
+    if strict:
+        raise UnknownVariablesError(
+            f"ADMINA_CONFIG_STRICT: ADMINA_* variables not read by Admina: {', '.join(unknown)}"
+        )
+    logger.warning(
+        "ADMINA_* variables not read by Admina: %s (ADMINA_CONFIG_STRICT=true makes them an "
+        "error; ADMINA_ENV_ALLOW_PREFIXES lists the prefixes of other components)",
+        ", ".join(unknown),
+    )
+
+
+def _engine_status(state: Any) -> dict[str, Any]:
+    """:func:`engine_status` with the firewall, loop breaker and PII engine
+    that *state* holds, the ones the proxy built."""
+    return engine_status(
+        firewall=getattr(state, "firewall", None),
+        loop_breaker=getattr(state, "loop_breaker", None),
+        pii_engine=getattr(state, "pii_redactor", None),
+    )
+
+
+async def _connect_redis(url: str) -> Any:
+    """A Redis client for *url*, or None when Redis is not configured or
+    not reachable. redis is imported only for a URL with a Redis scheme."""
+    if not url or not url.startswith(("redis://", "rediss://", "unix://")):
+        logger.info("Redis disabled (REDIS_URL is empty or non-redis scheme)")
+        return None
+    try:
+        import redis.asyncio as aioredis
+    except ImportError:
+        logger.warning(
+            "REDIS_URL is set but the redis package is not installed "
+            "(pip install 'admina-framework[proxy]') — continuing without rate-limit cache"
+        )
+        return None
+    try:
+        client = aioredis.from_url(url, decode_responses=True)
+        await client.ping()
+        logger.info("Redis connected")
+        return client
+    except (OSError, ValueError, aioredis.RedisError) as e:
+        logger.warning("Redis not available: %s — continuing without rate-limit cache", e)
+        return None
+
+
+def _connect_clickhouse() -> Any:
+    """A ClickHouse client, or None when CLICKHOUSE_HOST is empty or the
+    server is not reachable. clickhouse_connect is imported only for a
+    non-empty host."""
+    if not settings.CLICKHOUSE_HOST:
+        logger.info("ClickHouse disabled (CLICKHOUSE_HOST is empty)")
+        return None
+    try:
+        import clickhouse_connect
+    except ImportError:
+        logger.warning(
+            "CLICKHOUSE_HOST is set but clickhouse-connect is not installed "
+            "(pip install 'admina-framework[proxy]') — analytics disabled"
+        )
+        return None
+    try:
+        client = clickhouse_connect.get_client(
+            host=settings.CLICKHOUSE_HOST,
+            port=settings.CLICKHOUSE_PORT,
+            database=settings.CLICKHOUSE_DB,
+            password=settings.CLICKHOUSE_PASSWORD,
+        )
+        _init_clickhouse_tables(client)
+        logger.info("ClickHouse connected")
+        return client
+    except _clickhouse_errors() as e:
+        logger.warning("ClickHouse not available: %s — analytics disabled", e)
+        return None
 
 
 def _init_clickhouse_tables(client):
@@ -524,6 +655,12 @@ def _get_state(request: Request) -> ProxyState:
     return request.app.state.proxy
 
 
+def _mount(surface: str, router: APIRouter) -> None:
+    """Mount *router* when *surface* is enabled (ADMINA_ENABLED_SURFACES)."""
+    if surface in _MOUNTED_SURFACES:
+        app.include_router(router)
+
+
 # ── Dashboard & Integration API Routers ──────────────────────
 # The lambdas close over `app` so they resolve state at call time (after lifespan).
 _dashboard_router = create_dashboard_endpoints(
@@ -533,7 +670,7 @@ _dashboard_router = create_dashboard_endpoints(
     get_clickhouse=lambda: app.state.proxy.clickhouse,
     get_settings=lambda: settings,
     get_redis=lambda: app.state.proxy.redis,
-    get_engine_status=lambda: engine_status(),
+    get_engine_status=lambda: _engine_status(app.state.proxy),
     get_http_client=lambda: app.state.proxy.http_client,
     get_firewall=lambda: app.state.proxy.firewall,
     get_pii_redactor=lambda: app.state.proxy.pii_redactor,
@@ -541,9 +678,13 @@ _dashboard_router = create_dashboard_endpoints(
     get_otel_exporter=lambda: app.state.proxy.otel_exporter,
     get_governance_guards=lambda: app.state.proxy.governance_guards,
     get_config=lambda: _admina_config,
-    verify_credential=lambda **kw: verify_credential(**kw),
+    # The router's only credential check is the /api/dashboard/live upgrade,
+    # a read-only dashboard feed, so the browser session is admitted there.
+    verify_credential=lambda **kw: verify_credential(allow_session=True, **kw),
+    # A live feed opened with a browser session is closed when it expires.
+    session_expiry=lambda **kw: _live_feed_session_expiry(**kw),
 )
-app.include_router(_dashboard_router)
+_mount("dashboard", _dashboard_router)
 
 _integration_router = create_integration_endpoints(
     get_firewall=lambda: app.state.proxy.firewall,
@@ -552,14 +693,16 @@ _integration_router = create_integration_endpoints(
     get_forensic_box=lambda: app.state.proxy.forensic_box,
     get_settings=lambda: settings,
     get_egress_policy=lambda: app.state.proxy.egress_policy,
+    on_decision=lambda decision, **kw: record_decision(app.state.proxy, decision, **kw),
 )
-app.include_router(_integration_router)
+_mount("integration", _integration_router)
 
 _gateway_router = create_gateway_endpoints(
     get_state=lambda: app.state.proxy,
     get_settings=lambda: settings,
+    on_decision=lambda decision, **kw: record_decision(app.state.proxy, decision, **kw),
 )
-app.include_router(_gateway_router)
+_mount("gateway", _gateway_router)
 
 
 # ── Bundled dashboard (no-Docker dev mode) ────────────────────
@@ -588,49 +731,90 @@ def _dashboard_index_html() -> str:
     return html
 
 
-_DASHBOARD_COOKIE = "admina_session"
-# Dashboard session cookie lifetime (seconds). The signed token expires
-# after this window, after which the browser must re-load GET / to get a
-# fresh one (still gated by the API key check).
-_DASHBOARD_SESSION_TTL = 86400
+def _dashboard_enabled() -> bool:
+    """True if the bundled dashboard and its browser sign-in are served.
 
-
-def _issue_dashboard_token(now: int | None = None) -> str:
-    """Mint a signed, expiring session token for the dashboard cookie.
-
-    The token is ``<expiry>.<sig>`` where ``sig`` is an HMAC-SHA256 of the
-    expiry keyed by ``ADMINA_API_KEY``. The API key itself never leaves the
-    server — only a derived signature does — so the cookie carries no
-    clear-text secret (addresses CodeQL py/clear-text-storage).
+    Off when ``ADMINA_DASHBOARD_ENABLED=false`` or ``dashboard.enabled:
+    false`` in admina.yaml. The ``/api/dashboard/*`` data API is not affected:
+    it stays available to API-key clients either way.
     """
-    exp = (now if now is not None else int(time.time())) + _DASHBOARD_SESSION_TTL
-    payload = str(exp)
-    sig = hmac.new(
-        settings.ADMINA_API_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
-    raw = f"{payload}.{sig}".encode()
-    return base64.urlsafe_b64encode(raw).decode("ascii")
+    if not settings.ADMINA_DASHBOARD_ENABLED:
+        return False
+    dash_cfg = getattr(_admina_config, "dashboard", None)
+    return bool(getattr(dash_cfg, "enabled", True))
 
 
-def _verify_dashboard_token(token: str, now: int | None = None) -> bool:
-    """Validate a dashboard session token: signature intact and not expired."""
-    if not settings.ADMINA_API_KEY or not token:
+def _presented_api_key(headers: Any) -> str:
+    """Return the raw API key a request presents in X-API-Key / Bearer."""
+    auth_header = headers.get("Authorization") or headers.get("authorization") or ""
+    return (
+        headers.get("X-API-Key")
+        or headers.get("x-api-key")
+        or auth_header.removeprefix("Bearer ").strip()
+        or ""
+    )
+
+
+# Whether the deprecation of ?api_key= has been logged by this process.
+_query_key_warned = False
+
+
+def _api_key_presented(headers: Any, query_params: Any) -> bool:
+    """Whether the request presents the API key: in a header when it carries
+    one (the header is then the only credential checked), else in
+    ``?api_key=`` (deprecated: :func:`_query_key_matches`)."""
+    header_key = _presented_api_key(headers)
+    if header_key:
+        return _key_matches(header_key)
+    return _query_key_matches(query_params)
+
+
+def _query_key_matches(query_params: Any) -> bool:
+    """Whether ``?api_key=`` holds the API key. Deprecated: the first match
+    logs a warning, once per process, without the key."""
+    global _query_key_warned
+    if not _key_matches(query_params.get("api_key") or ""):
         return False
-    try:
-        raw = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
-        payload, sig = raw.rsplit(".", 1)
-    except (ValueError, UnicodeDecodeError):
+    if not _query_key_warned:
+        _query_key_warned = True
+        logger.warning(
+            "A request authenticated with the API key in the query string (?api_key=). "
+            "This is deprecated and will be refused in a later release: URLs end up in "
+            "access logs and browser history. Send X-API-Key or Authorization: Bearer."
+        )
+    return True
+
+
+def _key_matches(presented: str) -> bool:
+    """Constant-time check of a presented key against ``ADMINA_API_KEY``.
+
+    Compared as UTF-8 bytes: ``compare_digest`` raises on non-ASCII ``str``.
+    """
+    expected = settings.ADMINA_API_KEY
+    if not expected or not presented:
         return False
-    expected = hmac.new(
-        settings.ADMINA_API_KEY.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
-    if not _secrets.compare_digest(sig, expected):
+    return _secrets.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
+
+
+# The route that also accepts ADMINA_AUDIT_APPEND_KEY (appending records only).
+_AUDIT_APPEND_PATH = "/api/v1/audit"
+
+
+def _append_key_matches(method: str, path: str, presented: str) -> bool:
+    """True when *presented* is ``ADMINA_AUDIT_APPEND_KEY`` on
+    ``POST /api/v1/audit`` (constant-time); any other route refuses it."""
+    expected = settings.ADMINA_AUDIT_APPEND_KEY
+    if not expected or not presented or method != "POST" or path != _AUDIT_APPEND_PATH:
         return False
-    try:
-        exp = int(payload)
-    except ValueError:
-        return False
-    return (now if now is not None else int(time.time())) < exp
+    return _secrets.compare_digest(presented.encode("utf-8"), expected.encode("utf-8"))
+
+
+def _dashboard_session_expiry(cookies: Any) -> int | None:
+    """Expiry of the valid dashboard session in *cookies*, else ``None``."""
+    if not _dashboard_enabled() or not settings.ADMINA_API_KEY:
+        return None
+    token = (cookies or {}).get(dashboard_session.COOKIE_NAME, "")
+    return dashboard_session.token_expiry(settings.ADMINA_API_KEY, token)
 
 
 def verify_credential(
@@ -638,76 +822,171 @@ def verify_credential(
     headers: Any = None,
     query_params: Any = None,
     cookies: Any = None,
+    allow_session: bool = False,
 ) -> bool:
     """Authenticate from credential parts (header / query / cookie).
 
     Accepts the raw ``ADMINA_API_KEY`` via ``X-API-Key`` /
-    ``Authorization: Bearer`` / ``?api_key=`` (constant-time compare), OR the
-    signed ``admina_session`` cookie (verified, never the raw key). Single
-    source of truth shared by the HTTP middleware, the WebSocket upgrade, and
-    the API-key auth provider so they cannot drift.
+    ``Authorization: Bearer`` / ``?api_key=`` (constant-time compare;
+    ``?api_key=`` is deprecated and logs a warning once). The
+    dashboard session cookie is considered only when *allow_session* is true,
+    which callers set for dashboard routes alone (see
+    :func:`admina.proxy.dashboard_session.session_allowed`). Single source of
+    truth shared by the HTTP middleware and the WebSocket upgrade so they
+    cannot drift.
     """
     headers = headers or {}
     query_params = query_params or {}
-    cookies = cookies or {}
     if not settings.ADMINA_API_KEY:
         return False
-    auth_header = headers.get("Authorization") or headers.get("authorization") or ""
-    raw = (
-        headers.get("X-API-Key")
-        or headers.get("x-api-key")
-        or auth_header.removeprefix("Bearer ").strip()
-        or query_params.get("api_key")
-        or ""
-    )
-    if raw and _secrets.compare_digest(raw, settings.ADMINA_API_KEY):
+    if _api_key_presented(headers, query_params):
         return True
-    return _verify_dashboard_token(cookies.get(_DASHBOARD_COOKIE, ""))
+    if not allow_session:
+        return False
+    return _dashboard_session_expiry(cookies) is not None
+
+
+def _live_feed_session_expiry(
+    *, headers: Any = None, query_params: Any = None, cookies: Any = None
+) -> int | None:
+    """Expiry of the browser session behind a live-feed connection.
+
+    ``None`` when the connection presents the API key itself (nothing to
+    enforce) or carries no valid session.
+    """
+    headers = headers or {}
+    query_params = query_params or {}
+    if _api_key_presented(headers, query_params):
+        return None
+    return _dashboard_session_expiry(cookies)
+
+
+def _session_cookie_secure(request: Request) -> bool:
+    """The ``Secure`` flag of the session cookie (DASHBOARD_COOKIE_SECURE)."""
+    return dashboard_session.cookie_secure(
+        settings.DASHBOARD_COOKIE_SECURE,
+        scheme=request.url.scheme,
+        host=request.url.hostname,
+    )
+
+
+_NO_STORE = {"Cache-Control": "no-store"}
+
+# Browser sign-in and shell of the bundled dashboard (dashboard surface).
+_dashboard_shell = APIRouter()
+
+
+@_dashboard_shell.get(dashboard_session.SESSION_PATH, include_in_schema=False)
+async def _dashboard_session_status(request: Request) -> JSONResponse:
+    """Report whether the caller is signed in (reached only when admitted)."""
+    expiry = _dashboard_session_expiry(request.cookies)
+    return JSONResponse(
+        {"authenticated": True, "session": expiry is not None, "expires_at": expiry},
+        headers=_NO_STORE,
+    )
+
+
+@_dashboard_shell.post(dashboard_session.SESSION_PATH, include_in_schema=False)
+async def _dashboard_session_create(request: Request) -> JSONResponse:
+    """Exchange the API key for a short-lived dashboard browser session.
+
+    The key must be presented in ``X-API-Key`` or ``Authorization: Bearer``;
+    an existing session cannot mint a new one.
+    """
+    api_key = settings.ADMINA_API_KEY
+    if not api_key:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "error": "Not Found",
+                "detail": "Dashboard sign-in requires ADMINA_API_KEY to be set.",
+            },
+            headers=_NO_STORE,
+        )
+    if not _key_matches(_presented_api_key(request.headers)):
+        return JSONResponse(
+            status_code=401,
+            content={"error": "Unauthorized", "detail": "Invalid API key"},
+            headers=_NO_STORE,
+        )
+    ttl = settings.ADMINA_DASHBOARD_SESSION_TTL
+    now = int(time.time())
+    resp = JSONResponse(
+        {"authenticated": True, "session": True, "expires_at": now + ttl},
+        headers=_NO_STORE,
+    )
+    resp.set_cookie(
+        dashboard_session.COOKIE_NAME,
+        dashboard_session.issue_token(api_key, ttl=ttl, now=now),
+        max_age=ttl,
+        path=dashboard_session.COOKIE_PATH,
+        secure=_session_cookie_secure(request),
+        httponly=True,
+        samesite="strict",
+    )
+    resp.delete_cookie(dashboard_session.LEGACY_COOKIE_NAME, path="/")
+    return resp
+
+
+@_dashboard_shell.delete(dashboard_session.SESSION_PATH, include_in_schema=False)
+async def _dashboard_session_delete(request: Request) -> JSONResponse:
+    """End the dashboard browser session (clears the cookie)."""
+    resp = JSONResponse({"authenticated": False, "session": False}, headers=_NO_STORE)
+    resp.delete_cookie(
+        dashboard_session.COOKIE_NAME,
+        path=dashboard_session.COOKIE_PATH,
+        secure=_session_cookie_secure(request),
+        httponly=True,
+        samesite="strict",
+    )
+    resp.delete_cookie(dashboard_session.LEGACY_COOKIE_NAME, path="/")
+    return resp
 
 
 if _DASHBOARD_DIR.is_dir():
     from fastapi.responses import HTMLResponse
     from fastapi.staticfiles import StaticFiles
 
-    app.mount(
-        "/vendor",
-        StaticFiles(directory=_DASHBOARD_DIR / "vendor"),
-        name="dashboard-vendor",
-    )
+    if "dashboard" in _MOUNTED_SURFACES:
+        app.mount(
+            "/vendor",
+            StaticFiles(directory=_DASHBOARD_DIR / "vendor"),
+            name="dashboard-vendor",
+        )
 
-    @app.get("/heimdall.png", include_in_schema=False)
+    @_dashboard_shell.get("/heimdall.png", include_in_schema=False)
     async def _dashboard_logo() -> Response:
         return Response(
             content=(_DASHBOARD_DIR / "heimdall.png").read_bytes(),
             media_type="image/png",
         )
 
-    @app.get("/", include_in_schema=False)
+    @_dashboard_shell.get("/", include_in_schema=False)
     async def _dashboard_root() -> HTMLResponse:
-        # Issue a session cookie carrying the API key so subsequent
-        # /api/* fetches and the WebSocket auto-authenticate without
-        # the dashboard JS needing to know the key.
-        resp = HTMLResponse(_dashboard_index_html())
-        if settings.ADMINA_API_KEY:
-            resp.set_cookie(
-                _DASHBOARD_COOKIE,
-                # A signed, expiring token — NOT the API key itself, so the
-                # secret never leaves the server in clear text.
-                _issue_dashboard_token(),
-                httponly=True,
-                samesite="lax",
-                # Off by default for local HTTP dev; set
-                # DASHBOARD_COOKIE_SECURE=true behind HTTPS in production so
-                # the session cookie is never sent over plain HTTP.
-                secure=settings.DASHBOARD_COOKIE_SECURE,
-                max_age=_DASHBOARD_SESSION_TTL,
-            )
-        return resp
+        # The SPA shell is static and carries no credential. It never
+        # creates a session: the page asks for the API key and exchanges it
+        # at POST /api/dashboard/session.
+        return HTMLResponse(
+            _dashboard_index_html(),
+            headers={
+                "Cache-Control": "no-store",
+                "X-Frame-Options": "DENY",
+                "Content-Security-Policy": "frame-ancestors 'none'",
+                "X-Content-Type-Options": "nosniff",
+                "Referrer-Policy": "no-referrer",
+            },
+        )
+
+
+_mount("dashboard", _dashboard_shell)
 
 
 # ── Auth Middleware ───────────────────────────────────────────
-# /health and the OpenAPI docs are always public.
-# Dashboard static assets are also public so the SPA can boot.
+# /health, /metrics and the OpenAPI docs are public (the docs can be turned
+# off with ADMINA_API_DOCS_ENABLED=false; ADMINA_METRICS_REQUIRE_AUTH and
+# ADMINA_API_DOCS_REQUIRE_AUTH put /metrics and the docs behind the API key).
+# The dashboard shell and its static assets are public so the sign-in page
+# can load; they hold no credential.
 _AUTH_EXEMPT = {
     "/",
     "/health",
@@ -719,53 +998,114 @@ _AUTH_EXEMPT = {
 }
 _AUTH_EXEMPT_PREFIXES = ("/vendor/",)
 
+# Surfaces that answer 404 when switched off by configuration.
+_API_DOCS_PATHS = {"/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json"}
+_DASHBOARD_SHELL_PATHS = {"/", "/heimdall.png", "/vendor", dashboard_session.SESSION_PATH}
+_DASHBOARD_SHELL_PREFIXES = ("/vendor/",)
+
+
+def _surface_disabled(path: str) -> bool:
+    if path in _API_DOCS_PATHS and not settings.ADMINA_API_DOCS_ENABLED:
+        return True
+    surface = surface_of(path)
+    if surface is not None and surface not in enabled_surfaces():
+        return True
+    if path in _DASHBOARD_SHELL_PATHS or path.startswith(_DASHBOARD_SHELL_PREFIXES):
+        return not _dashboard_enabled()
+    return False
+
+
+def _key_required(path: str) -> bool:
+    """True for /metrics or the OpenAPI docs when their setting puts them
+    behind the API key."""
+    if path == "/metrics":
+        return settings.ADMINA_METRICS_REQUIRE_AUTH
+    if path in _API_DOCS_PATHS:
+        return settings.ADMINA_API_DOCS_REQUIRE_AUTH
+    return False
+
+
+def _invalid_key_response() -> JSONResponse:
+    return JSONResponse(
+        status_code=401,
+        content={
+            "error": "Unauthorized",
+            "detail": "Provide your API key via X-API-Key header or Authorization: Bearer <key>",
+        },
+    )
+
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next) -> JSONResponse:
     path = request.url.path
-    if path in _AUTH_EXEMPT or path.startswith(_AUTH_EXEMPT_PREFIXES):
+    if _surface_disabled(path):
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    key_required = _key_required(path)
+    if not key_required and (path in _AUTH_EXEMPT or path.startswith(_AUTH_EXEMPT_PREFIXES)):
+        return await call_next(request)
+    if key_required and settings.ADMINA_API_KEY:
+        # The API key itself: the public paths an auth provider may declare
+        # do not apply to a route the operator put behind the key.
+        if verify_credential(headers=request.headers, query_params={}, cookies={}):
+            return await call_next(request)
+        return _invalid_key_response()
+
+    # 0. The audit append key: POST /api/v1/audit only. The credential a
+    # request was admitted with is stamped on the audit record.
+    if _append_key_matches(request.method, path, _presented_api_key(request.headers)):
+        request.state.credential = "append_key"
+        return await call_next(request)
+
+    # 0b. Dashboard browser session: accepted only for read-only requests to
+    # the dashboard API. Everywhere else the cookie is ignored and the
+    # request must carry the API key.
+    if (
+        dashboard_session.session_allowed(request.method, path)
+        and _dashboard_session_expiry(request.cookies) is not None
+    ):
+        request.state.user = {
+            "user_id": "dashboard_session",
+            "roles": ["dashboard"],
+            "metadata": {},
+        }
         return await call_next(request)
 
     state = _get_state(request)
 
-    # 1. Try plugin auth providers first (if any are loaded)
+    # 1. Try plugin auth providers first (if any are loaded). The first
+    # provider that returns a user wins; the handler then runs once, outside
+    # the loop, so its exceptions reach the normal 500 handler.
     if state.auth_providers:
+        user = None
         for provider in state.auth_providers:
             try:
                 user = await provider.authenticate(request)
-                if user:
-                    request.state.user = user
-                    return await call_next(request)
             except (ValueError, RuntimeError, OSError):
                 continue  # try next provider
-        # All providers failed — reject
-        return JSONResponse(
-            status_code=401,
-            content={
-                "error": "Unauthorized",
-                "detail": "Authentication failed across all providers",
-            },
-        )
+            if user:
+                break
+        if not user:
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "error": "Unauthorized",
+                    "detail": "Authentication failed across all providers",
+                },
+            )
+        request.state.user = user
+        return await call_next(request)
 
     # 2. Fallback: static ADMINA_API_KEY check.
     # API clients present the raw key via X-API-Key / Authorization: Bearer.
-    # Browsers present the `admina_session` cookie issued by the bundled
-    # dashboard at GET /, which holds a signed expiring token — verified by
-    # signature, never the raw key.
     # query-param key auth is WebSocket-only (browsers can't set WS headers); HTTP uses the header
     if settings.ADMINA_API_KEY:
         if not verify_credential(
             headers=request.headers,
             query_params={},
-            cookies=request.cookies,
+            cookies={},
         ):
-            return JSONResponse(
-                status_code=401,
-                content={
-                    "error": "Unauthorized",
-                    "detail": "Provide your API key via X-API-Key header or Authorization: Bearer <key>",
-                },
-            )
+            return _invalid_key_response()
+        request.state.credential = "api_key"
         return await call_next(request)
 
     # 3. No API key and no auth providers — block unless explicitly allowed
@@ -786,16 +1126,71 @@ async def auth_middleware(request: Request, call_next) -> JSONResponse:
     )
 
 
+# ── Request body limit ────────────────────────────────────────
+# Added after the other middleware, so it runs before them: a body over
+# ADMINA_MAX_REQUEST_BYTES gets 413 before authentication and before any
+# parsing (see admina.proxy.body_limit).
+app.add_middleware(BodyLimitMiddleware, get_limit=lambda: settings.ADMINA_MAX_REQUEST_BYTES)
+
+# ── Ruleset header ────────────────────────────────────────────
+# Added last, so it is the outermost middleware: every response of
+# /v1/chat/completions carries X-Admina-Ruleset, the 413 of the body limit
+# and the 401 of authentication included (see admina.proxy.gateway_scan).
+app.add_middleware(
+    RulesetHeaderMiddleware,
+    get_ruleset=lambda: scan_config_of(getattr(app.state, "proxy", None)).ruleset_sha256,
+)
+
+
 # ── Admin API ─────────────────────────────────────────────────
 @app.get("/health", tags=["admin"], summary="Liveness probe")
-async def health() -> dict[str, Any]:
+async def health(request: Request) -> dict[str, Any]:
+    """Liveness probe, with the configuration a deployment checks.
+
+    ``status``: ``healthy``, or ``degraded`` while forensic records cannot
+    be written (``forensic_writable`` is false, or the last record or chain
+    state write failed); ``mode``: the governance mode; ``surfaces``: the
+    enabled surfaces; ``ruleset_sha256``: the active firewall ruleset (the
+    value of ``X-Admina-Ruleset``); ``forensic_writable``: whether the
+    forensic store accepts writes (filesystem: a probe file is written,
+    fsynced and removed; S3: the last record write; in-memory: ``null``;
+    a backend that could not be opened: ``false``). The check runs at most
+    once every 10 s on a thread of its own and reports ``false`` when it
+    takes longer than 1 s (see admina.proxy.forensic_probe).
+    ``forensic_chain``: ``ok``, ``rebuilt`` (the chain state was rebuilt
+    from verified records at startup) or ``invalid`` (nothing is recorded
+    until an operator acts; status ``degraded``); ``null`` without a stored
+    chain.
+    """
+    state = getattr(request.app.state, "proxy", None)
+    forensic_writable = await _forensic_writable(state)
+    degraded = forensic_writable is False or not _forensic_accepting(state)
     return {
-        "status": "healthy",
+        "status": "degraded" if degraded else "healthy",
         "service": "admina-proxy",
         "version": __version__,
-        "engine": engine_status(),
+        "mode": settings.GOVERNANCE_MODE,
+        "surfaces": list(enabled_surfaces()),
+        "ruleset_sha256": scan_config_of(state).ruleset_sha256,
+        "forensic_writable": forensic_writable,
+        "forensic_chain": getattr(getattr(state, "forensic_box", None), "chain_status", None),
+        "engine": _engine_status(state),
         "timestamp": datetime.now(UTC).isoformat(),
     }
+
+
+def _forensic_accepting(state: Any) -> bool:
+    """False while the forensic store's last write failed."""
+    accepting = getattr(getattr(state, "forensic_box", None), "accepting_records", None)
+    return True if accepting is None else bool(accepting())
+
+
+async def _forensic_writable(state: Any) -> bool | None:
+    """The forensic store's write check, through the state's probe."""
+    probe = getattr(state, "forensic_probe", None)
+    if probe is None:
+        return None
+    return await probe.check(getattr(state, "forensic_box", None))
 
 
 @app.get(
@@ -818,7 +1213,6 @@ async def prometheus_metrics(request: Request) -> Response:
     lb_stats = state.loop_breaker.get_stats() if state.loop_breaker else {}
     pii_stats = state.pii_redactor.get_stats() if state.pii_redactor else {}
     fbox_stats = state.forensic_box.get_stats() if state.forensic_box else {}
-    eng = engine_status()
 
     lines: list[str] = []
     _emitted_metadata: set[str] = set()
@@ -837,7 +1231,8 @@ async def prometheus_metrics(request: Request) -> Response:
         suffix = f"{{{labels}}}" if labels else ""
         lines.append(f"admina_{name}{suffix} {value}")
 
-    _metric("requests_total", m.get("requests_total", 0), "Total governance requests processed")
+    # admina_requests_total{surface,action} and the duration histograms.
+    lines.extend(state.request_metrics.exposition())
     _metric(
         "requests_blocked_total", m.get("requests_blocked", 0), "Total governance requests blocked"
     )
@@ -856,6 +1251,28 @@ async def prometheus_metrics(request: Request) -> Response:
         round(m.get("avg_latency_ms", 0.0), 2),
         "Rolling average pipeline latency in milliseconds",
         "gauge",
+    )
+    _metric(
+        "prescan_accepted_total",
+        m.get("prescan_accepted", 0),
+        "Gateway requests whose X-Admina-Scan-Policy was applied",
+    )
+    _metric(
+        "prescan_ruleset_mismatch_total",
+        m.get("prescan_ruleset_mismatch", 0),
+        "Gateway requests whose X-Admina-Scan-Policy named a ruleset the proxy "
+        "does not accept (scanned in full)",
+    )
+    _metric(
+        "prescan_malformed_total",
+        m.get("prescan_malformed", 0),
+        "Gateway requests with a malformed X-Admina-Scan-Policy (scanned in full)",
+    )
+    _metric(
+        "prescan_ignored_total",
+        m.get("prescan_ignored", 0),
+        "Gateway requests whose X-Admina-Scan-Policy was ignored because scan "
+        "policies are off (scanned in full)",
     )
     for _status, _counter in COORDINATION_COUNTERS.items():
         _metric(
@@ -901,28 +1318,31 @@ async def prometheus_metrics(request: Request) -> Response:
             "gauge",
         )
 
-    # Engine info as a labelled gauge with constant value 1
-    engine_name = eng.get("engine", "unknown")
-    rust_avail = "yes" if eng.get("rust_available") else "no"
-    lines.append("# HELP admina_engine_info Static info about the running engine")
-    lines.append("# TYPE admina_engine_info gauge")
-    lines.append(
-        f'admina_engine_info{{engine="{engine_name}",rust_available="{rust_avail}",'
-        f'version="{__version__}"}} 1'
+    lines.extend(state.loop_lag.exposition())
+
+    # The engines the proxy runs, as a labelled gauge with constant value 1.
+    lines.extend(
+        engine_info_lines(
+            _engine_status(state), pii_on=settings.PII_REDACTION_ENABLED, version=__version__
+        )
     )
 
     body = "\n".join(lines) + "\n"
     return Response(content=body, media_type="text/plain; version=0.0.4; charset=utf-8")
 
 
-@app.get("/api/stats", tags=["admin"], summary="Proxy and engine statistics")
+# Proxy statistics and recent events (dashboard surface).
+_stats_router = APIRouter()
+
+
+@_stats_router.get("/api/stats", tags=["admin"], summary="Proxy and engine statistics")
 async def get_stats(request: Request) -> dict[str, Any]:
     state = _get_state(request)
     return {
         "proxy": state.metrics,
-        "engine": engine_status(),
+        "engine": _engine_status(state),
         "firewall": state.firewall.get_stats(),
-        "loop_breaker": state.loop_breaker.get_stats(),
+        "loop_breaker": state.loop_breaker.get_stats() if state.loop_breaker else {},
         "pii_redactor": state.pii_redactor.get_stats(),
         "forensic_blackbox": (state.forensic_box.get_stats() if state.forensic_box else {}),
         "compliance": state.compliance.get_stats(),
@@ -930,7 +1350,7 @@ async def get_stats(request: Request) -> dict[str, Any]:
     }
 
 
-@app.get("/api/events", tags=["admin"], summary="Recent governance events")
+@_stats_router.get("/api/events", tags=["admin"], summary="Recent governance events")
 async def get_events(request: Request, limit: int = 50) -> dict[str, Any]:
     """Retrieve recent governance events from ClickHouse."""
     state = _get_state(request)
@@ -950,13 +1370,19 @@ async def get_events(request: Request, limit: int = 50) -> dict[str, Any]:
         )
         events = [dict(zip(result.column_names, row)) for row in result.result_rows]
         return {"events": events, "count": len(events)}
-    except (OSError, clickhouse_connect.driver.exceptions.DatabaseError) as e:
+    except _clickhouse_errors() as e:
         logger.warning("events query failed: %s", e)
         return {"events": [], "error": "Events query failed"}
 
 
+_mount("dashboard", _stats_router)
+
+# EU AI Act, NIS2, GDPR and cross-regulation APIs (compliance surface).
+_compliance_router = APIRouter()
+
+
 # ── EU AI Act API ────────────────────────────────────────────
-@app.post(
+@_compliance_router.post(
     "/api/compliance/classify",
     tags=["compliance"],
     summary="Classify a system under the EU AI Act risk taxonomy",
@@ -971,7 +1397,7 @@ async def classify_risk(request: Request, body: dict) -> dict[str, Any]:
     return result
 
 
-@app.post(
+@_compliance_router.post(
     "/api/compliance/gap-analysis",
     tags=["compliance"],
     summary="Compute the compliance gap report for a risk category",
@@ -985,7 +1411,7 @@ async def gap_analysis(request: Request, body: dict) -> dict[str, Any]:
     return result
 
 
-@app.post(
+@_compliance_router.post(
     "/api/compliance/report",
     tags=["compliance"],
     summary="Generate a structured EU AI Act compliance report",
@@ -1010,7 +1436,7 @@ async def generate_compliance_report(request: Request, body: dict) -> dict[str, 
 
 
 # ── NIS2 API ────────────────────────────────────────────────
-@app.get(
+@_compliance_router.get(
     "/api/compliance/nis2/areas",
     tags=["compliance"],
     summary="List NIS2 Art. 21 measure areas and their controls",
@@ -1020,7 +1446,7 @@ async def nis2_areas(request: Request) -> dict[str, Any]:
     return {"areas": state.nis2.list_areas(), "stats": state.nis2.get_stats()}
 
 
-@app.post(
+@_compliance_router.post(
     "/api/compliance/nis2/assess",
     tags=["compliance"],
     summary="Run NIS2 self-assessment (returns coverage score and gaps)",
@@ -1031,7 +1457,7 @@ async def nis2_assess(request: Request, body: dict) -> dict[str, Any]:
 
 
 # ── GDPR API ────────────────────────────────────────────────
-@app.get(
+@_compliance_router.get(
     "/api/compliance/gdpr/records",
     tags=["compliance"],
     summary="List Art. 30 records of processing activities",
@@ -1041,7 +1467,7 @@ async def gdpr_list_records(request: Request) -> dict[str, Any]:
     return {"records": state.gdpr.list(), "stats": state.gdpr.get_stats()}
 
 
-@app.post(
+@_compliance_router.post(
     "/api/compliance/gdpr/records",
     tags=["compliance"],
     summary="Create a new Art. 30 record",
@@ -1051,7 +1477,7 @@ async def gdpr_create_record(request: Request, body: dict) -> dict[str, Any]:
     return state.gdpr.create(payload=body)
 
 
-@app.get(
+@_compliance_router.get(
     "/api/compliance/gdpr/records/{activity_id}",
     tags=["compliance"],
     summary="Get a single Art. 30 record",
@@ -1064,7 +1490,7 @@ async def gdpr_get_record(request: Request, activity_id: str) -> dict[str, Any]:
     return rec
 
 
-@app.put(
+@_compliance_router.put(
     "/api/compliance/gdpr/records/{activity_id}",
     tags=["compliance"],
     summary="Update an Art. 30 record",
@@ -1077,7 +1503,7 @@ async def gdpr_update_record(request: Request, activity_id: str, body: dict) -> 
     return rec
 
 
-@app.delete(
+@_compliance_router.delete(
     "/api/compliance/gdpr/records/{activity_id}",
     tags=["compliance"],
     summary="Delete an Art. 30 record",
@@ -1089,7 +1515,7 @@ async def gdpr_delete_record(request: Request, activity_id: str) -> dict[str, An
     return {"deleted": True, "id": activity_id}
 
 
-@app.post(
+@_compliance_router.post(
     "/api/compliance/gdpr/dpia/template",
     tags=["compliance"],
     summary="Render an Art. 35 DPIA scaffold (Markdown) from operator-supplied facts",
@@ -1103,7 +1529,7 @@ async def gdpr_dpia_template(body: dict) -> Response:
 
 
 # ── Consolidated compliance report ──────────────────────────
-@app.get(
+@_compliance_router.get(
     "/api/compliance/report",
     tags=["compliance"],
     summary="Consolidated compliance snapshot (EU AI Act + NIS2 + GDPR + cross-matrix)",
@@ -1133,7 +1559,7 @@ async def consolidated_compliance_report(
     snapshot: dict[str, Any] = {
         "generated_at": datetime.now(UTC).isoformat(),
         "admina_version": __version__,
-        "engine": engine_status(),
+        "engine": _engine_status(state),
         "proxy_metrics": state.metrics,
         "eu_ai_act": {
             "stats": state.compliance.get_stats(),
@@ -1247,7 +1673,7 @@ async def consolidated_compliance_report(
 
 
 # ── Cross-regulation matrix API ─────────────────────────────
-@app.get(
+@_compliance_router.get(
     "/api/compliance/matrix",
     tags=["compliance"],
     summary="Cross-regulation control matrix (AI Act ↔ NIS2 ↔ GDPR)",
@@ -1270,21 +1696,108 @@ async def compliance_matrix(format: str = "json") -> Any:
     }
 
 
+_mount("compliance", _compliance_router)
+
+
 # ── MCP Proxy Endpoint ──────────────────────────────────────
-@app.post("/mcp", tags=["proxy"], summary="MCP JSON-RPC governance proxy")
-@app.post("/mcp/{path:path}", tags=["proxy"], include_in_schema=False)
+_mcp_router = APIRouter()
+
+_FORENSIC_UNAVAILABLE = "The forensic record of the request could not be written."
+
+
+def _forensic_unavailable_mcp(body: dict, event_id: str) -> JSONResponse:
+    """503 for an /mcp request whose forensic record was not written
+    (ADMINA_FORENSIC_FAIL_MODE=closed); the request is not forwarded."""
+    logger.error("MCP request %s not forwarded: its forensic record was not written", event_id)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "jsonrpc": "2.0",
+            "id": body.get("id") if isinstance(body, dict) else None,
+            "error": {
+                "code": -32603,
+                "message": _FORENSIC_UNAVAILABLE,
+                "data": {"event_id": event_id},
+            },
+        },
+    )
+
+
+@_mcp_router.post("/mcp", tags=["proxy"], summary="MCP JSON-RPC governance proxy")
+@_mcp_router.post("/mcp/{path:path}", tags=["proxy"], include_in_schema=False)
 async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
     """
     Main MCP proxy endpoint.
     All agent traffic flows through here for governance inspection.
+    Each request is recorded once it has been answered, with its duration
+    (see :class:`_McpOutcome`).
     """
+    started = time.perf_counter()
+    outcome = _McpOutcome()
+    try:
+        return await _mcp_exchange(request, path, outcome)
+    finally:
+        outcome.record(_get_state(request), time.perf_counter() - started)
+
+
+@dataclass
+class _McpOutcome:
+    """How an /mcp request is recorded once it has been answered.
+
+    *decision* is set when the governance pipeline has decided (``ERROR``
+    when it raised) and becomes a ``BLOCK`` of ``response_guard`` when a
+    governance guard blocks the response: the request is recorded with it
+    (:func:`record_decision`: counted, one ``governance.decision`` event,
+    one ClickHouse row). A request *refused* before the pipeline ran (rate
+    limits, ``MAX_REQUEST_TOKENS``) is only counted, as ``BLOCK``. One
+    with neither, whose body is not JSON, is not recorded.
+    """
+
+    decision: Decision | None = None
+    refused: bool = False
+
+    def block_response(self, risk_level: str) -> None:
+        """A governance guard blocked the response: the decision becomes a
+        ``BLOCK`` of ``response_guard`` with *risk_level*."""
+        if self.decision is not None:
+            self.decision = replace(
+                self.decision, action="BLOCK", risk_level=risk_level, domain="response_guard"
+            )
+
+    def record(self, state: ProxyState, duration_s: float) -> None:
+        """Record the request, answered after *duration_s* seconds."""
+        if self.decision is not None:
+            try:
+                record_decision(state, self.decision, duration_s=duration_s)
+            except Exception as exc:  # noqa: BLE001 — the response is sent as it is
+                logger.error("MCP decision not recorded: %s", type(exc).__name__)
+        elif self.refused:
+            state.count_request("mcp", "BLOCK")
+            state.observe_request_duration("mcp", duration_s)
+
+
+# Risk levels of a decision, upper case.
+_RISK_LABELS = ("LOW", "MEDIUM", "HIGH", "CRITICAL")
+
+
+def _guard_risk(verdict: dict) -> str:
+    """The risk level of a guard's blocking *verdict*, upper case: its
+    ``risk_level`` when it is one of the risk levels, else ``HIGH``."""
+    label = str(safe_serialize(verdict.get("risk_level", RiskLevel.HIGH))).upper()
+    return label if label in _RISK_LABELS else "HIGH"
+
+
+async def _mcp_exchange(request: Request, path: str, outcome: _McpOutcome) -> JSONResponse:
+    """The response to a governed /mcp request; how it is recorded goes in
+    *outcome* (see :func:`mcp_proxy`). A request whose body is not JSON is
+    refused (HTTPException) before it is governed; one whose governance
+    pipeline raises is recorded as ``ERROR`` and answered 500 (JSON-RPC
+    ``-32603``). An exception raised while the request or its response is
+    governed is logged by its class (:mod:`admina.core.exception_log`)."""
     state = _get_state(request)
-    start_time = time.perf_counter()
     # Sanitize header values: strip CRLF (Redis key injection) and cap length
     session_id = re.sub(r"[\r\n]", "", request.headers.get("X-Session-Id", "default"))[:128]
     agent_id = re.sub(r"[\r\n]", "", request.headers.get("X-Agent-Id", "unknown"))[:128]
-
-    state.inc_metric("requests_total")
 
     # ─── Rate Limiting (Redis) ─────────────────────────────
     if state.redis and settings.RATE_LIMIT_MAX_REQUESTS > 0:
@@ -1295,7 +1808,7 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
             if count == 1:
                 await state.redis.expire(rl_key, settings.RATE_LIMIT_WINDOW_SECONDS)
             if count > settings.RATE_LIMIT_MAX_REQUESTS:
-                state.inc_metric("requests_blocked")
+                outcome.refused = True
                 return JSONResponse(
                     status_code=429,
                     content={
@@ -1312,7 +1825,7 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                         },
                     },
                 )
-        except (OSError, aioredis.RedisError) as e:
+        except _redis_errors() as e:
             logger.warning("Rate limit check failed: %s", e)
 
         # Per-IP rate limit (non-bypassable fallback)
@@ -1323,7 +1836,7 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
             if ip_count == 1:
                 await state.redis.expire(rl_ip_key, settings.RATE_LIMIT_WINDOW_SECONDS)
             if ip_count > settings.RATE_LIMIT_MAX_REQUESTS * settings.RATE_LIMIT_IP_MULTIPLIER:
-                state.inc_metric("requests_blocked")
+                outcome.refused = True
                 return JSONResponse(
                     status_code=429,
                     content={
@@ -1340,7 +1853,7 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                         },
                     },
                 )
-        except (OSError, aioredis.RedisError) as e:
+        except _redis_errors() as e:
             logger.warning("IP rate limit check failed: %s", e)
 
     try:
@@ -1356,7 +1869,7 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
 
     # ─── Token size guard ─────────────────────────────────────
     if settings.MAX_REQUEST_TOKENS > 0 and len(content_str) > settings.MAX_REQUEST_TOKENS:
-        state.inc_metric("requests_blocked")
+        outcome.refused = True
         return JSONResponse(
             status_code=413,
             content={
@@ -1374,105 +1887,83 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
         )
 
     # ─── Governance Pipeline ─────────────────────────────────
-    pipeline_result = await run_pipeline(
-        body=body,
-        content_str=content_str,
-        session_id=session_id,
-        agent_id=agent_id,
-        request_id=event_id,
-        params=params,
-        firewall=state.firewall,
-        pii_redactor=state.pii_redactor,
-        loop_breaker=state.loop_breaker,
-        governance_guards=state.governance_guards,
-        injection_enabled=settings.INJECTION_FAST_PATH_ENABLED,
-        pii_enabled=settings.PII_REDACTION_ENABLED,
-        mode=settings.GOVERNANCE_MODE,
-        guard_fail_mode=settings.GUARD_FAIL_MODE,
-        egress_policy=state.egress_policy,
-        egress_mode=resolve_egress_mode(settings.GOVERNANCE_MODE),
-    )
+    try:
+        pipeline_result = await run_pipeline(
+            body=body,
+            content_str=content_str,
+            session_id=session_id,
+            agent_id=agent_id,
+            request_id=event_id,
+            params=params,
+            firewall=state.firewall,
+            pii_redactor=state.pii_redactor,
+            loop_breaker=state.loop_breaker,
+            governance_guards=state.governance_guards,
+            injection_enabled=settings.INJECTION_FAST_PATH_ENABLED,
+            pii_enabled=settings.PII_REDACTION_ENABLED,
+            mode=settings.GOVERNANCE_MODE,
+            guard_fail_mode=settings.GUARD_FAIL_MODE,
+            egress_policy=egress_policy_for(state.egress_policy, "mcp"),
+            egress_mode=resolve_egress_mode(settings.GOVERNANCE_MODE),
+        )
+    except Exception as exc:  # noqa: BLE001 — answered 500, logged by its class
+        outcome.decision = Decision.failed("mcp", event_id)
+        logger.error(
+            "MCP governance pipeline failed for event %s: %s", event_id, type(exc).__name__
+        )
+        log_frames(logger, "MCP governance pipeline", exc)
+        return _internal_error_mcp(body, event_id)
 
-    persisted_details = build_governance_details(pipeline_result)
     redacted_body = pipeline_result.redacted_body
     governance_latency = pipeline_result.latency_ms
     gov_response = pipeline_result.gov_response
     action = pipeline_result.action
     risk_level = pipeline_result.risk_level
 
-    if pipeline_result.checks.get("pii_redaction", {}).get("count", 0) > 0:
-        state.inc_metric("requests_redacted")
-    _spawn(
-        governance_bus.emit(
-            BusGovernanceEvent(
-                event_type=EventType.GOVERNANCE_DECISION,
-                session_id=session_id,
-                action=gov_response.action,
-                risk_level=gov_response.risk_level,
-                domain="proxy",
-                metadata=gov_response.to_dict(),
-            )
-        )
+    # Metrics, the bus event (alerts on BLOCK / CIRCUIT_BREAK) and the
+    # ClickHouse row, once the request has been answered (mcp_proxy); the
+    # forensic record is written below.
+    outcome.decision = Decision.of(
+        "mcp",
+        event_id,
+        pipeline_result,
+        request_sha256=text_sha256(content_str),
+        session_id=session_id,
+        agent_id=agent_id,
+        method=method,
+        tool_name=params.get("name", "") if isinstance(params, dict) else "",
     )
 
-    # ── Fire alerts on block/circuit-break (non-blocking) ─────
-    if action in (GovernanceAction.BLOCK, GovernanceAction.CIRCUIT_BREAK) and state.alert_channels:
-        _alert = {
-            "level": gov_response.risk_level,
-            "domain": gov_response.domain,
-            "summary": f"{gov_response.action} — {method} from agent {agent_id}",
-            "details": {k: safe_serialize(v) for k, v in pipeline_result.checks.items()},
-            "event_id": event_id,
-            "session_id": session_id,
-        }
-        _spawn(_fire_alerts(state.alert_channels, _alert))
-
     # ─── Forensic Black Box (non-blocking) ─────────────────────
+    # With ADMINA_FORENSIC_FAIL_MODE=closed a record that is not written
+    # raises: the request is answered 503 and not forwarded.
     forensic_record = None
     if state.forensic_box:
         _loop = asyncio.get_running_loop()
-        forensic_record = await _loop.run_in_executor(
-            None,
-            lambda: state.forensic_box.record(
-                {
-                    "event_id": event_id,
-                    "event_type": EventType.MCP_REQUEST,
-                    "agent_id": agent_id,
-                    "session_id": session_id,
-                    "method": method,
-                    "action": action,
-                    "risk_level": risk_level,
-                    "governance_latency_ms": round(governance_latency, 2),
-                    "checks": {k: safe_serialize(v) for k, v in pipeline_result.checks.items()},
-                    "would_action": (
-                        safe_serialize(pipeline_result.would_action)
-                        if pipeline_result.would_action is not None
-                        else None
-                    ),
-                }
-            ),
-        )
-
-    # ─── Store to ClickHouse (fire-and-forget) ─────────────────
-    _spawn(
-        _store_event_async(
-            state.clickhouse,
-            GovernanceEvent(
-                event_id=event_id,
-                timestamp=datetime.now(UTC).isoformat(),
-                event_type=EventType.MCP_REQUEST,
-                agent_id=agent_id,
-                session_id=session_id,
-                method=method,
-                tool_name=params.get("name", "") if isinstance(params, dict) else "",
-                action=action,
-                risk_level=risk_level,
-                details=persisted_details,
-                latency_ms=governance_latency,
-                request_hash=hashlib.sha256(content_str.encode()).hexdigest()[:32],
-            ),
-        )
-    )
+        try:
+            forensic_record = await _loop.run_in_executor(
+                None,
+                lambda: state.forensic_box.record(
+                    {
+                        "event_id": event_id,
+                        "event_type": EventType.MCP_REQUEST,
+                        "agent_id": agent_id,
+                        "session_id": session_id,
+                        "method": method,
+                        "action": action,
+                        "risk_level": risk_level,
+                        "governance_latency_ms": round(governance_latency, 2),
+                        "checks": {k: safe_serialize(v) for k, v in pipeline_result.checks.items()},
+                        "would_action": (
+                            safe_serialize(pipeline_result.would_action)
+                            if pipeline_result.would_action is not None
+                            else None
+                        ),
+                    }
+                ),
+            )
+        except ForensicWriteError:
+            return _forensic_unavailable_mcp(body, event_id)
 
     # ─── Coordination detector (fire-and-forget) ───────────────
     # Never blocks: a confirmed verdict arms EgressPolicy's quarantine set,
@@ -1555,12 +2046,14 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                             }
                         ),
                     )
-                except Exception:
+                except Exception as exc:  # noqa: BLE001 — the bus event still goes out
                     logger.warning(
-                        "Coordination forensic record failed for event %s; bus event still emitted",
+                        "Coordination forensic record failed for event %s (%s); "
+                        "bus event still emitted",
                         event_id,
-                        exc_info=True,
+                        type(exc).__name__,
                     )
+                    log_frames(logger, "Coordination forensic record", exc)
             await governance_bus.emit(
                 BusGovernanceEvent(
                     event_type=EventType.POLICY_VIOLATION,
@@ -1576,7 +2069,6 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
 
     # ─── Respond based on governance decision ─────────────────
     if action == GovernanceAction.BLOCK:
-        state.inc_metric("requests_blocked")
         if state.router.is_multi_upstream and path.startswith("route/"):
             state.router.record_block(path.removeprefix("route/").split("/")[0])
         logger.warning(
@@ -1591,7 +2083,6 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
         )
 
     if action == GovernanceAction.CIRCUIT_BREAK:
-        state.inc_metric("requests_blocked")
         if state.router.is_multi_upstream and path.startswith("route/"):
             state.router.record_block(path.removeprefix("route/").split("/")[0])
         logger.warning("CIRCUIT BREAK for session %s: reasoning loop detected", session_id)
@@ -1601,7 +2092,6 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
         )
 
     # ─── Forward to upstream MCP server ───────────────────────
-    state.inc_metric("requests_allowed")
     try:
         server_name = None
         if path.startswith("route/"):
@@ -1651,7 +2141,7 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                 try:
                     guard_result = await guard.inspect_response(resp_payload)
                     if guard_result.get("action") in ("BLOCK", "REDACT"):
-                        state.inc_metric("requests_blocked")
+                        outcome.block_response(_guard_risk(guard_result))
                         logger.warning(
                             "Guard %r blocked response for event %s",
                             guard.name,
@@ -1668,17 +2158,18 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                     logger.error(
                         "Guard %r failed its contract on response inspection and was skipped: %s",
                         guard.name,
-                        exc,
-                        exc_info=True,
+                        type(exc).__name__,
                     )
+                    log_frames(logger, f"Guard {guard.name!r} on response inspection", exc)
                     # Response guard errors are not collected into pipeline_result.checks
                     # (that result is already built before this path runs); the ERROR log
-                    # with exc_info is the audit trail for response-side contract failures.
+                    # is the audit trail for response-side contract failures.
                     if settings.GUARD_FAIL_MODE == "closed":
                         # Fail-closed: a crashing response guard blocks the response.
                         # The request-side forensic record was written before the
                         # upstream call, so it cannot carry this response-side error —
                         # write an explicit ERROR record here for the audit trail.
+                        outcome.block_response("HIGH")
                         if state.forensic_box:
                             error_record = {
                                 "event_id": event_id,
@@ -1691,15 +2182,17 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                                 "checks": {
                                     f"guard_{guard.name}": {
                                         "action": "ERROR",
-                                        "error": str(exc),
+                                        "error": type(exc).__name__,
                                     }
                                 },
                             }
                             _loop = asyncio.get_running_loop()
-                            await _loop.run_in_executor(
-                                None, state.forensic_box.record, error_record
-                            )
-                        state.inc_metric("requests_blocked")
+                            try:
+                                await _loop.run_in_executor(
+                                    None, state.forensic_box.record, error_record
+                                )
+                            except ForensicWriteError:
+                                return _forensic_unavailable_mcp(body, event_id)
                         logger.warning(
                             "Guard %r response error blocked response for event %s (fail-closed)",
                             guard.name,
@@ -1710,14 +2203,10 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                             content=mcp_transport.format_block_response(gov_response, body),
                         )
 
-        total_latency = (time.perf_counter() - start_time) * 1000
-        state.update_avg_latency(total_latency)
-
+        record_hash = (forensic_record or {}).get("record_hash")
         headers = mcp_transport.format_allow_headers(
             gov_response,
-            forensic_hash=(
-                forensic_record.get("record_hash", "")[:16] if forensic_record else None
-            ),
+            forensic_hash=record_hash[:16] if record_hash else None,
         )
 
         return JSONResponse(content=response_data, headers=headers)
@@ -1736,23 +2225,88 @@ async def mcp_proxy(request: Request, path: str = "") -> JSONResponse:
                 },
             },
         )
-    except (httpx.HTTPError, OSError, ValueError, RuntimeError) as e:
-        logger.error("Proxy error: %s", e)
-        return JSONResponse(
-            status_code=500,
-            content={
-                "jsonrpc": "2.0",
-                "id": body.get("id"),
-                "error": {
-                    "code": -32603,
-                    "message": "Internal proxy error",
-                    "data": {"event_id": event_id},
-                },
+    except Exception as e:  # noqa: BLE001 — answered 500, logged by its class
+        # Raised by the upstream exchange, the response's PII redaction or a
+        # response guard outside its contract: the class only, as its message
+        # can quote the text of the response.
+        logger.error("Proxy error for event %s: %s", event_id, type(e).__name__)
+        log_frames(logger, "MCP proxy", e)
+        return _internal_error_mcp(body, event_id)
+
+
+def _internal_error_mcp(body: Any, event_id: str) -> JSONResponse:
+    """500 (JSON-RPC ``-32603``, ``Internal proxy error``) for an /mcp
+    request that failed in the proxy."""
+    return JSONResponse(
+        status_code=500,
+        content={
+            "jsonrpc": "2.0",
+            "id": body.get("id") if isinstance(body, dict) else None,
+            "error": {
+                "code": -32603,
+                "message": "Internal proxy error",
+                "data": {"event_id": event_id},
             },
-        )
+        },
+    )
+
+
+_mount("mcp", _mcp_router)
 
 
 # ── Helpers ──────────────────────────────────────────────────
+
+# ClickHouse event type of the rows of each governed surface.
+_ANALYTICS_EVENT_TYPES = {
+    "gateway": EventType.GATEWAY_REQUEST,
+    "mcp": EventType.MCP_REQUEST,
+    "integration": EventType.VALIDATE_REQUEST,
+}
+
+
+def record_decision(
+    state: ProxyState, decision: Decision, *, duration_s: float | None = None
+) -> None:
+    """Record the governance *decision* of a request of a governed surface
+    (``/mcp``, ``/v1/chat/completions``, ``/api/v1/validate``).
+
+    The request is counted on ``/metrics`` (with its duration, *duration_s*,
+    when given); its ``governance.decision`` event goes on the event bus,
+    which the live feed, the OpenTelemetry exporter and the alert channels
+    (on BLOCK and CIRCUIT_BREAK) read; its row goes to ClickHouse when
+    ClickHouse is configured. A request that failed before its decision
+    (``ERROR``) is only counted. Each surface writes its forensic records
+    itself.
+    """
+    state.count_request(decision.surface, decision.metric_action)
+    if decision.latency_ms is not None:
+        state.request_metrics.observe_governance(decision.surface, decision.latency_ms / 1000)
+    if duration_s is not None:
+        state.observe_request_duration(decision.surface, duration_s)
+    if not decision.decided:
+        return
+    _spawn(governance_bus.emit(decision.event()))
+    if state.clickhouse:
+        _spawn(_store_event_async(state.clickhouse, _analytics_row(decision)))
+
+
+def _analytics_row(decision: Decision) -> GovernanceEvent:
+    """The ClickHouse row (``governance_events``) of *decision*."""
+    return GovernanceEvent(
+        event_id=decision.event_id,
+        timestamp=datetime.now(UTC).isoformat(),
+        event_type=_ANALYTICS_EVENT_TYPES[decision.surface],
+        agent_id=decision.agent_id or "unknown",
+        session_id=decision.session_id or "unknown",
+        method=decision.method,
+        tool_name=decision.tool_name,
+        action=GovernanceAction(decision.action.lower()),
+        risk_level=RiskLevel(decision.risk_level.lower()),
+        details=decision.details,
+        latency_ms=decision.latency_ms or 0.0,
+        request_hash=decision.request_sha256 or "",
+        response_hash=decision.response_sha256 or "",
+    )
 
 
 def _store_event_sync(clickhouse_client, event: GovernanceEvent):
@@ -1804,7 +2358,7 @@ def _store_event_sync(clickhouse_client, event: GovernanceEvent):
                 "response_hash",
             ],
         )
-    except (OSError, clickhouse_connect.driver.exceptions.DatabaseError) as e:
+    except _clickhouse_errors() as e:
         logger.warning("Failed to store event: %s", e)
 
 

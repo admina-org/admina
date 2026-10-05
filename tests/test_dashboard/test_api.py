@@ -20,12 +20,8 @@ Covers ``/api/dashboard/*`` and ``/api/v1/{validate,audit}``.
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
-import hmac
 import json as _json
 import secrets as _secrets
-import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -152,38 +148,14 @@ class _FakeSettings:
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:8080"
 
 
-# ── Token helpers (mirror main._issue_dashboard_token/_verify_dashboard_token)
-# These replicate the 3-line HMAC so tests work without importing main.settings.
-
-_SESSION_TTL = 86400  # matches main._DASHBOARD_SESSION_TTL
+# ── Session helpers: the real token primitives, bound to a fake key ──
 
 
-def _mint_session_token(api_key: str, *, now: int | None = None) -> str:
-    """Mint a valid signed session token for *api_key* (mirrors proxy/main.py)."""
-    exp = (now if now is not None else int(time.time())) + _SESSION_TTL
-    payload = str(exp)
-    sig = hmac.new(api_key.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
-    return base64.urlsafe_b64encode(f"{payload}.{sig}".encode()).decode("ascii")
+def _mint_session_token(api_key: str) -> str:
+    """Mint a valid dashboard session token for *api_key*."""
+    from admina.proxy import dashboard_session
 
-
-def _verify_session_token(api_key: str, token: str, *, now: int | None = None) -> bool:
-    """Verify a session token against *api_key* (mirrors proxy/main.py)."""
-    if not api_key or not token:
-        return False
-    try:
-        raw = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8")
-        payload, sig = raw.rsplit(".", 1)
-    except (ValueError, UnicodeDecodeError):
-        return False
-    expected = hmac.new(
-        api_key.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
-    if not _secrets.compare_digest(sig, expected):
-        return False
-    try:
-        return (now if now is not None else int(time.time())) < int(payload)
-    except ValueError:
-        return False
+    return dashboard_session.issue_token(api_key, ttl=3600)
 
 
 def _make_verifier(fake_settings: Any):
@@ -211,7 +183,10 @@ def _make_verifier(fake_settings: Any):
         )
         if raw and _secrets.compare_digest(raw, key):
             return True
-        return _verify_session_token(key, cookies.get("admina_session", ""))
+        from admina.proxy import dashboard_session
+
+        token = cookies.get(dashboard_session.COOKIE_NAME, "")
+        return dashboard_session.verify_token(key, token)
 
     return _verify
 
@@ -1102,7 +1077,7 @@ class TestDashboardLiveWebSocket:
         client = TestClient(app)
         token = _mint_session_token("secret-key")
         with client.websocket_connect(
-            "/api/dashboard/live", headers={"Cookie": f"admina_session={token}"}
+            "/api/dashboard/live", headers={"Cookie": f"admina_dashboard_session={token}"}
         ) as ws:
             ws.close()
 
@@ -1119,7 +1094,8 @@ class TestDashboardLiveWebSocket:
         client = TestClient(app)
         with pytest.raises(WebSocketDisconnect) as excinfo:
             with client.websocket_connect(
-                "/api/dashboard/live", headers={"Cookie": "admina_session=secret-key"}
+                "/api/dashboard/live",
+                headers={"Cookie": "admina_dashboard_session=secret-key"},
             ):
                 pass
         assert excinfo.value.code == 1008
@@ -1137,7 +1113,8 @@ class TestDashboardLiveWebSocket:
         client = TestClient(app)
         with pytest.raises(WebSocketDisconnect) as excinfo:
             with client.websocket_connect(
-                "/api/dashboard/live", headers={"Cookie": "admina_session=garbage.tampered"}
+                "/api/dashboard/live",
+                headers={"Cookie": "admina_dashboard_session=garbage.tampered"},
             ):
                 pass
         assert excinfo.value.code == 1008

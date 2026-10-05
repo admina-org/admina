@@ -145,7 +145,9 @@ def to_markdown(scorecard: dict) -> str:
                 f"| {det} | {tag} | {_cell_recall(py)} | {_cell_recall(rs)} | {_cell_recall(pr)} |"
             )
     footnotes = []
-    if "pii" in scorecard["detectors"]:
+    external = scorecard.get("external_corpora")
+    detector_of = external["corpora"] if external else {}
+    if any(detector_of.get(name, name) == "pii" for name in scorecard["detectors"]):
         footnotes.append(
             "_PII rows report **type-level recall** (micro-average over PII types, "
             "see `admina/redteam/metrics.py`), not the sample-level recall used for "
@@ -159,6 +161,16 @@ def to_markdown(scorecard: dict) -> str:
     ]
     if modes:
         footnotes.append("_Measurement environment: " + "; ".join(modes) + "._")
+    if external:
+        listed = ", ".join(f"`{name}` ({det})" for name, det in external["corpora"].items())
+        footnotes.append(f"_External corpora from `{external['dir']}`: {listed}._")
+    config = scorecard.get("config")
+    if config:
+        note = f"_Injection firewall configured from `{config['path']}`"
+        if config["python_only_keys"]:
+            keys = ", ".join(f"agent_security.firewall.{k}" for k in config["python_only_keys"])
+            note += f"; the Rust engine does not apply {keys} and is not measured on its corpora"
+        footnotes.append(note + "._")
     if footnotes:
         lines.append("")
         lines.extend(footnotes)

@@ -64,11 +64,18 @@ class EventType(str, Enum):
     MCP_REQUEST = "mcp_request"
     MCP_RESPONSE = "mcp_response"
     GATEWAY_REQUEST = "gateway_request"
+    # The completion record of a gateway call (same event_id as its request).
+    GATEWAY_RESPONSE = "gateway_response"
+    GATEWAY_RESPONSE_SCAN = "gateway_response_scan"
+    # A request of POST /api/v1/validate (a ClickHouse row; no forensic record).
+    VALIDATE_REQUEST = "validate_request"
     INJECTION_DETECTED = "injection_detected"
     PII_REDACTED = "pii_redacted"
     LOOP_DETECTED = "loop_detected"
     POLICY_VIOLATION = "policy_violation"
     CIRCUIT_BREAK = "circuit_break"
+    # The forensic chain state was rebuilt from verified records at startup.
+    CHAIN_STATE_REBUILT = "chain_state_rebuilt"
 
     # SDK / framework events
     MODEL_CALL = "model.call"

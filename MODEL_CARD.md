@@ -25,9 +25,9 @@ functions, and ISO/IEC 42001 clause 8 (Operations).
 
 | Component | Type | Engine | Source |
 |-----------|------|--------|--------|
-| Injection Firewall | Pattern matcher (RegexSet) + heuristic scorer | Rust (`core-rust/src/firewall.rs`) + Python fallback | `admina/domains/agent_security/firewall.py` |
+| Injection Firewall | Pattern matcher (RegexSet) + heuristic scorer | Python (44 builtin patterns) or Rust (`core-rust/src/firewall.rs`, 15 patterns), by `ADMINA_ENGINE`: `auto` (default) runs Rust when `admina-core` is installed, unless admina.yaml sets a Python-only firewall key | `admina/domains/agent_security/firewall.py` |
 | PII Scanner | Regex + spaCy NER (optional), or Microsoft Presidio (opt-in) | Python default even when Rust is installed; Rust (`core-rust/src/pii.rs`) only under an explicit `ADMINA_ENGINE=rust` | `admina/domains/data_sovereignty/`, `admina/engines/presidio.py` |
-| Loop Breaker | TF-IDF cosine similarity over a sliding window | Rust (`core-rust/src/loop_breaker.rs`) + Python fallback | `admina/domains/agent_security/loop_breaker.py` |
+| Loop Breaker | TF-IDF cosine similarity over a sliding window | Rust (`core-rust/src/loop_breaker.rs`) when `admina-core` is installed (`ADMINA_ENGINE=auto`, default) or `ADMINA_ENGINE=rust`, else Python | `admina/domains/agent_security/loop_breaker.py` |
 | Egress Policy | Destination allowlist (exact host / `*.suffix` / CIDR) matched against tool-call arguments | Python only — no Rust variant | `admina/domains/agent_security/egress.py` |
 | Coordination Detector | Fan-in counter over distinct agents, escalating to keyed shingle-sketch echo confirmation | Python only — no Rust variant; requires Redis — no Redis means no detection at all | `admina/domains/agent_security/coordination.py`, `admina/domains/agent_security/fingerprint.py` |
 | Forensic Hash Chain | SHA-256 chained log | Rust (`core-rust/src/forensic.rs`) + Python fallback | `admina/domains/compliance/forensic.py` |
@@ -42,8 +42,20 @@ but the two engines are not behaviorally equivalent: on an internal
 14-attack evasion corpus the Python firewall blocks all 14 while the Rust
 firewall blocks 7 (plain-text and single-encoding attacks only). The Rust
 PII engine also lacks EU national-ID patterns, spaCy NER, and Luhn
-validation. Python is the higher-recall default; Rust is opt-in for
+validation. Python is the higher-recall engine; Rust is opt-in for
 latency-sensitive workloads where the narrower coverage is acceptable.
+
+Opt-in means the `[rust]` extra of a `pip install`. The official proxy
+image installs `admina-core`, so under the default `ADMINA_ENGINE=auto` it
+runs the Rust firewall and loop breaker (the PII engine stays Python, with
+regular expressions only: the image has no spaCy model). Set
+`ADMINA_ENGINE=python` for the Python firewall. An explicit
+`ADMINA_ENGINE=rust` stops the proxy when `admina-core` is missing or when
+admina.yaml sets a firewall key only the Python firewall applies
+(`custom_patterns`, `disabled_categories`, `disabled_patterns`,
+`pattern_packs`). `GET /health` reports the engine each component runs on
+(`engine.firewall`, `engine.loop_breaker`, `engine.pii`), and so do the
+startup log and `admina_engine_info`.
 
 ---
 
@@ -72,9 +84,10 @@ Admina is **not**:
 - A replacement for legal counsel. The EU AI Act classifier is a
   pre-screening aid; final classification of an AI system requires legal
   review.
-- A guarantee against all prompt injection attacks. New attack classes
-  emerge continuously; the firewall covers known patterns at the time
-  of release.
+- A guarantee against prompt injection. The firewall is a heuristic
+  signal (regular expressions and a score of lexical signals): paraphrases
+  and new attack classes pass it, and some benign text is flagged. Its
+  patterns cover known phrasings at the time of release.
 - A jailbreak detector calibrated for any specific commercial LLM. The
   firewall is model-agnostic and does not have access to the upstream
   model's instruction hierarchy.
@@ -88,20 +101,25 @@ Admina is **not**:
 
 ### What it does
 
-Scans inbound text for prompt-injection attempts. Two layers: a fast
+Scans inbound text for prompt-injection attempts and returns a heuristic
+signal, not a verdict on intent. Two layers: a fast
 path of compiled regexes run against the raw text *and* against an
 evasion-normalised copy (homoglyph / leetspeak / char-by-char /
 base64 neutralised), and a deep path that scores five heuristic signals
-(`0.0`–`1.0`). The fast path returns matched **categories**; the deep
+(`0.0`–`1.0`) and flags a text from `heuristic_threshold` (default
+`0.5`). The fast path returns matched **categories**; the deep
 path returns **signals** (e.g. `imperative_density=0.14`) and a score,
-never a category.
+never a category. Tags listed in `allowed_tags` are not context
+switches, HTML entities and percent-encoding are not encoding markers,
+and the length signal starts above 100 000 characters;
+`INJECTION_DEEP_PATH_ENABLED=false` turns the deep path off.
 
-### Categories emitted (v0.11.0)
+### Categories emitted (v0.13.0)
 
 The Python engine — the default, higher-recall engine — emits exactly
-**9** distinct category labels. This is the authoritative set: it is
+**13** distinct builtin category labels. This is the authoritative set: it is
 what appears in `detections_by_type`
-(`admina/domains/agent_security/firewall.py:593-595`), what becomes the
+(`admina/domains/agent_security/firewall.py:602-604`), what becomes the
 `category` label of the Prometheus series
 `admina_firewall_detections_total`
 (`admina/proxy/main.py:777-785`), and the set of values valid in
@@ -114,20 +132,35 @@ of its group.
 
 | Category | Risk | Pattern families grouped under it | Source |
 |----------|------|-----------------------------------|--------|
-| `instruction_override` | critical / high | verb + qualifier + target override phrasing (`ignore` / `disregard` / `forget` / `override` / `bypass` / `circumvent` / `skip` / `sidestep` / `nullify` / `cancel` / `suspend` / `drop` / `remove` / `undo` × `instructions` / `prompts` / `rules` / `directions` / `directives` / `guidelines` / `guardrails` / `restrictions` / `policies` / `filters` / `safeguards` / `the above` / `everything`); imperative verb chains ("Ignore. Forget. Override.") | `firewall.py:196-210` |
-| `role_hijack` | high | "you are now a…"; "act as a / DAN / AIM / STAN / DUDE"; "pretend to be"; "let's roleplay / imagine"; "from now on you will" | `firewall.py:211-224` |
-| `prompt_extraction` | high / medium | reveal / show / print / repeat the system prompt or configuration (high); "what are your instructions / rules" (medium) | `firewall.py:225-241` |
-| `jailbreak` | critical | mode toggles (`DAN` / `developer` / `admin` / `debug` / `maintenance` / `god` / `sudo` / `root` / `jailbreak` / `uncensored` / `unrestricted` **mode enabled / activated / on**); "DAN mode / DAN prompt"; "do anything now"; AIM | `firewall.py:242-256` |
-| `delimiter_injection` | critical / high | ChatML / Llama / FIM control tokens (`<\|im_start\|>`, `<\|endoftext\|>`, `[INST]`, `<<SYS>>`); `<system>` / `<user>` / `<assistant>` tags; `### system:` headers | `firewall.py:257-266` |
-| `data_exfiltration` | high | `curl` / `wget` / `nc` to a URL; send / post / upload / forward / leak … to an external URL or a known burner domain (webhook.site, requestbin, ngrok.io, pastebin, gist) | `firewall.py:267-285` |
-| `tool_abuse` | critical / high | shell execution (`exec`, `subprocess`, `os.system`, `sh -c`); sensitive filesystem paths (`/etc/passwd`, `~/.ssh/`, `~/.aws/credentials`, `/proc/self/environ`); internal / admin / private API calls; destructive commands (`rm -rf`, `DROP TABLE`, `mkfs.`, `dd if=`) | `firewall.py:286-322` |
-| `obfuscation` | high / medium | base64 encode/decode markers; hex-escape runs (`\xNN\xNN\xNN`); ROT13 / Caesar-cipher markers; hex-escape-as-instruction | `firewall.py:323-333` |
-| `multilang_evasion` | critical | override phrasing in Italian, French, Spanish and German (verb-then-target and target-then-adjective word orders) | `firewall.py:334-397` |
+| `instruction_override` | critical / high | verb + qualifier + target override phrasing (`ignore` / `disregard` / `forget` / `override` / `bypass` / `circumvent` / `skip` / `sidestep` / `nullify` / `cancel` / `suspend` / `drop` / `remove` / `undo` × `instructions` / `prompts` / `rules` / `directions` / `directives` / `guidelines` / `guardrails` / `restrictions` / `policies` / `filters` / `safeguards` / `the above` / `everything`); imperative verb chains ("Ignore. Forget. Override.") | `firewall.py:202-216` |
+| `role_hijack` | high | "you are now a…"; "act as a / DAN / AIM / STAN / DUDE"; "pretend to be"; "let's roleplay / imagine"; "from now on you will" | `firewall.py:217-230` |
+| `prompt_extraction` | high / medium | reveal / show / print / repeat the system prompt or configuration (high); "what are your instructions / rules" (medium) | `firewall.py:231-247` |
+| `jailbreak` | critical | mode toggles (`DAN` / `developer` / `admin` / `debug` / `maintenance` / `god` / `sudo` / `root` / `jailbreak` / `uncensored` / `unrestricted` **mode enabled / activated / on**); "DAN mode / DAN prompt"; "do anything now"; AIM | `firewall.py:248-262` |
+| `delimiter_injection` | critical / high | ChatML / Llama / FIM control tokens (`<\|im_start\|>`, `<\|endoftext\|>`, `[INST]`, `<<SYS>>`); `<system>` / `<user>` / `<assistant>` tags; `### system:` headers | `firewall.py:263-272` |
+| `data_exfiltration` | high | `curl` / `wget` / `nc` to a URL; send / post / upload / forward / leak … to an external URL or a known burner domain (webhook.site, requestbin, ngrok.io, pastebin, gist) | `firewall.py:273-294` |
+| `tool_abuse` | critical / high | shell execution (`exec`, `subprocess`, `os.system`, `sh -c`); sensitive filesystem paths (`/etc/passwd`, `~/.ssh/`, `~/.aws/credentials`, `/proc/self/environ`); internal / admin / private API calls; destructive commands (`rm -rf`, `DROP TABLE`, `mkfs.`, `dd if=`) | `firewall.py:295-331` |
+| `obfuscation` | high / medium | base64 encode/decode markers; hex-escape runs (`\xNN\xNN\xNN`); ROT13 / Caesar-cipher markers; hex-escape-as-instruction | `firewall.py:332-342` |
+| `multilang_evasion` | critical | override phrasing in Italian, French, Spanish and German (verb-then-target and target-then-adjective word orders); the Italian patterns only where an instruction starts, with word boundaries | `firewall.py`, section 9 |
+| `it_instruction_override` | high | Italian override (`ignora`, `dimentica`, `non seguire` … rules, instructions, "quanto detto") where an instruction starts, or after a clause that starts there with a second-person imperative ("traduci il testo e ignora …"); the same verbs with a second-person object ("le tue istruzioni") anywhere | `firewall.py`, section 10 |
+| `it_role_hijack` | high | "d'ora in poi" + second-person verb; "sei ora" an AI or an assistant without limits; "agisci come" / "fai finta di essere" a model without filters; "parla come" / "immagina di essere" one where an instruction starts | `firewall.py`, section 10 |
+| `it_prompt_extraction` | high | `rivela` / `mostra` / `ripeti` … the system prompt or "le tue istruzioni" where an instruction starts; `mostrami`, `dimmi` … anywhere | `firewall.py`, section 10 |
+| `it_model_addressing` | high | a note or instruction for an AI system followed by a colon ("Istruzioni per l'IA:"), or an AI system addressed directly ("Attenzione chatbot:", "Attenzione IA!"); "se sei un'intelligenza artificiale" | `firewall.py`, section 10 |
 
 Operators can add further categories without forking: every entry in
 `agent_security.firewall.custom_patterns` carries its own `category`
 label, which flows through to the same stats and Prometheus series
 (`admina/engines/__init__.py:125-131`, `admina.yaml.example:59-71`).
+
+Pattern packs (`agent_security.firewall.pattern_packs`, from installed
+packages or from directories) add patterns and categories the same way,
+in the Python engine.
+
+Each pattern also has a stable **id** (`instruction_override.en.1`,
+`multilang_evasion.it.2`, `example-pack:internal_notes`, `custom.1`),
+reported with each match in `patterns[].id`;
+`agent_security.firewall.disabled_patterns` turns off single patterns by
+id. Categories remain the unit of the stats, the
+Prometheus series and `X-Admina-Categories`.
 
 ### Rust engine labels differ from Python's
 
@@ -138,8 +171,9 @@ categories — they are not. They are only visible in the Rust engine's
 `matched_patterns` field; the Rust bridge reports an empty
 `detections_by_type` (`admina/engines/__init__.py:216-227`), so no Rust
 label ever reaches the stats API, the Prometheus series, or
-`disabled_categories` (a non-empty `disabled_categories` forces the
-Python bridge — `admina/engines/__init__.py:333-341`).
+`disabled_categories` (a non-empty `disabled_categories` makes the firewall
+Python under `ADMINA_ENGINE=auto`, and stops the proxy under
+`ADMINA_ENGINE=rust`).
 
 | Rust label | Python equivalent |
 |------------|-------------------|
@@ -161,7 +195,24 @@ Python bridge — `admina/engines/__init__.py:333-341`).
 ### Languages
 
 Patterns are written for English with an explicit subset for
-`multilang_evasion` covering French, Italian, Spanish, German. Coverage
+`multilang_evasion` covering French, Italian, Spanish, German, and an
+Italian baseline (the `it_*` categories). Italian imperatives of `-are`
+verbs have the form of the third person, so the Italian override and
+extraction patterns match only where an instruction starts, after a clause
+that starts there with a second-person imperative, or with a second-person
+object: third-person prose such as "il giudice annulla le linee guida" is
+not flagged, and an override in the middle of a sentence without one of
+these contexts ("il documento è lungo, ignora le istruzioni precedenti") is
+not either. An instruction also starts after Markdown or HTML markup (a
+heading, a list marker, a table cell, emphasis, an opening tag or quote,
+the end of an HTML comment, closing tags after a sentence end or a colon as
+in "<b>Nota:</b> ignora ...", a speaker label such as "Utente>" at the
+start of a line), but not after a closing quote or tag that
+follows a word ('il modulo "Alfa" ignora le istruzioni precedenti' and
+"<b>Il fornitore</b> ignora ..." are not flagged). A second-person object is matched
+anywhere, also in a sentence with a third-person subject ("se il cliente
+ignora le tue istruzioni"). The Italian baseline is Python-only in 0.13
+(the Rust engine has the `multilang_evasion` subset only). Coverage
 in other languages is best-effort. We accept contributions for
 additional locales.
 
@@ -215,10 +266,10 @@ Detects and redacts PII in text. Three modes:
   too ambiguous to regex safely). Python engine default; Rust path
   opt-in via `ADMINA_ENGINE=rust`. Categories are individually
   toggleable from `admina.yaml`
-  (`admina/domains/data_sovereignty/pii.py:39-106`).
+  (`admina/domains/data_sovereignty/pii.py:41-108`).
 - **Regex + spaCy NER** (`pip install admina-framework[nlp]`): adds named-entity
   detection for `PERSON`, `ORG`, `GPE`, `LOC`. Python only
-  (`admina/domains/data_sovereignty/pii.py:58-75`).
+  (`admina/domains/data_sovereignty/pii.py:60-77`).
 - **Microsoft Presidio** (`pip install admina-framework[presidio]`,
   selected with `ADMINA_PII_ENGINE=presidio` or `pii_engine: presidio`
   in `admina.yaml`): a third, opt-in detection engine. Presidio does
@@ -292,7 +343,9 @@ stage is wired into five governed surfaces — `/mcp`,
 `/v1/chat/completions`, `/api/v1/validate`, `GovernedModel.ask()` and
 `GovernedModel.stream()` — after PII redaction and before pluggable
 governance guards, so a denied destination never reaches third-party
-guard code.
+guard code. `agent_security.egress.surfaces` in `admina.yaml` limits it to
+some of them (`gateway`, `mcp`, `integration`, `sdk`; unset = all): with
+`gateway` left out, the text of chat messages is not evaluated.
 
 ### Coverage is not uniform across those five surfaces
 
@@ -414,6 +467,9 @@ included. Wiring it is a separate change, not a configuration option.
   fail-closed, consistent with default-deny — and a warning is logged
   naming the parse error. If every destination is suddenly blocked, check
   the logs for this warning before assuming the allowlist itself is wrong.
+  A value of the wrong type anywhere in the file is not read as an empty
+  allowlist: it is a `ConfigSchemaError` naming the key, the proxy does not
+  start, and `get_egress_policy()` raises it in the SDK.
 - **The quarantine hook now has a live caller.** `EgressPolicy.set_quarantine()`
   is invoked every 5 seconds by `refresh_quarantine_once`, fed by the
   coordination detector below (§5c) through `admina/proxy/main.py`'s
@@ -819,6 +875,16 @@ Keyword-based scoring against three lists hard-coded in
 similarity. The lists were derived from the consolidated text of
 Regulation 2024/1689 as of January 2026.
 
+Descriptions in Italian, French and German are matched against the phrases
+of `admina/domains/compliance/ai_act_terms.py`, grouped by Art. 5 practice,
+Annex III area and Art. 50 case, on whole words of a normalised text
+(lower case, no accents). The English lists keep their substring matching.
+`EUAIActCompliance(term_languages=..., extra_terms=...)` narrows the
+languages and adds the caller's own terms; the result names the matched
+terms and areas (`matched_terms`, `matched_areas`). A description in
+another language, or one that uses none of the listed phrases, falls back
+to `minimal`.
+
 ### Known limitations and disclaimers
 
 - **This is a triage tool, not a legal determination.** Legal
@@ -981,16 +1047,19 @@ We welcome contributions extending coverage. See
 
 ### Performance benchmarks
 
-Performance numbers in the README (`6.25 µs` median for the four-domain
-pipeline) are reproduced via `scripts/benchmark.py` and
-`docker-compose.benchmark.yml`. Hardware and methodology are documented
-inside the benchmark script. These are **performance** metrics, not
-**accuracy** metrics.
+The engine microbenchmark in the README (median microseconds per call of
+the Rust engine components on short inputs) comes from
+`tests/test_benchmark_14us.py` (`pytest -m benchmark`), whose docstring
+records the hardware and the method. It is not the latency the proxy adds,
+which grows with the length of the text scanned and is higher on the
+Python engine; `scripts/bench_gateway.py` measures the gateway on a
+retrieval-augmented trace, and `scripts/benchmark.py` load-tests a running
+proxy. These are **performance** metrics, not **accuracy** metrics.
 
 ### Accuracy benchmarks
 
 Admina ships `admina-redteam`, a reproducible detection-efficacy suite
-(`admina/redteam/`, CLI `scripts/redteam.py`). It runs the injection firewall,
+(`admina/redteam/`, CLI `admina redteam`). It runs the injection firewall,
 PII redactor and loop-breaker against original, hash-pinned, multilingual
 (EN/IT/FR/ES/DE) corpora on **both** the Python and Rust engines and emits
 precision/recall/FPR plus a per-class Python-vs-Rust matrix. A soft CI gate
@@ -1030,7 +1099,7 @@ recall with **9/16** false positives, pinned to mode
 accelerator, so it is reported separately rather than in the
 Python-vs-Rust matrix above.
 
-Notable measured gaps (run `python scripts/redteam.py --format md` for the full
+Notable measured gaps (run `admina redteam --format md` for the full
 per-class matrix): the Rust firewall scores **0%** on base64 / homoglyph /
 leetspeak / ROT13 / hyphenation evasions that the Python engine catches (no
 `normalize_text()` pass — the fast path is the least thorough); the Rust PII

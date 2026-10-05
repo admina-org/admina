@@ -1,3 +1,35 @@
+# Copyright © 2025–2026 Stefano Noferi & Admina contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Container images — fires on version tags (vX.Y.Z, pre-releases included).
+#
+#   ghcr.io/<owner>/admina-proxy:<version>        proxy, nlp and telemetry
+#                                                 extras, Rust engine,
+#                                                 bundled dashboard
+#   ghcr.io/<owner>/admina-proxy:<version>-slim   proxy extra and Rust engine
+#                                                 (Dockerfile target `slim`)
+#   ghcr.io/<owner>/admina-dashboard:<version>    dashboard served by nginx
+#
+# `latest` moves only with a final release, never with a pre-release
+# (0.13.0rc1) or a manual run. Each image is pushed with an SBOM and a
+# max-mode provenance attestation and signed with cosign, keyless (GitHub
+# OIDC). To verify a signature:
+#
+#   cosign verify ghcr.io/admina-org/admina-proxy:<version> \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     --certificate-identity-regexp '^https://github\.com/admina-org/admina/\.github/workflows/release-docker\.yml@'
+
 name: Publish Docker images
 
 on:
@@ -8,81 +40,174 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
+  # ── 1. Test gate: the CI workflow on the tagged commit ─────────────────
+  tests:
+    name: Test gate
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  # ── 2. Version and image tags ───────────────────────────────────────────
+  meta:
+    name: Image version and tags
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.tags.outputs.version }}
+      proxy-tags: ${{ steps.tags.outputs.proxy-tags }}
+      proxy-slim-tags: ${{ steps.tags.outputs.proxy-slim-tags }}
+      dashboard-tags: ${{ steps.tags.outputs.dashboard-tags }}
+    steps:
+      - name: Resolve version and tags
+        id: tags
+        env:
+          OWNER: ${{ github.repository_owner }}
+        # Pre-releases, which never move `latest`: the PEP 440 forms
+        # 0.13.0a1, 0.13.0b1, 0.13.0rc1 and 0.13.0.dev1, and the SemVer
+        # suffixes -alpha, -beta and -rc. A run on a branch is a development
+        # build, tagged dev-<commit>.
+        run: |
+          registry="ghcr.io/${OWNER}"
+          latest=false
+          case "$GITHUB_REF" in
+            refs/tags/v*)
+              version="${GITHUB_REF#refs/tags/v}"
+              if ! printf '%s\n' "$version" | grep -Eq '[0-9](a|b|rc)[0-9]+|\.dev[0-9]*|-(alpha|beta|rc)'; then
+                latest=true
+              fi
+              ;;
+            *)
+              version="dev-${GITHUB_SHA::7}"
+              ;;
+          esac
+          {
+            echo "version=$version"
+            echo "proxy-tags<<EOF"
+            echo "$registry/admina-proxy:$version"
+            if [ "$latest" = true ]; then echo "$registry/admina-proxy:latest"; fi
+            echo "EOF"
+            echo "proxy-slim-tags=$registry/admina-proxy:$version-slim"
+            echo "dashboard-tags<<EOF"
+            echo "$registry/admina-dashboard:$version"
+            if [ "$latest" = true ]; then echo "$registry/admina-dashboard:latest"; fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+  # ── 3. admina-proxy and admina-proxy -slim ──────────────────────────────
   proxy:
     name: admina-proxy → ghcr.io
+    needs: [tests, meta]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write   # keyless cosign signing (GitHub OIDC)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Resolve version tag
-        id: ver
-        run: |
-          ref="${GITHUB_REF#refs/tags/v}"
-          if [ "$ref" = "$GITHUB_REF" ]; then
-            ref="dev-${GITHUB_SHA::7}"
-          fi
-          echo "version=$ref" >> "$GITHUB_OUTPUT"
-
       - name: Build & push admina-proxy
-        uses: docker/build-push-action@v5
+        id: full
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: .
           file: admina/proxy/Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/admina-proxy:${{ steps.ver.outputs.version }}
-            ghcr.io/${{ github.repository_owner }}/admina-proxy:latest
+          sbom: true
+          provenance: mode=max
+          tags: ${{ needs.meta.outputs.proxy-tags }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.meta.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
 
+      - name: Sign admina-proxy
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/admina-proxy
+          DIGEST: ${{ steps.full.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+      - name: Build & push admina-proxy (slim)
+        id: slim
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: .
+          file: admina/proxy/Dockerfile
+          target: slim
+          push: true
+          platforms: linux/amd64,linux/arm64
+          sbom: true
+          provenance: mode=max
+          tags: ${{ needs.meta.outputs.proxy-slim-tags }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.meta.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Sign admina-proxy (slim)
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/admina-proxy
+          DIGEST: ${{ steps.slim.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+
+  # ── 4. admina-dashboard ─────────────────────────────────────────────────
   dashboard:
     name: admina-dashboard → ghcr.io
+    needs: [tests, meta]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write   # keyless cosign signing (GitHub OIDC)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Resolve version tag
-        id: ver
-        run: |
-          ref="${GITHUB_REF#refs/tags/v}"
-          if [ "$ref" = "$GITHUB_REF" ]; then
-            ref="dev-${GITHUB_SHA::7}"
-          fi
-          echo "version=$ref" >> "$GITHUB_OUTPUT"
 
       - name: Generate git_commit.txt for dashboard build
         run: |
           echo "${GITHUB_SHA::7}" > dashboard/git_commit.txt
 
       - name: Build & push admina-dashboard
-        uses: docker/build-push-action@v5
+        id: dashboard
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: .
           file: dashboard/Dockerfile
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/admina-dashboard:${{ steps.ver.outputs.version }}
-            ghcr.io/${{ github.repository_owner }}/admina-dashboard:latest
+          sbom: true
+          provenance: mode=max
+          tags: ${{ needs.meta.outputs.dashboard-tags }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.meta.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Sign admina-dashboard
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/admina-dashboard
+          DIGEST: ${{ steps.dashboard.outputs.digest }}
+        run: cosign sign --yes "${IMAGE}@${DIGEST}"

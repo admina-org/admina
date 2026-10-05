@@ -21,6 +21,16 @@ import logging
 import os
 import re
 
+from admina.domains.data_sovereignty.email_matching import EMAIL_RX, iter_email_matches
+from admina.domains.data_sovereignty.iban import IBAN_RX, iter_iban_matches
+from admina.domains.data_sovereignty.masking import (
+    OMISSIS,
+    normalize_mask_style,
+    outside_placeholders,
+    placeholder_spans,
+    replace_spans,
+)
+
 # spaCy is part of the [nlp] extra. When absent, PIIRedactor falls back
 # to regex-only mode (still covers EMAIL/PHONE/SSN/IBAN/IP/credit-card/EU IDs).
 try:
@@ -74,15 +84,33 @@ PII_CATEGORIES = {
     "DE_PERSONALAUSWEIS": {"enabled": False, "mask": "[AUSWEIS]"},  # off — ambiguous regex
 }
 
-# Regex patterns for PII not covered by spaCy NER
+# Phone numbers: North American format (3-3-4 digits, optional country code),
+# and Italian numbers, with +39 or 0039 or without: mobile numbers (3 and
+# 8 or 9 more digits, compact or in groups) and landline numbers (an area
+# code 02, 06 or 0 followed by 2 or 3 digits, then 5 to 8 digits, or 2 or 3
+# groups of 2 to 4 digits separated by spaces; without +39 a space, "/" or
+# "-" follows the area code).
+_US_PHONE = r"(?<!\d)(\+\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?!\d)"
+_IT_MOBILE = r"3[1-9]\d(?:[ -]?\d{6,7}|[ -]\d{3}[ -]\d{3,4})"
+_IT_AREA = r"0(?:[26]|[1-9]\d{1,2})"
+_IT_SUBSCRIBER = r"(?:\d{5,8}|\d{2,4} \d{2,4}(?: \d{2,4})?)"
+_IT_PHONE = (
+    rf"(?<![\w+])(?:(?:\+|00)39[ .-]?(?:{_IT_MOBILE}|{_IT_AREA}[ ./-]?{_IT_SUBSCRIBER})"
+    rf"|{_IT_MOBILE}|{_IT_AREA}[ /-]{_IT_SUBSCRIBER})(?!\w)"
+)
+
+# Regex patterns for PII not covered by spaCy NER, applied in this order.
+# Card numbers (with a valid Luhn checksum) are matched before phone
+# numbers: a group of a card number written in groups of four digits can
+# read as an Italian area code followed by the next groups.
 REGEX_PII_PATTERNS = {
-    "EMAIL": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"),
-    "PHONE": re.compile(r"(?<!\d)(\+\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?!\d)"),
+    "EMAIL": EMAIL_RX,  # matched with iter_email_matches (see email_matching)
+    # Where an IBAN may start; each IBAN is matched with iter_iban_matches
+    # (length of its country, optional spaces, mod-97 checksum; see iban).
+    "IBAN": IBAN_RX,
     "CREDIT_CARD": re.compile(r"\b(?:\d{4}[-\s]?){3}\d{4}\b"),
+    "PHONE": re.compile(f"{_US_PHONE}|{_IT_PHONE}"),
     "SSN": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
-    "IBAN": re.compile(
-        r"\b[A-Z]{2}\d{2}\s?[\dA-Z]{4}\s?[\dA-Z]{4}\s?[\dA-Z]{4}(?:\s?[\dA-Z]{4}){0,4}\b"
-    ),
     # IPv4 with proper octet validation (each octet 0-255). Avoids matching
     # version strings like 1.2.3.999 or build numbers > 255.
     "IP_ADDRESS": re.compile(
@@ -168,9 +196,13 @@ class PIIRedactor:
         config: Optional PIIConfig (or any object with `.ner_model` / `.categories`
                 attributes) loaded from admina.yaml.  When supplied, its values
                 take precedence over the module-level defaults and env vars.
+        mask_style: ``typed`` (default): each span is replaced by the mask of
+                its category (``[EMAIL]``, ``[PERSON]``, …); ``omissis``: by
+                ``[OMISSIS]`` (see :mod:`admina.domains.data_sovereignty.masking`).
     """
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, *, mask_style: str = "typed"):
+        self.mask_style = normalize_mask_style(mask_style)
         # Resolve NLP model: config.ner_model > ADMINA_SPACY_MODEL env var > default
         model_name = getattr(config, "ner_model", None) or SPACY_MODEL
         if _spacy is None:
@@ -222,11 +254,16 @@ class PIIRedactor:
             cat_config = active_categories.get(cat_name, {})
             if not cat_config.get("enabled", True):
                 continue
-            mask = cat_config.get("mask", f"[{cat_name}]")
+            mask = self._mask(cat_name, cat_config)
 
             # Find all matches; for IP_ADDRESS, drop version-string matches
             # (e.g. "version 1.2.3.4 released") to reduce false positives.
-            matches = list(pattern.finditer(redacted))
+            if pattern is EMAIL_RX:
+                matches = list(iter_email_matches(redacted))
+            elif pattern is IBAN_RX:
+                matches = list(iter_iban_matches(redacted))
+            else:
+                matches = list(pattern.finditer(redacted))
             if cat_name == "IP_ADDRESS":
                 matches = [m for m in matches if _is_real_ipv4(redacted, m.start(), m.end())]
             elif cat_name == "CREDIT_CARD":
@@ -246,30 +283,38 @@ class PIIRedactor:
                     }
                 )
 
-            # Replace in reverse order to preserve byte offsets of earlier matches.
-            for match in sorted(matches, key=lambda m: m.start(), reverse=True):
-                redacted = redacted[: match.start()] + mask + redacted[match.end() :]
+            # The matches of a category do not overlap: one pass over them.
+            ordered = sorted(matches, key=lambda m: m.start())
+            redacted = replace_spans(redacted, ((m.start(), m.end(), mask) for m in ordered))
 
-        # Step 2 — spaCy NER-based detection
+        # Step 2 — spaCy NER-based detection. An entity is masked outside the
+        # placeholders already in the text (the masks of step 1 included),
+        # which are never masked again.
         if self.nlp:
             doc = self.nlp(redacted)
-            # Process entities in reverse order to maintain positions
+            placeholders = placeholder_spans(redacted)
+            # Entities last to first, as they are reported; the entities of a
+            # document do not overlap, and are masked in one pass.
             ner_entities = sorted(doc.ents, key=lambda e: e.start_char, reverse=True)
+            replacements: list[tuple[int, int, str]] = []
             for ent in ner_entities:
                 cat_config = active_categories.get(ent.label_, {})
                 if not cat_config.get("enabled", False):
                     continue
-                mask = cat_config.get("mask", f"[{ent.label_}]")
-                entities_found.append(
-                    {
-                        "type": ent.label_,
-                        "start": ent.start_char,
-                        "end": ent.end_char,
-                        "original_length": ent.end_char - ent.start_char,
-                        "method": "spacy_ner",
-                    }
-                )
-                redacted = redacted[: ent.start_char] + mask + redacted[ent.end_char :]
+                mask = self._mask(ent.label_, cat_config)
+                parts = outside_placeholders(ent.start_char, ent.end_char, placeholders, redacted)
+                for start, end in reversed(parts):
+                    entities_found.append(
+                        {
+                            "type": ent.label_,
+                            "start": start,
+                            "end": end,
+                            "original_length": end - start,
+                            "method": "spacy_ner",
+                        }
+                    )
+                    replacements.append((start, end, mask))
+            redacted = replace_spans(redacted, reversed(replacements))
 
         count = len(entities_found)
         if count > 0:
@@ -286,6 +331,11 @@ class PIIRedactor:
             "entities": entities_found,
             "count": count,
         }
+
+    def _mask(self, category: str, cat_config: dict) -> str:
+        if self.mask_style == "omissis":
+            return OMISSIS
+        return cat_config.get("mask", f"[{category}]")
 
     def get_stats(self) -> dict:
         return {

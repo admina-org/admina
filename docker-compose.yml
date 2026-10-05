@@ -48,13 +48,20 @@ services:
       # Persistent forensic backend for the docker-compose dev stack.
       # Without these two lines the proxy would default to in-memory
       # only, which is the safer default for a fresh `pip install`
-      # but a poor demo experience.
+      # but a poor demo experience. The directory is the forensic-data
+      # volume (below), so the records and the chain state outlive the
+      # container.
       - FORENSIC_BACKEND=filesystem
       - FORENSIC_BASE_DIR=/app/.admina/forensic
       - OTEL_ENDPOINT=http://otel-collector:4317
       - UPSTREAM_MCP_URL=http://mock-mcp-server:9000
       - LOG_LEVEL=INFO
       - ADMINA_API_KEY=${ADMINA_API_KEY:-}
+    volumes:
+      # Forensic records and chain state (FORENSIC_BASE_DIR). The image
+      # creates the directory owned by the proxy user, so a new volume
+      # starts writable by it.
+      - forensic-data:/app/.admina/forensic
     depends_on:
       redis:
         condition: service_healthy
@@ -77,8 +84,12 @@ services:
       dockerfile: dashboard/Dockerfile
     container_name: admina-dashboard
     ports:
-      - "3000:80"
+      # Loopback only. To reach the dashboard from other hosts, publish it
+      # behind TLS; it asks for ADMINA_DASHBOARD_PASSWORD (HTTP Basic Auth).
+      - "127.0.0.1:3000:80"
     environment:
+      # With the API key the container needs a password: nginx adds the
+      # key only to the dashboard's read-only routes, behind Basic Auth.
       - ADMINA_API_KEY=${ADMINA_API_KEY:-}
       - ADMINA_DASHBOARD_PASSWORD=${ADMINA_DASHBOARD_PASSWORD:-}
     depends_on:
@@ -215,6 +226,7 @@ services:
 volumes:
   clickhouse-data:
   grafana-data:
+  forensic-data:
 
 networks:
   admina:

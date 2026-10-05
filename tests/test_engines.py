@@ -148,6 +148,43 @@ def test_overrides_force_python_firewall(monkeypatch, tmp_path):
     fw = engines.get_firewall()
     # Must use Python bridge despite Rust being available, because overrides are present
     assert fw.get_stats()["engine"] == "python"
+    assert fw.engine == "python"
+
+
+def test_firewall_bridge_names_its_engine(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)  # no admina.yaml
+    monkeypatch.setenv("ADMINA_ENGINE", "python")
+    _reload_engines()
+    from admina import engines
+
+    assert engines.get_firewall().engine == "python"
+
+    pytest.importorskip("admina_core")
+    monkeypatch.setenv("ADMINA_ENGINE", "rust")
+    assert engines.get_firewall().engine == "rust"
+
+
+def test_malformed_custom_pattern_skips_only_that_entry(monkeypatch, tmp_path):
+    (tmp_path / "admina.yaml").write_text(
+        "schema_version: 1\n"
+        "domains:\n"
+        "  agent_security:\n"
+        "    firewall:\n"
+        "      custom_patterns:\n"
+        "        - regex: first-marker\n"
+        "          risk_level: 5\n"
+        "        - regex: second-marker\n"
+        "          category: internal\n"
+        "          risk_level: high\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ADMINA_ENGINE", "python")
+    _reload_engines()
+    from admina import engines
+
+    fw = engines.get_firewall()
+    assert fw.check("mentions second-marker here")["is_injection"] is True
+    assert fw.check("mentions first-marker here")["is_injection"] is False
 
 
 # ── Rust stats schema matches Python ─────────────────────────────────────────
@@ -229,20 +266,23 @@ def test_get_pii_scanner_alias(monkeypatch):
     assert scanner.get_stats()["engine"] == "python"
 
 
-# ── Rust requested but unavailable → fallback ────────────────────────────────
+# ── Rust requested but unavailable → error ───────────────────────────────────
 
 
-def test_rust_requested_but_unavailable_falls_back(monkeypatch, caplog):
-    import logging
-
+def test_rust_requested_but_unavailable_is_an_error(monkeypatch):
     monkeypatch.setenv("ADMINA_ENGINE", "rust")
     _reload_engines()
     from admina import engines
 
     monkeypatch.setattr(engines, "_rust_available", False)
-    with caplog.at_level(logging.WARNING, logger="admina.engines"):
-        assert engines.engine_status()["active"] == "python"
-    assert any("falling back" in r.message for r in caplog.records)
+    for call in (
+        engines.engine_status,
+        engines.get_firewall,
+        engines.get_loop_breaker,
+        engines.get_pii_engine,
+    ):
+        with pytest.raises(engines.EngineSelectionError, match="admina-core is not installed"):
+            call()
 
 
 # ── Rust PII stats value semantics ───────────────────────────────────────────
@@ -441,16 +481,10 @@ class TestEgressPolicyFactory:
         # read_only_tools is empty too on parse failure
         assert policy.read_only_tools == frozenset()
 
-    def test_wrong_type_field_returns_empty_policy_not_crash(self, tmp_path, monkeypatch):
-        """Regression test: TypeError is NOT a ValueError/OSError/ImportError.
-
-        When allow is an int (allow: 5) instead of a list, the config
-        module raises TypeError when trying to iterate. This is NOT caught
-        by (ImportError, AttributeError, OSError, ValueError) and would crash
-        the proxy if the except clause is re-narrowed. This test pins that
-        the broad Exception handler is required.
-        """
-        from admina.domains.agent_security.egress import EgressPolicy, analyze
+    def test_wrong_type_field_is_a_schema_error(self, tmp_path, monkeypatch):
+        """A value of the wrong type (allow: 5 instead of a list) is the
+        ConfigSchemaError of load_config, naming the key, as for
+        get_firewall(); not an empty allowlist."""
         from admina.engines import get_egress_policy
 
         (tmp_path / "admina.yaml").write_text(
@@ -461,6 +495,28 @@ class TestEgressPolicyFactory:
             "      allow: 5\n"  # Wrong type: int instead of list
         )
         monkeypatch.chdir(tmp_path)
+        with pytest.raises(
+            ValueError, match=r"domains\.agent_security\.egress\.allow: must be a list of strings"
+        ) as caught:
+            get_egress_policy()
+        # By name: other tests import the package again.
+        assert type(caught.value).__name__ == "ConfigSchemaError"
+
+    def test_type_error_while_building_returns_empty_policy_not_crash(self, monkeypatch):
+        """Regression test: TypeError is NOT a ValueError/OSError/ImportError.
+
+        A TypeError raised while the configuration is built is NOT caught by
+        (ImportError, AttributeError, OSError, ValueError) and would crash
+        the proxy if the except clause is re-narrowed. This test pins that
+        the broad Exception handler is required.
+        """
+        from admina.domains.agent_security.egress import EgressPolicy, analyze
+        from admina.engines import get_egress_policy
+
+        def _type_error(*args, **kwargs):
+            raise TypeError("'int' object is not iterable")
+
+        monkeypatch.setattr("admina.core.config.load_config", _type_error)
         policy = get_egress_policy()
         assert isinstance(policy, EgressPolicy)
         # Verify it is genuinely empty: a call to any destination is blocked
