@@ -183,8 +183,35 @@ def test_overlapping_detections_are_masked_as_one_span(monkeypatch):
         RecognizerResult("ORGANIZATION", 0, 19, 0.85),  # "chiamate il +39 333"
         RecognizerResult("PHONE_NUMBER", 12, 28, 0.75),  # "+39 333 123 4567"
     ]
-    monkeypatch.setattr(engine._analyzer, "analyze", lambda text, language: list(found))
+    monkeypatch.setattr(engine._analyzer, "analyze", lambda text, language, entities: list(found))
     out = engine.redact(text)
     assert out["redacted_text"] == "[ORG] oggi"
     assert out["count"] == 1
     assert out["entities"][0]["start"] == 0 and out["entities"][0]["end"] == 28
+
+
+def test_only_mapped_entity_types_are_requested(monkeypatch):
+    presidio = _presidio()
+    engine = presidio.PresidioPIIEngine(nlp_models={"it": "blank"})
+    requested = []
+
+    def analyze(text, language, entities=None):
+        requested.append(entities)
+        return []
+
+    monkeypatch.setattr(engine._analyzer, "analyze", analyze)
+    engine.redact("testo")
+    assert requested == [list(presidio._PRESIDIO_TO_ADMINA)]
+
+
+def test_text_with_many_dots_is_analyzed_quickly():
+    import time
+
+    presidio = _presidio()
+    engine = presidio.PresidioPIIEngine(nlp_models={"it": "blank"})
+    text = "a." * 32_000
+    start = time.perf_counter()
+    engine.redact(text)
+    # Every recognizer of Presidio took about a minute on this text; the
+    # mapped ones take a fraction of a second.
+    assert time.perf_counter() - start < 5.0

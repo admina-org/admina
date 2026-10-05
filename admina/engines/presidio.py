@@ -77,6 +77,9 @@ _PRESIDIO_TO_ADMINA: dict[str, str] = {
     "ES_NIE": "ES_DNI_NIE",
 }
 
+# The Presidio entity types requested from the analyzer.
+_ENTITIES: list[str] = list(_PRESIDIO_TO_ADMINA)
+
 # The spaCy model of each language used when no pipeline is configured, if
 # it is installed.
 _DEFAULT_MODELS: dict[str, str] = {
@@ -254,9 +257,11 @@ class PresidioPIIEngine:
 
         # Union of per-language analyses: a recognizer registered for only one
         # language is missed by the other pass, so both are run and merged.
+        # Only the mapped entity types are requested: the other recognizers
+        # (URL among them, slow on text with many dots) would be discarded.
         raw = []
         for lang in self.languages:
-            raw.extend(self._analyzer.analyze(text=text, language=lang))
+            raw.extend(self._analyzer.analyze(text=text, language=lang, entities=_ENTITIES))
 
         placeholders = placeholder_spans(text)
         spans: list[tuple[int, int, str, str]] = []

@@ -507,7 +507,7 @@ def _every_word_presidio():
 
     engine = PresidioPIIEngine(nlp_models={"it": "blank"})
 
-    def analyze(text: str, language: str) -> list:
+    def analyze(text: str, language: str, entities: list[str] | None = None) -> list:
         return [
             RecognizerResult("PERSON", m.start(), m.end(), 0.85) for m in _WORD_RX.finditer(text)
         ]
