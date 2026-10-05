@@ -13,6 +13,14 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.12.2] — 2026-10-05
+
+Patch release: the OpenAI-compatible gateway on the event bus, in the
+request counters and in ClickHouse; the dashboard feed, trend and
+suggestions without ClickHouse; the Presidio engine on text with many
+dots; and whole-word matching of the Rust `role_hijacking` pattern.
+Upgrading is recommended.
+
 ### Security
 
 - The Presidio PII engine (`ADMINA_PII_ENGINE=presidio`) asks the analyzer
