@@ -39,7 +39,13 @@ _LOCAL = r"[A-Za-z0-9._%+-]"
 _DOMAIN = r"@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"
 
 EMAIL_RX = re.compile(rf"\b{_LOCAL}+{_DOMAIN}")
-"""E-mail pattern of the EMAIL PII category."""
+"""E-mail pattern of the EMAIL PII category.
+
+Its own ``search``, ``finditer`` and ``sub`` take time quadratic in the
+length of a run of local-part characters that holds many word boundaries
+(``"a." * 8000``, 16,000 characters, takes about 0.15 s). On text of unbounded length, find the
+matches with :func:`iter_email_matches`, as Admina does.
+"""
 
 # A whole run of local-part characters (the lookbehind refuses a start
 # inside a run and the possessive quantifier reads the run once) followed by
