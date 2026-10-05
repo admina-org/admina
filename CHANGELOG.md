@@ -53,6 +53,14 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   nested data by the Python engine, and answered `500` with the Rust
   engine.
 
+### Deprecated
+
+- **The API key in the query string (`?api_key=`).** It is still accepted;
+  the first request that authenticates with it logs a warning, once per
+  process, without the key. A URL ends up in access logs, proxy logs and
+  browser history; send `X-API-Key` or `Authorization: Bearer` instead. A
+  later release will refuse it.
+
 ### Fixed
 
 - The `role_hijacking` pattern of the Rust firewall (`admina-core`) matches

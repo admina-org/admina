@@ -755,6 +755,26 @@ def _presented_api_key(headers: Any) -> str:
     )
 
 
+# Whether the deprecation of ?api_key= has been logged by this process.
+_query_key_warned = False
+
+
+def _query_key_matches(query_params: Any) -> bool:
+    """Whether ``?api_key=`` holds the API key. Deprecated: the first match
+    logs a warning, once per process, without the key."""
+    global _query_key_warned
+    if not _key_matches(query_params.get("api_key") or ""):
+        return False
+    if not _query_key_warned:
+        _query_key_warned = True
+        logger.warning(
+            "A request authenticated with the API key in the query string (?api_key=). "
+            "This is deprecated and will be refused in a later release: URLs end up in "
+            "access logs and browser history. Send X-API-Key or Authorization: Bearer."
+        )
+    return True
+
+
 def _key_matches(presented: str) -> bool:
     """Constant-time check of a presented key against ``ADMINA_API_KEY``.
 
@@ -797,7 +817,8 @@ def verify_credential(
     """Authenticate from credential parts (header / query / cookie).
 
     Accepts the raw ``ADMINA_API_KEY`` via ``X-API-Key`` /
-    ``Authorization: Bearer`` / ``?api_key=`` (constant-time compare). The
+    ``Authorization: Bearer`` / ``?api_key=`` (constant-time compare;
+    ``?api_key=`` is deprecated and logs a warning once). The
     dashboard session cookie is considered only when *allow_session* is true,
     which callers set for dashboard routes alone (see
     :func:`admina.proxy.dashboard_session.session_allowed`). Single source of
@@ -808,8 +829,7 @@ def verify_credential(
     query_params = query_params or {}
     if not settings.ADMINA_API_KEY:
         return False
-    raw = _presented_api_key(headers) or query_params.get("api_key") or ""
-    if _key_matches(raw):
+    if _key_matches(_presented_api_key(headers)) or _query_key_matches(query_params):
         return True
     if not allow_session:
         return False
@@ -826,7 +846,7 @@ def _live_feed_session_expiry(
     """
     headers = headers or {}
     query_params = query_params or {}
-    if _key_matches(_presented_api_key(headers) or query_params.get("api_key") or ""):
+    if _key_matches(_presented_api_key(headers)) or _query_key_matches(query_params):
         return None
     return _dashboard_session_expiry(cookies)
 
