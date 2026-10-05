@@ -13,124 +13,7 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
-### Security
-
-- **A rebuilt forensic chain state stays visible.** After the chain state
-  was rebuilt from the records, `forensic_chain` was `rebuilt` until the
-  next restart, then `ok`: removing the last records together with the
-  chain state left no lasting trace. The chain state now keeps the rebuild
-  (`rebuilt`: cause, record count, time) and `/health` reports `rebuilt`
-  until it is acknowledged.
-- **A forensic record whose JSON repeats a key does not verify**
-  (`hash_mismatch`). The hash was computed on the record as Python's parser
-  reads it, which keeps the last of the repeated values, while another
-  parser of an exported record can keep the first.
-- **`/mcp` and `/api/v1/validate` refuse text they cannot scan.** Their
-  pipeline scanned and redacted strings down to 6 levels of nesting and let
-  deeper text through unscanned and unredacted: an injection nested in five
-  objects inside a tool call's `arguments` was allowed. They now scan and
-  redact 32 levels deep, as the gateway does, and with the firewall or PII
-  redaction on, a request holding text deeper than that is blocked in
-  `enforce` mode (a would-be block in `observe` and `dry-run`), with
-  `checks.scan_depth = {"action": "BLOCK", "reason": "depth_limit_exceeded"}`.
-  `admina.domains.governance.SCAN_DEPTH` is the limit.
-- The Presidio PII engine (`ADMINA_PII_ENGINE=presidio`) asks the analyzer
-  only for the entity types it maps to Admina categories. It ran every
-  Presidio recognizer and discarded the other results; the URL recognizer
-  took about 1.2 ms per character on text with many dots (80 seconds on
-  64,000 characters). Detected spans are unchanged.
-
-### Added
-
-- `ruleset_document()` in `admina.domains.agent_security.ruleset`: the
-  canonical JSON text whose SHA-256 is `ruleset_sha256()`, to compare two
-  rulesets member by member. `GET /v1/admina/ruleset` returns it as
-  `ruleset_document`, with `ruleset_format`.
-- **EU AI Act risk classification in Italian, French and German.**
-  `classify_risk()` also matches the phrases of
-  `admina.domains.compliance.ai_act_terms` (Art. 5 practices, the areas of
-  Annex III, the cases of Art. 50) on whole words of a normalised text, so
-  a description of a CV-screening system in Italian is `high` rather than
-  `minimal`. `EUAIActCompliance(term_languages=[...], extra_terms={...})`
-  narrows the languages and adds terms of the caller. The result adds
-  `matched_terms` and `matched_areas`. The English keyword lists and their
-  results are unchanged; a non-English description can now get a higher
-  class than before.
-- An upgrade guide from 0.12 to 0.13: `docs/guides/upgrade-0.13.md`.
-- `admina forensic acknowledge-rebuild` and
-  `ForensicBlackBox.acknowledge_rebuild()`: verify the whole chain with the
-  key and clear the `rebuilt` status of a chain whose state was rebuilt.
-- `admina.sdk.active_ruleset_sha256()`: the ruleset hash of the firewall the
-  SDK builds from `admina.yaml`, on the engine `get_firewall()` selects. For
-  the same file and `ADMINA_ENGINE` it is the value the proxy reports in
-  `X-Admina-Ruleset`.
-
-### Changed
-
-- **Every ruleset hash changes once.** The hashed object has a new member,
-  `ruleset_format` (`1`), the version of its form, so that a later change
-  of the form is explicit (`RULESET_FORMAT`). A caller that pins a hash in
-  `gateway.prescan_rulesets` or `X-Admina-Scan-Policy` recomputes it with
-  this release.
-- `POST /api/v1/validate` answers `400` (`'content' must be a string`)
-  when `content` is not a string. An object or an array was scanned as
-  nested data by the Python engine, and answered `500` with the Rust
-  engine.
-
-- The red-team gate (`admina redteam --gate`, `admina.redteam.gate.compare`)
-  fails when the number of benign samples of a detector (`fp_samples`)
-  differs from the baseline, with a message that asks for a new baseline:
-  false-positive counts are compared only over the same benign samples.
-
-### Deprecated
-
-- **The API key in the query string (`?api_key=`).** It is still accepted;
-  the first request that authenticates with it logs a warning, once per
-  process, without the key. A URL ends up in access logs, proxy logs and
-  browser history; send `X-API-Key` or `Authorization: Bearer` instead. A
-  later release will refuse it.
-
-### Fixed
-
-- **`GovernedModel.ask()` and `stream()` work with the SDK alone**
-  (`pip install admina-framework`, without numpy and scikit-learn). They
-  built the Python loop breaker on every call, loop detection on or off,
-  and failed with `ModuleNotFoundError: numpy`; the loop breaker is now
-  built only when loop detection runs. When it runs without those
-  packages, the `ImportError` names `admina-framework[proxy]` (or `[rust]`).
-
-- The `role_hijacking` pattern of the Rust firewall (`admina-core`) matches
-  whole words only. It matched "act as" inside longer words, so English
-  text such as "impact assessment" or "the AI Act asks" was reported as a
-  role-hijacking attempt. Attacks written with whole words ("act as",
-  "you are now", "pretend you are", "from now on you") are still matched.
-
-- **The dashboard feed, trend and suggestions work without ClickHouse.**
-  `/api/dashboard/feed`, `/api/dashboard/trend` and
-  `/api/dashboard/suggestions` used to answer empty, with
-  `"error": "ClickHouse not available"`, when no ClickHouse was configured,
-  as in an embedded deployment. They now read the recent records of the
-  forensic black box: one event per governed request (`/mcp`, the gateway
-  and `/api/v1/validate`), in the same columns as a ClickHouse row, and the
-  answer carries `"source": "forensic_recent"`.
-  `ForensicBlackBox.recent_records()` keeps the last 1,000 records written
-  by the running proxy, in memory, with every backend; records written
-  before a restart are not read back. The WebSocket live feed keeps
-  reading the event bus.
-
-- The dashboard's EU AI Act countdown shows the deadline it counts down
-  to. The date next to the countdown was a fixed "August 2, 2026", while
-  the number of days came from the `enforcement_deadline` of
-  `/api/dashboard/compliance` (2 December 2027 for Annex III); both now
-  read that field.
-
-- **The dashboard's EU AI Act help shows a command that works.** The
-  example `curl` for `POST /api/compliance/gap-analysis` targeted
-  `http://localhost:8080`; it now targets the origin that served the page,
-  and the help states that the route accepts `POST` only (a `GET`, such as
-  opening the address in the browser, answers `405 Method Not Allowed`).
-
-## [0.13.0] — 2026-09-29
+## [0.13.0] — 2026-10-05
 
 Everything in 0.13.0rc1, and: the governance outcome on the gateway's
 responses and the correlation of its calls (outcome headers,
@@ -142,8 +25,11 @@ Lines, PII engines from other packages with value-only redaction and an
 `[OMISSIS]` mask style, an offline mode, per-surface request metrics and
 governance events without request text, stable firewall pattern ids with
 pattern packs and Italian baseline patterns, a schema check of admina.yaml,
-the engines in use on `/health`, an OISG score from external evidence, and
-`admina redteam` on external corpora. Upgrading is recommended.
+the engines in use on `/health`, an OISG score from external evidence,
+`admina redteam` on external corpora, a scan depth of 32 levels with a block
+past it on every surface, EU AI Act classification of Italian, French and
+German descriptions, a versioned ruleset document, and an upgrade guide
+(`docs/guides/upgrade-0.13.md`). Upgrading is recommended.
 
 ### Security
 
@@ -294,6 +180,31 @@ the engines in use on `/health`, an OISG score from external evidence, and
   the `presidio` engine and the spaCy + regex PII engine: its time grows
   linearly with the length of the text, however many spans it masks. The
   masked text is unchanged.
+
+- **A rebuilt forensic chain state stays visible.** After the chain state
+  was rebuilt from the records, `forensic_chain` was `rebuilt` until the
+  next restart, then `ok`: removing the last records together with the
+  chain state left no lasting trace. The chain state now keeps the rebuild
+  (`rebuilt`: cause, record count, time) and `/health` reports `rebuilt`
+  until it is acknowledged.
+- **A forensic record whose JSON repeats a key does not verify**
+  (`hash_mismatch`). The hash was computed on the record as Python's parser
+  reads it, which keeps the last of the repeated values, while another
+  parser of an exported record can keep the first.
+- **`/mcp` and `/api/v1/validate` refuse text they cannot scan.** Their
+  pipeline scanned and redacted strings down to 6 levels of nesting and let
+  deeper text through unscanned and unredacted: an injection nested in five
+  objects inside a tool call's `arguments` was allowed. They now scan and
+  redact 32 levels deep, as the gateway does, and with the firewall or PII
+  redaction on, a request holding text deeper than that is blocked in
+  `enforce` mode (a would-be block in `observe` and `dry-run`), with
+  `checks.scan_depth = {"action": "BLOCK", "reason": "depth_limit_exceeded"}`.
+  `admina.domains.governance.SCAN_DEPTH` is the limit.
+- The Presidio PII engine (`ADMINA_PII_ENGINE=presidio`) asks the analyzer
+  only for the entity types it maps to Admina categories. It ran every
+  Presidio recognizer and discarded the other results; the URL recognizer
+  took about 1.2 ms per character on text with many dots (80 seconds on
+  64,000 characters). Detected spans are unchanged.
 
 ### Added
 
@@ -673,6 +584,29 @@ the engines in use on `/health`, an OISG score from external evidence, and
   `InjectionAdapter(config)` and `all_detectors(firewall_config)` take the
   `FirewallConfig`, and the adapter builds the firewall of each engine once.
 
+- `ruleset_document()` in `admina.domains.agent_security.ruleset`: the
+  canonical JSON text whose SHA-256 is `ruleset_sha256()`, to compare two
+  rulesets member by member. `GET /v1/admina/ruleset` returns it as
+  `ruleset_document`, with `ruleset_format`.
+- **EU AI Act risk classification in Italian, French and German.**
+  `classify_risk()` also matches the phrases of
+  `admina.domains.compliance.ai_act_terms` (Art. 5 practices, the areas of
+  Annex III, the cases of Art. 50) on whole words of a normalised text, so
+  a description of a CV-screening system in Italian is `high` rather than
+  `minimal`. `EUAIActCompliance(term_languages=[...], extra_terms={...})`
+  narrows the languages and adds terms of the caller. The result adds
+  `matched_terms` and `matched_areas`. The English keyword lists and their
+  results are unchanged; a non-English description can now get a higher
+  class than before.
+- An upgrade guide from 0.12 to 0.13: `docs/guides/upgrade-0.13.md`.
+- `admina forensic acknowledge-rebuild` and
+  `ForensicBlackBox.acknowledge_rebuild()`: verify the whole chain with the
+  key and clear the `rebuilt` status of a chain whose state was rebuilt.
+- `admina.sdk.active_ruleset_sha256()`: the ruleset hash of the firewall the
+  SDK builds from `admina.yaml`, on the engine `get_firewall()` selects. For
+  the same file and `ADMINA_ENGINE` it is the value the proxy reports in
+  `X-Admina-Ruleset`.
+
 ### Changed
 
 - `ADMINA_ENGINE=rust` without `admina-core` installed is an error: the
@@ -857,6 +791,69 @@ the engines in use on `/health`, an OISG score from external evidence, and
   sequences do (percent-encoding never counted); the length signal counts
   texts longer than 100 000 characters (`firewall.LONG_TEXT_CHARS`; it
   counted texts longer than 2000).
+
+- The object `ruleset_sha256()` hashes also has `ruleset_format` (`1`),
+  the version of its form, so that a later change of the form is explicit
+  (`RULESET_FORMAT`). A caller that pins a hash in
+  `gateway.prescan_rulesets` or `X-Admina-Scan-Policy` recomputes it with
+  this release.
+- `POST /api/v1/validate` answers `400` (`'content' must be a string`)
+  when `content` is not a string. An object or an array was scanned as
+  nested data by the Python engine, and answered `500` with the Rust
+  engine.
+
+- The red-team gate (`admina redteam --gate`, `admina.redteam.gate.compare`)
+  fails when the number of benign samples of a detector (`fp_samples`)
+  differs from the baseline, with a message that asks for a new baseline:
+  false-positive counts are compared only over the same benign samples.
+
+### Deprecated
+
+- **The API key in the query string (`?api_key=`).** It is still accepted;
+  the first request that authenticates with it logs a warning, once per
+  process, without the key. A URL ends up in access logs, proxy logs and
+  browser history; send `X-API-Key` or `Authorization: Bearer` instead. A
+  later release will refuse it.
+
+### Fixed
+
+- **`GovernedModel.ask()` and `stream()` work with the SDK alone**
+  (`pip install admina-framework`, without numpy and scikit-learn). They
+  built the Python loop breaker on every call, loop detection on or off,
+  and failed with `ModuleNotFoundError: numpy`; the loop breaker is now
+  built only when loop detection runs. When it runs without those
+  packages, the `ImportError` names `admina-framework[proxy]` (or `[rust]`).
+
+- The `role_hijacking` pattern of the Rust firewall (`admina-core`) matches
+  whole words only. It matched "act as" inside longer words, so English
+  text such as "impact assessment" or "the AI Act asks" was reported as a
+  role-hijacking attempt. Attacks written with whole words ("act as",
+  "you are now", "pretend you are", "from now on you") are still matched.
+
+- **The dashboard feed, trend and suggestions work without ClickHouse.**
+  `/api/dashboard/feed`, `/api/dashboard/trend` and
+  `/api/dashboard/suggestions` used to answer empty, with
+  `"error": "ClickHouse not available"`, when no ClickHouse was configured,
+  as in an embedded deployment. They now read the recent records of the
+  forensic black box: one event per governed request (`/mcp`, the gateway
+  and `/api/v1/validate`), in the same columns as a ClickHouse row, and the
+  answer carries `"source": "forensic_recent"`.
+  `ForensicBlackBox.recent_records()` keeps the last 1,000 records written
+  by the running proxy, in memory, with every backend; records written
+  before a restart are not read back. The WebSocket live feed keeps
+  reading the event bus.
+
+- The dashboard's EU AI Act countdown shows the deadline it counts down
+  to. The date next to the countdown was a fixed "August 2, 2026", while
+  the number of days came from the `enforcement_deadline` of
+  `/api/dashboard/compliance` (2 December 2027 for Annex III); both now
+  read that field.
+
+- **The dashboard's EU AI Act help shows a command that works.** The
+  example `curl` for `POST /api/compliance/gap-analysis` targeted
+  `http://localhost:8080`; it now targets the origin that served the page,
+  and the help states that the route accepts `POST` only (a `GET`, such as
+  opening the address in the browser, answers `405 Method Not Allowed`).
 
 ### Notes
 
@@ -1179,7 +1176,7 @@ images with a `-slim` variant. Installers take it only when asked:
   provider that returns a user. An exception raised by the handler gets
   the application's 500 response and is not retried with another provider.
 
-## [0.12.1] — 2026-MM-DD
+## [0.12.1] — 2026-10-05
 
 Patch release: hardened dashboard session handling. Upgrading is
 recommended.
