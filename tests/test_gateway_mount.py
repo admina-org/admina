@@ -30,6 +30,9 @@ class _FakeFirewall:
     def check(self, text: str) -> dict:
         return {"is_injection": False, "risk_level": "low", "patterns": []}
 
+    def get_stats(self) -> dict:
+        return {}
+
 
 class _FakePII:
     def redact(self, text: str) -> dict:
@@ -42,6 +45,9 @@ class _FakePII:
 class _FakeLoop:
     def check(self, session_id: str, content: str) -> dict:
         return {"is_loop": False, "similarity": 0.0}
+
+    def get_stats(self) -> dict:
+        return {}
 
 
 class _FakeHTTP:
@@ -115,3 +121,68 @@ def test_gateway_allows_with_bearer_key(monkeypatch):
     resp = _post(app, headers={"Authorization": "Bearer secret-key-1234567890"})
     assert resp.status_code == 200
     assert resp.json()["choices"][0]["message"]["content"] == "hi"
+
+
+class _FakeClickHouse:
+    """Records the rows inserted into governance_events."""
+
+    def __init__(self) -> None:
+        self.inserts: list[tuple[str, list, list]] = []
+
+    def insert(self, table, rows, column_names):
+        self.inserts.append((table, rows, column_names))
+
+
+async def _drain_background() -> None:
+    """Wait for the fire-and-forget tasks of the gateway and the proxy."""
+    from admina.proxy import main as proxy_main
+    from admina.proxy.api import gateway
+
+    while gateway._background_tasks or proxy_main._background_tasks:
+        pending = list(gateway._background_tasks) + list(proxy_main._background_tasks)
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
+def test_gateway_requests_reach_api_stats(monkeypatch):
+    app = _inject(monkeypatch, api_key="secret-key-1234567890", allow_unauth=False)
+    headers = {"Authorization": "Bearer secret-key-1234567890"}
+    assert _post(app, headers=headers).status_code == 200
+    assert _post(app, headers=headers).status_code == 200
+
+    async def stats():
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=True)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            return await c.get("/api/stats", headers=headers)
+
+    proxy = asyncio.run(stats()).json()["proxy"]
+    assert proxy["requests_total"] == 2
+    assert proxy["requests_allowed"] == 2
+    assert proxy["requests_blocked"] == 0
+
+
+def test_gateway_request_is_stored_in_clickhouse(monkeypatch):
+    app = _inject(monkeypatch, api_key="secret-key-1234567890", allow_unauth=False)
+    ch = _FakeClickHouse()
+    app.state.proxy.clickhouse = ch
+    body = {"model": "llama3", "messages": [{"role": "user", "content": "hi"}]}
+
+    async def go():
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=True)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.post(
+                "/v1/chat/completions",
+                json=body,
+                headers={"Authorization": "Bearer secret-key-1234567890"},
+            )
+        await _drain_background()
+        return resp
+
+    assert asyncio.run(go()).status_code == 200
+
+    assert len(ch.inserts) == 1
+    table, rows, columns = ch.inserts[0]
+    assert table.endswith(".governance_events")
+    row = dict(zip(columns, rows[0], strict=True))
+    assert row["event_type"] == "gateway_request"
+    assert row["method"] == "chat.completions"
+    assert row["action"] == "allow"

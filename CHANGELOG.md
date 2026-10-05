@@ -25,6 +25,17 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   cannot fail the request) and the event metadata carries the decision
   only, never the request or response content.
 
+- **The OpenAI-compatible gateway now counts its requests and stores its
+  governance events.** `/v1/chat/completions` requests update the proxy
+  counters of `/api/stats` and `/metrics` (`requests_total`,
+  `requests_allowed`, `requests_blocked`, `requests_redacted` and the
+  average latency) as `/mcp` requests do, so the dashboard no longer shows
+  zero requests for gateway-only traffic. With ClickHouse configured, each
+  request also gets its `governance_events` row (event type
+  `gateway_request`, method `chat.completions`): the governance checks and
+  a truncated hash of the prompt, never the prompt. A failing analytics
+  store is logged and never fails the request.
+
 ## [0.12.1] — 2026-10-05
 
 Patch release: hardened dashboard session handling. Upgrading is

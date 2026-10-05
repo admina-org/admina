@@ -28,12 +28,14 @@ Routes (prefix /v1):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -42,9 +44,15 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from admina.core.event_bus import GovernanceEvent as BusGovernanceEvent
 from admina.core.event_bus import bus as governance_bus
-from admina.core.types import EventType
+from admina.core.types import EventType, GovernanceAction, RiskLevel
 from admina.domains.agent_security.egress import resolve_egress_mode
-from admina.domains.governance import redact_response_result, run_pipeline, safe_serialize
+from admina.domains.governance import (
+    build_governance_details,
+    redact_response_result,
+    run_pipeline,
+    safe_serialize,
+)
+from admina.proxy.config import GovernanceEvent
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +105,75 @@ def _emit_decision(gov_response: Any, session_id: str) -> None:
             )
         )
     )
+
+
+def _count_decision(state: Any, action: str, pii_count: int) -> None:
+    """Count a governed gateway request in the proxy counters (``/api/stats``
+    and ``/metrics``), as ``/mcp`` does: ``requests_total``, then
+    ``requests_blocked`` for BLOCK and CIRCUIT_BREAK or ``requests_allowed``
+    otherwise, and ``requests_redacted`` when PII was redacted."""
+    inc = getattr(state, "inc_metric", None)
+    if inc is None:
+        return
+    inc("requests_total")
+    if action in ("BLOCK", "CIRCUIT_BREAK"):
+        inc("requests_blocked")
+    else:
+        inc("requests_allowed")
+    if pii_count > 0:
+        inc("requests_redacted")
+
+
+def _observe_latency(state: Any, start: float) -> None:
+    """Add the time since *start* (``time.perf_counter()``) to the proxy's
+    average request latency."""
+    update = getattr(state, "update_avg_latency", None)
+    if update is not None:
+        update((time.perf_counter() - start) * 1000)
+
+
+def _enum_value(enum_cls: Any, value: Any, default: Any) -> Any:
+    """*value* (an enum member or its name or value, any case) as a member
+    of *enum_cls*; *default* when it is none of them."""
+    raw = str(getattr(value, "value", value) or "").lower()
+    try:
+        return enum_cls(raw)
+    except ValueError:
+        return default
+
+
+def _analytics_event(
+    pre: Any, *, event_id: str, agent_id: str, session_id: str, prompt_text: str
+) -> GovernanceEvent:
+    """The analytics row (ClickHouse ``governance_events``) of a gateway
+    request: the same columns as an ``/mcp`` row, with event type
+    ``gateway_request`` and method ``chat.completions``. Like the ``/mcp``
+    row it holds the governance checks and a truncated hash of the
+    prompt, never the prompt itself."""
+    return GovernanceEvent(
+        event_id=event_id,
+        timestamp=datetime.now(UTC).isoformat(),
+        event_type=EventType.GATEWAY_REQUEST,
+        agent_id=agent_id,
+        session_id=session_id,
+        method="chat.completions",
+        action=_enum_value(GovernanceAction, pre.action, GovernanceAction.ALLOW),
+        risk_level=_enum_value(RiskLevel, pre.risk_level, RiskLevel.LOW),
+        details=build_governance_details(pre),
+        latency_ms=pre.latency_ms,
+        request_hash=hashlib.sha256(prompt_text.encode()).hexdigest()[:32],
+    )
+
+
+async def _store_event_safe(
+    store_event: Callable[[GovernanceEvent], Awaitable[None]], event: GovernanceEvent
+) -> None:
+    """Store *event* with *store_event*; a failure is logged and never
+    reaches the request."""
+    try:
+        await store_event(event)
+    except Exception:
+        logger.warning("Gateway analytics event storage failed", exc_info=True)
 
 
 def _extract_prompt_text(messages: list) -> str:
@@ -317,6 +394,7 @@ def create_gateway_endpoints(
     *,
     get_state: Any,
     get_settings: Any,
+    store_event: Callable[[GovernanceEvent], Awaitable[None]] | None = None,
 ) -> APIRouter:
     """Create the OpenAI-compatible gateway router (prefix ``/v1``).
 
@@ -328,6 +406,9 @@ def create_gateway_endpoints(
             loop_breaker, egress_policy, governance_guards, forensic_box,
             http_client).
         get_settings: Callable returning the settings object.
+        store_event: Coroutine function storing a :class:`GovernanceEvent`
+            in the analytics store; called, fire-and-forget, for every
+            governed request while the state has a ``clickhouse`` client.
     """
     router = APIRouter(prefix="/v1", tags=["gateway"])
 
@@ -362,6 +443,7 @@ def create_gateway_endpoints(
         agent_id = re.sub(r"[\r\n]", "", request.headers.get("X-Agent-Id", "gateway"))[:128]
         prompt_text = _extract_prompt_text(messages)
         event_id = uuid.uuid4().hex
+        start = time.perf_counter()
 
         pre = await run_pipeline(
             body={"params": {"messages": messages}},
@@ -383,6 +465,8 @@ def create_gateway_endpoints(
             egress_mode=resolve_egress_mode(cfg.GOVERNANCE_MODE),
         )
         action = pre.gov_response.action  # uppercase: ALLOW/BLOCK/CIRCUIT_BREAK
+        pii_count = pre.checks.get("pii_redaction", {}).get("count", 0)
+        _count_decision(state, action, pii_count)
 
         await _record_forensic(
             state.forensic_box,
@@ -393,10 +477,24 @@ def create_gateway_endpoints(
             risk_level=pre.gov_response.risk_level,
             pre=pre,
         )
+        if store_event is not None and getattr(state, "clickhouse", None):
+            _spawn(
+                _store_event_safe(
+                    store_event,
+                    _analytics_event(
+                        pre,
+                        event_id=event_id,
+                        agent_id=agent_id,
+                        session_id=session_id,
+                        prompt_text=prompt_text,
+                    ),
+                )
+            )
 
         block_message = cfg.ADMINA_GATEWAY_BLOCK_MESSAGE
         if action in ("BLOCK", "CIRCUIT_BREAK"):
             _emit_decision(pre.gov_response, session_id)
+            _observe_latency(state, start)
             if stream:
                 return StreamingResponse(
                     _aiter_list(_synthetic_stream(model, block_message)),
@@ -408,7 +506,6 @@ def create_gateway_endpoints(
         url = f"{upstream}/chat/completions"
         headers = {"X-Admina-Event-Id": event_id}
 
-        pii_count = pre.checks.get("pii_redaction", {}).get("count", 0)
         fwd_messages = pre.redacted_body["params"]["messages"] if pii_count > 0 else messages
         forward_body = {**body, "messages": fwd_messages}
 
@@ -447,6 +544,7 @@ def create_gateway_endpoints(
                     # One decision event per stream, at completion (or
                     # client disconnect), never per chunk.
                     _emit_decision(pre.gov_response, session_id)
+                    _observe_latency(state, start)
                     await stream_cm.__aexit__(None, None, None)
 
             return StreamingResponse(_proxy(), media_type="text/event-stream")
@@ -457,6 +555,8 @@ def create_gateway_endpoints(
             resp = await state.http_client.post(url, json=forward_body, headers=headers)
         except httpx.ConnectError:
             raise HTTPException(status_code=502, detail="Gateway upstream unreachable")
+        finally:
+            _observe_latency(state, start)
         data = resp.json()
         if cfg.PII_REDACTION_ENABLED and isinstance(data.get("choices"), list):
             data["choices"], _ = redact_response_result(data["choices"], state.pii_redactor)

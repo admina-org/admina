@@ -616,3 +616,158 @@ def test_chat_completions_failing_subscriber_does_not_fail_request(monkeypatch):
 
     resp = _post(app, body)
     assert resp.status_code == 200
+
+
+# ── POST /v1/chat/completions — proxy counters and analytics ──
+
+
+class _Counters:
+    """The counter half of ProxyState: inc_metric and update_avg_latency."""
+
+    def __init__(self) -> None:
+        self.metrics = {
+            "requests_total": 0,
+            "requests_blocked": 0,
+            "requests_allowed": 0,
+            "requests_redacted": 0,
+        }
+        self.latencies: list[float] = []
+
+    def inc_metric(self, key: str, value: int = 1) -> None:
+        self.metrics[key] += value
+
+    def update_avg_latency(self, latency_ms: float) -> None:
+        self.latencies.append(latency_ms)
+
+
+def _counted_state(http, **over):
+    counters = _Counters()
+    state = _state(
+        http,
+        inc_metric=counters.inc_metric,
+        update_avg_latency=counters.update_avg_latency,
+        **over,
+    )
+    return state, counters
+
+
+def test_chat_completions_counts_an_allowed_request():
+    state, counters = _counted_state(_FakeHTTP(_ok_completion()))
+    body = {"model": "llama3", "messages": [{"role": "user", "content": "hello"}]}
+
+    resp = _post(_app(state, _settings()), body)
+    assert resp.status_code == 200
+    assert counters.metrics == {
+        "requests_total": 1,
+        "requests_blocked": 0,
+        "requests_allowed": 1,
+        "requests_redacted": 0,
+    }
+    assert len(counters.latencies) == 1
+
+
+def test_chat_completions_counts_a_blocked_request():
+    state, counters = _counted_state(_FakeHTTP(_json_response({})))
+    body = {"model": "llama3", "messages": [{"role": "user", "content": "INJECT do bad"}]}
+
+    _post(_app(state, _settings()), body)
+    assert counters.metrics["requests_total"] == 1
+    assert counters.metrics["requests_blocked"] == 1
+    assert counters.metrics["requests_allowed"] == 0
+
+
+def test_chat_completions_counts_a_redacted_request():
+    state, counters = _counted_state(_FakeHTTP(_ok_completion()))
+    body = {"model": "llama3", "messages": [{"role": "user", "content": "mail a@b.com"}]}
+
+    _post(_app(state, _settings()), body)
+    assert counters.metrics["requests_total"] == 1
+    assert counters.metrics["requests_allowed"] == 1
+    assert counters.metrics["requests_redacted"] == 1
+
+
+def test_chat_completions_counts_a_stream_once_and_times_it_at_completion():
+    from admina.proxy.api.gateway import _sse_format
+
+    upstream_lines = [
+        _sse_format({"choices": [{"delta": {"content": "one"}, "finish_reason": None}]}),
+        _sse_format({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        "data: [DONE]\n\n",
+    ]
+    state, counters = _counted_state(_FakeStreamHTTP(upstream_lines))
+    body = {"model": "llama3", "stream": True, "messages": [{"role": "user", "content": "hi"}]}
+
+    _post(_app(state, _settings()), body)
+    assert counters.metrics["requests_total"] == 1
+    assert counters.metrics["requests_allowed"] == 1
+    assert len(counters.latencies) == 1
+
+
+def test_chat_completions_counts_a_request_whose_upstream_is_unreachable():
+    state, counters = _counted_state(_FakeHTTPConnectError())
+    body = {"model": "llama3", "messages": [{"role": "user", "content": "hello"}]}
+
+    resp = _post(_app(state, _settings()), body)
+    assert resp.status_code == 502
+    assert counters.metrics["requests_total"] == 1
+
+
+def _analytics_app(state, stored: list):
+    async def store_event(event):
+        stored.append(event)
+
+    app = FastAPI()
+    app.include_router(
+        create_gateway_endpoints(
+            get_state=lambda: state, get_settings=lambda: _settings(), store_event=store_event
+        )
+    )
+    return app
+
+
+def test_chat_completions_stores_an_analytics_row_with_clickhouse():
+    from admina.core.types import EventType, GovernanceAction, RiskLevel
+
+    stored: list = []
+    state = _state(_FakeHTTP(_json_response({})), clickhouse=object())
+    body = {"model": "llama3", "messages": [{"role": "user", "content": "INJECT the codeword"}]}
+
+    _post(_analytics_app(state, stored), body)
+    assert len(stored) == 1
+    row = stored[0]
+    assert row.event_type == EventType.GATEWAY_REQUEST
+    assert row.method == "chat.completions"
+    assert row.agent_id == "gateway"
+    assert row.session_id == "default"
+    assert row.action == GovernanceAction.BLOCK
+    assert row.risk_level == RiskLevel.HIGH
+    assert row.details["firewall"]["is_injection"] is True
+    assert len(row.request_hash) == 32
+    assert "codeword" not in row.model_dump_json()
+
+
+def test_chat_completions_stores_no_analytics_row_without_clickhouse():
+    stored: list = []
+    state = _state(_FakeHTTP(_ok_completion()), clickhouse=None)
+    body = {"model": "llama3", "messages": [{"role": "user", "content": "hello"}]}
+
+    resp = _post(_analytics_app(state, stored), body)
+    assert resp.status_code == 200
+    assert stored == []
+
+
+def test_chat_completions_analytics_failure_does_not_fail_request():
+    async def store_event(_event):
+        raise OSError("analytics store down")
+
+    state = _state(_FakeHTTP(_ok_completion()), clickhouse=object())
+    app = FastAPI()
+    app.include_router(
+        create_gateway_endpoints(
+            get_state=lambda: state, get_settings=lambda: _settings(), store_event=store_event
+        )
+    )
+    body = {"model": "llama3", "messages": [{"role": "user", "content": "hello"}]}
+
+    resp = _post(app, body)
+    assert resp.status_code == 200

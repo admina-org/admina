@@ -561,6 +561,7 @@ app.include_router(_integration_router)
 _gateway_router = create_gateway_endpoints(
     get_state=lambda: app.state.proxy,
     get_settings=lambda: settings,
+    store_event=lambda event: _store_event_async(app.state.proxy.clickhouse, event),
 )
 app.include_router(_gateway_router)
 
