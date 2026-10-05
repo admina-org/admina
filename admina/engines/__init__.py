@@ -453,7 +453,14 @@ class _PythonLoopBridge:
     engine = "python"
 
     def __init__(self, **kwargs):
-        from admina.domains.agent_security.loop_breaker import LoopBreaker
+        try:
+            from admina.domains.agent_security.loop_breaker import LoopBreaker
+        except ImportError as exc:
+            raise ImportError(
+                "The Python loop breaker needs numpy and scikit-learn: "
+                "pip install 'admina-framework[proxy]' (or 'admina-framework[rust]' "
+                "for the Rust loop breaker)"
+            ) from exc
 
         self._impl = LoopBreaker(**kwargs)
 

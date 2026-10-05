@@ -63,6 +63,13 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ### Fixed
 
+- **`GovernedModel.ask()` and `stream()` work with the SDK alone**
+  (`pip install admina-framework`, without numpy and scikit-learn). They
+  built the Python loop breaker on every call, loop detection on or off,
+  and failed with `ModuleNotFoundError: numpy`; the loop breaker is now
+  built only when loop detection runs. When it runs without those
+  packages, the `ImportError` names `admina-framework[proxy]` (or `[rust]`).
+
 - The `role_hijacking` pattern of the Rust firewall (`admina-core`) matches
   whole words only. It matched "act as" inside longer words, so English
   text such as "impact assessment" or "the AI Act asks" was reported as a
