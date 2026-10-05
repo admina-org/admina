@@ -1161,6 +1161,10 @@ first, since several defaults and failure modes change.
   written with it carry a `Co-Authored-By` trailer that names the
   assistant, and every change is reviewed and tested by the maintainers.
   See "AI-Assisted Contributions" in `CONTRIBUTING.md`.
+- The timing tests of `tests/test_firewall_pattern_timing.py` carry the
+  `benchmark` marker and are excluded from CI (`-m "not benchmark"`): on
+  shared macOS runners their time ratios and budgets vary between runs.
+  They run with `pytest -m benchmark tests/test_firewall_pattern_timing.py`.
 
 ## [0.12.2] — 2026-10-05
 

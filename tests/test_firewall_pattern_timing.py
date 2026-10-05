@@ -35,6 +35,10 @@ placeholder every few characters. The time of PII redaction (the regex and
 NER steps of the PII redactor, the presidio engine and the spaCy + regex
 engine) grows linearly with a masked span every few characters. Each time is
 the best of up to three runs.
+
+The timing tests carry the ``benchmark`` marker: CI runs ``-m "not
+benchmark"``, and they run with ``pytest -m benchmark`` on dedicated
+hardware. The tests of the matches run in CI.
 """
 
 from __future__ import annotations
@@ -112,18 +116,21 @@ def _normalised() -> dict[int, tuple[float, str]]:
 # ── Builtin firewall patterns ────────────────────────────────
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize("index", _INDICES, ids=_IDS)
 def test_builtin_pattern_on_long_inputs(index):
     timing = _raw(index)
     assert timing.worst_ms <= BUDGET_MS, _describe(timing)
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize("index", _INDICES, ids=_IDS)
 def test_builtin_pattern_on_normalised_long_inputs(index):
     ms, label = _normalised()[index]
     assert ms <= BUDGET_MS, f"{ms:.1f} ms on normalised {label}"
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize("index", _INDICES, ids=_IDS)
 def test_builtin_pattern_time_grows_linearly(index):
     """time(64k) / time(16k) stays at most 8 on the three slowest inputs."""
@@ -160,12 +167,14 @@ _PACK_PATTERNS = {
 }
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize("name", list(_PACK_PATTERNS))
 def test_pack_pattern_on_long_inputs(name):
     timing = pt.measure_pattern(_PACK_PATTERNS[name], size=SIZE)
     assert timing.worst_ms <= BUDGET_MS, _describe(timing)
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize("name", list(_PACK_PATTERNS))
 def test_pack_pattern_time_grows_linearly(name):
     """time(64k) / time(16k) stays at most 8 on the three slowest inputs."""
@@ -184,6 +193,7 @@ def test_pack_pattern_time_grows_linearly(name):
 _OBSERVED = [(trigger, run) for trigger in ("show", "ignore", "exec") for run in (16_384, SIZE)]
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize(
     "trigger,run", _OBSERVED, ids=[f"{trigger}+{run}" for trigger, run in _OBSERVED]
 )
@@ -259,6 +269,7 @@ def _start_times(index: int) -> dict[str, float]:
     }
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize("index", _IT_INDICES, ids=[_IDS[i] for i in _IT_INDICES])
 def test_italian_pattern_on_runs_of_starts(index):
     times = _start_times(index)
@@ -266,6 +277,7 @@ def test_italian_pattern_on_runs_of_starts(index):
     assert times[label] <= BUDGET_MS, f"{times[label]:.1f} ms on {label}"
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize("index", _IT_INDICES, ids=[_IDS[i] for i in _IT_INDICES])
 def test_italian_pattern_time_grows_linearly_on_runs_of_starts(index):
     """time(64k) / time(16k) stays at most 8 on the slowest run."""
@@ -327,12 +339,14 @@ _GENERIC_INPUTS = [
 _GENERIC_IDS = [label for label, _ in _GENERIC_INPUTS]
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize("text", [text for _, text in _GENERIC_INPUTS], ids=_GENERIC_IDS)
 def test_normalize_text_on_long_inputs(text):
     ms = _best_ms(firewall.normalize_text, text)
     assert ms <= BUDGET_MS, f"{ms:.1f} ms"
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize("text", [text for _, text in _GENERIC_INPUTS], ids=_GENERIC_IDS)
 def test_deep_path_on_long_inputs(text):
     ms = _best_ms(firewall.InjectionFirewall().deep_path, text)
@@ -355,6 +369,7 @@ _OTHER_REGEXES = {
 }
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize("name", list(_OTHER_REGEXES))
 def test_request_text_regex_on_long_inputs(name):
     timing = pt.measure_pattern(_OTHER_REGEXES[name])
@@ -410,6 +425,7 @@ def _match_all(name: str) -> SimpleNamespace:
     return SimpleNamespace(search=lambda text: list(find(text)))
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize("name", list(_RUN_MATCHERS))
 def test_request_text_matching_on_long_runs(name):
     matcher = _match_all(name)
@@ -421,6 +437,7 @@ def test_request_text_matching_on_long_runs(name):
     assert timings[worst] <= BUDGET_MS, f"{timings[worst]:.1f} ms on {worst}"
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize("name", list(_RUN_MATCHERS))
 def test_request_text_matching_time_grows_linearly_on_long_runs(name):
     """time(64k) / time(16k) stays at most 8 on every long-run input."""
@@ -453,6 +470,7 @@ def _regex_only_engine() -> spacy_regex.SpaCyRegexPIIEngine:
     return engine
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize("label", _RUN_LABELS)
 def test_pii_redact_email_on_long_runs(label):
     redactor = _regex_only_redactor()
@@ -460,6 +478,7 @@ def test_pii_redact_email_on_long_runs(label):
     assert ms <= BUDGET_MS, f"{ms:.1f} ms"
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize("label", _RUN_LABELS)
 def test_pii_engine_detect_email_on_long_runs(label):
     engine = _regex_only_engine()
@@ -539,6 +558,7 @@ _DENSE_REDACTIONS = {
 }
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize("name", list(_DENSE_REDACTIONS))
 def test_redaction_time_grows_linearly_with_dense_matches(name):
     """time(64k) / time(16k) stays at most 8 with a span every few characters."""
@@ -662,6 +682,7 @@ _RATIO_FLOORS_MS = {"bridge-omissis": 1000 * sys.getswitchinterval()}
 _RATIO_FLOOR_MS = 0.05
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize("label", _SENTENCE_RUN_LABELS)
 @pytest.mark.parametrize("function", list(_SENTENCE_FUNCTIONS))
 def test_omissis_sentences_on_long_runs(function, label):
@@ -669,6 +690,7 @@ def test_omissis_sentences_on_long_runs(function, label):
     assert ms <= BUDGET_MS, f"{ms:.1f} ms"
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize("label", _SENTENCE_LABELS)
 @pytest.mark.parametrize("function", list(_SENTENCE_FUNCTIONS))
 def test_omissis_sentences_time_grows_linearly(function, label):
@@ -680,6 +702,7 @@ def test_omissis_sentences_time_grows_linearly(function, label):
     assert ratio <= 8.0, f"{small:.3f} ms at 16k, {large:.3f} ms at 64k"
 
 
+@pytest.mark.benchmark
 @pytest.mark.parametrize("label", _SENTENCE_RUN_LABELS)
 def test_stream_redactor_sentences_on_long_runs(label):
     """Each 4096-character delta of a 64k run, and the end of the stream,
