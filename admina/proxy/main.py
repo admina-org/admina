@@ -759,6 +759,16 @@ def _presented_api_key(headers: Any) -> str:
 _query_key_warned = False
 
 
+def _api_key_presented(headers: Any, query_params: Any) -> bool:
+    """Whether the request presents the API key: in a header when it carries
+    one (the header is then the only credential checked), else in
+    ``?api_key=`` (deprecated: :func:`_query_key_matches`)."""
+    header_key = _presented_api_key(headers)
+    if header_key:
+        return _key_matches(header_key)
+    return _query_key_matches(query_params)
+
+
 def _query_key_matches(query_params: Any) -> bool:
     """Whether ``?api_key=`` holds the API key. Deprecated: the first match
     logs a warning, once per process, without the key."""
@@ -829,7 +839,7 @@ def verify_credential(
     query_params = query_params or {}
     if not settings.ADMINA_API_KEY:
         return False
-    if _key_matches(_presented_api_key(headers)) or _query_key_matches(query_params):
+    if _api_key_presented(headers, query_params):
         return True
     if not allow_session:
         return False
@@ -846,7 +856,7 @@ def _live_feed_session_expiry(
     """
     headers = headers or {}
     query_params = query_params or {}
-    if _key_matches(_presented_api_key(headers)) or _query_key_matches(query_params):
+    if _api_key_presented(headers, query_params):
         return None
     return _dashboard_session_expiry(cookies)
 

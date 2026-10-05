@@ -64,3 +64,34 @@ def test_wrong_query_key_logs_nothing(proxy_main, caplog):
     caplog.set_level(logging.WARNING, logger="admina.proxy")
     assert not proxy_main.verify_credential(query_params={"api_key": "wrong"})
     assert _warnings(caplog) == []
+
+
+def test_a_header_key_is_the_only_credential_checked(proxy_main, caplog):
+    # A key presented in a header is checked alone: a wrong header is refused
+    # even with the right ?api_key=, as before the deprecation.
+    caplog.set_level(logging.WARNING, logger="admina.proxy")
+    assert not proxy_main.verify_credential(
+        headers={"x-api-key": "wrong"}, query_params={"api_key": _KEY}
+    )
+    assert not proxy_main.verify_credential(
+        headers={"Authorization": "Bearer wrong"}, query_params={"api_key": _KEY}
+    )
+    assert _warnings(caplog) == []
+
+
+def test_a_header_key_also_decides_the_live_feed_session(proxy_main):
+    # The live feed enforces the session's expiry unless the API key itself
+    # authenticates the connection; a wrong header with the right ?api_key=
+    # is not the key, so the session's expiry still applies.
+    from admina.proxy import dashboard_session
+
+    token = dashboard_session.issue_token(_KEY, ttl=600)
+    cookies = {dashboard_session.COOKIE_NAME: token}
+    expiry = proxy_main._live_feed_session_expiry(
+        headers={"x-api-key": "wrong"}, query_params={"api_key": _KEY}, cookies=cookies
+    )
+    assert expiry is not None
+    assert (
+        proxy_main._live_feed_session_expiry(query_params={"api_key": _KEY}, cookies=cookies)
+        is None
+    )
