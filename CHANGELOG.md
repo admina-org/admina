@@ -48,6 +48,12 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   before a restart are not read back. The WebSocket live feed keeps
   reading the event bus.
 
+- **The dashboard's EU AI Act help shows a command that works.** The
+  example `curl` for `POST /api/compliance/gap-analysis` targeted
+  `http://localhost:8080`; it now targets the origin that served the page,
+  and the help states that the route accepts `POST` only (a `GET`, such as
+  opening the address in the browser, answers `405 Method Not Allowed`).
+
 ## [0.12.1] — 2026-10-05
 
 Patch release: hardened dashboard session handling. Upgrading is

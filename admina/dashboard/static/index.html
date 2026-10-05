@@ -735,12 +735,14 @@
           </p>
           <p>
             Until you submit a real assessment, the dashboard renders all articles at 0% with a default
-            placeholder. To record your real coverage, POST your declared evidence to
-            <code class="inline">/api/compliance/gap-analysis</code>.
+            placeholder. To record your real coverage, send your declared evidence with a
+            <strong>POST</strong> request to <code class="inline">/api/compliance/gap-analysis</code>
+            on this host (the route accepts POST only: opening it in the browser answers
+            405 Method Not Allowed).
           </p>
           <p style="margin-bottom: 6px;"><strong>Example request:</strong></p>
           <button class="modal-copy-btn" @click="copyAssessmentCmd($event)">Copy command</button>
-          <pre class="modal-pre" id="assessment-cmd">curl -X POST http://localhost:8080/api/compliance/gap-analysis \
+          <pre class="modal-pre" id="assessment-cmd">curl -X POST <span x-text="apiBase"></span>/api/compliance/gap-analysis \
   -H "X-API-Key: $ADMINA_API_KEY" -H "Content-Type: application/json" \
   -d '{"risk_category": "high",
        "current_compliance": {
@@ -1153,6 +1155,12 @@ function dashboard() {
     },
 
     // ── Helpers ─────────────────────────────────────────
+    // The origin that served this page: the proxy itself, or the dashboard
+    // container that forwards /api/ to it.
+    get apiBase() {
+      return window.location.origin;
+    },
+
     copyAssessmentCmd(ev) {
       const pre = document.getElementById('assessment-cmd');
       if (!pre) return;
