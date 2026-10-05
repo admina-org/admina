@@ -27,6 +27,7 @@ of ``/v1/chat/completions``.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
@@ -37,7 +38,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from admina.core.config import AdminaConfig
-from admina.domains.agent_security.ruleset import ruleset_object, ruleset_sha256
+from admina.domains.agent_security.ruleset import ruleset_document, ruleset_object
 
 __all__ = [
     "CHAT_COMPLETIONS_PATH",
@@ -69,6 +70,8 @@ class GatewayScanConfig:
     prescan_rulesets: tuple[str, ...] = ()
     #: gateway.prescan_tags.
     prescan_tags: frozenset[str] = frozenset()
+    #: ruleset_document() whose SHA-256 is ruleset_sha256.
+    ruleset_document: str = ""
 
     @property
     def accepted_rulesets(self) -> tuple[str, ...]:
@@ -84,8 +87,10 @@ def build_gateway_scan_config(firewall: Any, config: AdminaConfig | None) -> Gat
     engine = getattr(firewall, "engine", "python")
     builtin = ruleset_object(config, engine=engine)["builtin"]
     core_version = builtin["admina_core_version"] if engine == "rust" else None
+    document = ruleset_document(config, engine=engine, admina_core_version=core_version)
     return GatewayScanConfig(
-        ruleset_sha256=ruleset_sha256(config, engine=engine, admina_core_version=core_version),
+        ruleset_sha256=hashlib.sha256(document.encode("utf-8")).hexdigest(),
+        ruleset_document=document,
         engine=engine,
         admina_core_version=core_version,
         prescan_rulesets=tuple(config.gateway.prescan_rulesets),

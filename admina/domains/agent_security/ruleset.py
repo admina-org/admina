@@ -25,6 +25,7 @@ The value is the SHA-256, as 64 lowercase hex characters, of the RFC 8785
 strings and integers only::
 
     {
+      "ruleset_format": 1,
       "admina_version": "<admina.__version__>",
       "engine": "python" | "rust",
       "builtin": [{"regex": "...", "category": "...", "risk_level": "..."}, ...],
@@ -38,6 +39,10 @@ strings and integers only::
       "heuristic_threshold_milli": <int>
     }
 
+- ``ruleset_format``: :data:`RULESET_FORMAT`, the version of this shape. A
+  change of the shape (a member added, removed or computed differently)
+  increments it, so two hashes of different formats are never compared as
+  if they named different rules.
 - ``builtin``: for the ``python`` engine, the builtin patterns of
   :data:`~admina.domains.agent_security.firewall.INJECTION_PATTERNS` in
   their order, without those of a disabled category; ``risk_level`` is the
@@ -67,7 +72,10 @@ strings and integers only::
   × 1000, rounded to the nearest integer (Python :func:`round`).
 
 JCS sorts the members, so the order of keys in ``admina.yaml`` does not
-matter. This module does not import FastAPI or the proxy.
+matter. :func:`ruleset_document` is that serialisation as text, to compare
+two rulesets member by member; :func:`active_ruleset_sha256` is the hash of
+the firewall that :func:`admina.engines.get_firewall` builds from
+``admina.yaml``, which the proxy reports for the same file and engine. This module does not import FastAPI or the proxy.
 """
 
 from __future__ import annotations
@@ -82,10 +90,20 @@ from admina.core.jcs import canonicalize
 from admina.domains.agent_security import firewall as _firewall
 from admina.domains.agent_security.pattern_packs import PatternPack, load_pattern_packs, pack_dirs
 
-__all__ = ["RULESET_ENGINES", "ruleset_object", "ruleset_sha256"]
+__all__ = [
+    "RULESET_ENGINES",
+    "RULESET_FORMAT",
+    "active_ruleset_sha256",
+    "ruleset_document",
+    "ruleset_object",
+    "ruleset_sha256",
+]
 
 #: Firewall engines a ruleset can be computed for.
 RULESET_ENGINES = ("python", "rust")
+
+#: Version of the shape of the hashed object (its ``ruleset_format``).
+RULESET_FORMAT = 1
 
 
 def ruleset_object(
@@ -126,6 +144,7 @@ def ruleset_object(
     else:
         builtin = {"admina_core_version": admina_core_version or _installed_core_version()}
     return {
+        "ruleset_format": RULESET_FORMAT,
         "admina_version": admina_version or admina.__version__,
         "engine": engine,
         "builtin": builtin,
@@ -157,13 +176,50 @@ def ruleset_sha256(
 
     Arguments as :func:`ruleset_object`.
     """
+    document = ruleset_document(
+        config,
+        engine=engine,
+        admina_core_version=admina_core_version,
+        admina_version=admina_version,
+    )
+    return hashlib.sha256(document.encode("utf-8")).hexdigest()
+
+
+def ruleset_document(
+    config: AdminaConfig | FirewallConfig | None = None,
+    *,
+    engine: str = "python",
+    admina_core_version: str | None = None,
+    admina_version: str | None = None,
+) -> str:
+    """The canonical JSON text (RFC 8785) of :func:`ruleset_object`: the
+    UTF-8 encoding of this text is what :func:`ruleset_sha256` hashes.
+
+    Arguments as :func:`ruleset_object`.
+    """
     obj = ruleset_object(
         config,
         engine=engine,
         admina_core_version=admina_core_version,
         admina_version=admina_version,
     )
-    return hashlib.sha256(canonicalize(obj)).hexdigest()
+    return canonicalize(obj).decode("utf-8")
+
+
+def active_ruleset_sha256(config: AdminaConfig | None = None) -> str:
+    """:func:`ruleset_sha256` of the firewall :func:`admina.engines.get_firewall`
+    builds (its engine) for *config*, by default ``admina.yaml``
+    (:func:`~admina.core.config.load_config`).
+
+    For the same file and ``ADMINA_ENGINE``, the proxy reports this value in
+    ``X-Admina-Ruleset`` and ``GET /v1/admina/ruleset``.
+    """
+    from admina.core.config import load_config
+    from admina.engines import get_firewall
+
+    config = config if config is not None else load_config()
+    engine = getattr(get_firewall(), "engine", "python")
+    return ruleset_sha256(config, engine=engine)
 
 
 def _firewall_section(config: AdminaConfig | FirewallConfig | None) -> FirewallConfig:

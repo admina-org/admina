@@ -30,8 +30,24 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   took about 1.2 ms per character on text with many dots (80 seconds on
   64,000 characters). Detected spans are unchanged.
 
+### Added
+
+- `ruleset_document()` in `admina.domains.agent_security.ruleset`: the
+  canonical JSON text whose SHA-256 is `ruleset_sha256()`, to compare two
+  rulesets member by member. `GET /v1/admina/ruleset` returns it as
+  `ruleset_document`, with `ruleset_format`.
+- `admina.sdk.active_ruleset_sha256()`: the ruleset hash of the firewall the
+  SDK builds from `admina.yaml`, on the engine `get_firewall()` selects. For
+  the same file and `ADMINA_ENGINE` it is the value the proxy reports in
+  `X-Admina-Ruleset`.
+
 ### Changed
 
+- **Every ruleset hash changes once.** The hashed object has a new member,
+  `ruleset_format` (`1`), the version of its form, so that a later change
+  of the form is explicit (`RULESET_FORMAT`). A caller that pins a hash in
+  `gateway.prescan_rulesets` or `X-Admina-Scan-Policy` recomputes it with
+  this release.
 - `POST /api/v1/validate` answers `400` (`'content' must be a string`)
   when `content` is not a string. An object or an array was scanned as
   nested data by the Python engine, and answered `500` with the Rust

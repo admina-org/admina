@@ -85,11 +85,11 @@ _RUST_CANONICAL = (
     b'{"admina_version":"0.13.0","allowed_tags":[],'
     b'"builtin":{"admina_core_version":"0.9.3"},'
     b'"custom_patterns":[],"disabled_categories":[],"disabled_patterns":[],"engine":"rust",'
-    b'"heuristic_threshold_milli":500,"pattern_packs":[]}'
+    b'"heuristic_threshold_milli":500,"pattern_packs":[],"ruleset_format":1}'
 )
-_RUST_VECTOR = "e69d13465ec5a301c5a291a4b4be8856a4f7b89c61a4692e50efa573a78985c6"
-_PYTHON_VECTOR = "ff5a339bdd32f2f17d7100b51c79630e861efb09629221dc595ac4273e263cef"
-_PYTHON_CUSTOM_VECTOR = "d8a8fc9d493393752058e5020615ad65a07c31328c7b3285323ef391cd51fb57"
+_RUST_VECTOR = "1e78e2246704c11e0f38321a0dd07b952b7460bf399926f163d70bb5bddeffe4"
+_PYTHON_VECTOR = "c25716c9ee8ae765e43cf415b2435b64dfbbbd234fd1246f4e22cfe759be48a0"
+_PYTHON_CUSTOM_VECTOR = "49ea809a9db20f0d2435663ef6ddfaf07b2ce0d75d08d4b6bb62858fc4df6bba"
 
 
 def test_rust_vector_canonical_bytes():
@@ -109,6 +109,7 @@ def test_rust_vector():
 def test_python_vector_object():
     obj = ruleset_object(AdminaConfig(), engine="python", admina_version=_VERSION)
     assert obj == {
+        "ruleset_format": 1,
         "admina_version": _VERSION,
         "engine": "python",
         "builtin": [
@@ -157,9 +158,10 @@ _RUST_PACK_CANONICAL = (
     b'\\\\s++(?:ticket\\\\s++)?notes\\\\b","risk_level":"high"},'
     b'{"category":"example_role","id":"admin_role",'
     b'"regex":"\\\\byou\\\\s++are\\\\s++(?:now\\\\s++)?(?:the\\\\s++)?(?:system'
-    b'\\\\s++)?administrator\\\\b","risk_level":"medium"}],"version":"1.0.0"}]}'
+    b'\\\\s++)?administrator\\\\b","risk_level":"medium"}],"version":"1.0.0"}],'
+    b'"ruleset_format":1}'
 )
-_RUST_PACK_VECTOR = "360cf11e00dca4888b7542e7bbf4570746206bfb90aeb411dec51337e6d83081"
+_RUST_PACK_VECTOR = "5f532a27b5ac3bfdd8779c4481e74309012435f6be43d9c23b06f590d2126184"
 
 
 def test_rust_vector_with_a_pack_canonical_bytes():

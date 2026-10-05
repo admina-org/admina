@@ -139,6 +139,7 @@ from admina.core.exception_log import log_frames
 from admina.core.trace_context import TraceContext
 from admina.core.types import EventType, GovernanceAction
 from admina.domains.agent_security.egress import egress_policy_for, resolve_egress_mode
+from admina.domains.agent_security.ruleset import RULESET_FORMAT
 from admina.domains.agent_security.scan_policy import (
     SCAN_POLICY_HEADER,
     SCAN_ROLES,
@@ -1530,6 +1531,8 @@ def create_gateway_endpoints(
         roles = parse_scan_roles(cfg.ADMINA_GATEWAY_SCAN_ROLES)
         return {
             "ruleset_sha256": scan.ruleset_sha256,
+            "ruleset_format": RULESET_FORMAT,
+            "ruleset_document": scan.ruleset_document,
             "engine": scan.engine,
             "admina_core_version": scan.admina_core_version,
             "admina_version": __version__,

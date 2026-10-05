@@ -1271,19 +1271,25 @@ the loop.
 
 `ruleset_sha256()` (`admina.domains.agent_security.ruleset`) names the firewall
 rules a configuration applies: the SHA-256, as 64 lowercase hex characters, of
-the RFC 8785 (JCS) serialisation of the Admina version, the engine, the active
+the RFC 8785 (JCS) serialisation of `ruleset_format` (1, the version of this
+form), the Admina version, the engine, the active
 builtin patterns (Python engine) or the `admina-core` version (Rust engine),
 `pattern_packs`, `custom_patterns`, `disabled_categories`,
 `disabled_patterns`, `allowed_tags` and `heuristic_threshold` in
 thousandths. The exact form is in the module
-docstring. The SDK can compute it from `admina.yaml` without the proxy:
+docstring; `ruleset_document()` returns that serialisation as text, to
+compare two rulesets. The SDK can compute it from `admina.yaml` without the
+proxy:
 
 ```python
 from admina.core.config import load_config
-from admina.domains.agent_security.ruleset import ruleset_sha256
+from admina.domains.agent_security.ruleset import ruleset_document, ruleset_sha256
+from admina.sdk import active_ruleset_sha256
 
 ruleset_sha256(load_config("admina.yaml"))                 # Python engine
 ruleset_sha256(load_config("admina.yaml"), engine="rust")  # Rust engine
+ruleset_document(load_config("admina.yaml"))               # the hashed text
+active_ruleset_sha256()  # the engine get_firewall() selects, as the proxy does
 ```
 
 The proxy computes it at startup for the engine its firewall runs on. Every
@@ -1296,6 +1302,8 @@ code `internal_error`). `GET /v1/admina/ruleset` (API key required) returns:
 ```json
 {
   "ruleset_sha256": "<64 hex>",
+  "ruleset_format": 1,
+  "ruleset_document": "{\"admina_version\":\"<version>\",...}",
   "engine": "python",
   "admina_core_version": null,
   "admina_version": "<version>",
