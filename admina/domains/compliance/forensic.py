@@ -49,6 +49,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from datetime import UTC, datetime
 from functools import partial
@@ -93,6 +94,8 @@ logger = logging.getLogger("admina.forensic_blackbox")
 _CHAIN_STATE_KEY = STATE_KEY
 # Sidecar holding the HMAC-SHA256 signature of the chain-state payload.
 _CHAIN_STATE_SIG_KEY = STATE_SIG_KEY
+# Records kept in memory for recent_records(), newest last.
+RECENT_RECORDS_MAX = 1000
 
 #: What a store does when a record cannot be written (see the module docstring).
 FAIL_MODES = ("open", "closed")
@@ -162,6 +165,10 @@ class ForensicBlackBox(BaseForensicStore):
         self.chain_head: str = GENESIS
         self.record_count: int = 0
         self._write_lock = threading.Lock()
+        # The last records written by this process, for readers that need
+        # recent activity without reading the backend back (the dashboard
+        # feed when no analytics store is configured).
+        self._recent: deque[dict] = deque(maxlen=RECENT_RECORDS_MAX)
         # Key of the last record written (its directory is the lowest the
         # next record may go to).
         self._head_key: str | None = None
@@ -643,6 +650,7 @@ class ForensicBlackBox(BaseForensicStore):
 
             if not self._durable:
                 self.record_count, self.chain_head = seq, record_hash
+                self._recent.append(forensic_record)
                 return {
                     "sequence_number": seq,
                     "record_hash": record_hash,
@@ -661,12 +669,27 @@ class ForensicBlackBox(BaseForensicStore):
             self._last_write_ok = True
             logger.debug("Stored forensic record: %s", key)
             self._persist_chain_state()
+            self._recent.append(forensic_record)
             return {
                 "sequence_number": seq,
                 "record_hash": record_hash,
                 "previous_hash": previous,
                 "stored": True,
             }
+
+    def recent_records(self, limit: int = RECENT_RECORDS_MAX) -> list[dict]:
+        """Return up to *limit* records written by this process, newest first.
+
+        Only the last ``RECENT_RECORDS_MAX`` written records are kept, in
+        memory, with every backend; a record that could not be written is not
+        among them, and records written before the process started are not
+        read back. Use :meth:`verify_chain` for the persisted chain.
+        """
+        if limit <= 0:
+            return []
+        with self._write_lock:
+            records = list(self._recent)
+        return records[::-1][:limit]
 
     def _not_written(self, seq: int, exc: Exception) -> dict:
         """Handle a record that could not be written, as the fail mode says."""
