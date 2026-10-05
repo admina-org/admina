@@ -24,6 +24,7 @@ import logging
 import os
 import threading
 import time
+from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -35,6 +36,8 @@ logger = logging.getLogger("admina.forensic_blackbox")
 _CHAIN_STATE_KEY = "_chain_state.json"
 # Sidecar holding the HMAC-SHA256 signature of the chain-state payload.
 _CHAIN_STATE_SIG_KEY = "_chain_state.json.sig"
+# Records kept in memory for recent_records(), newest last.
+RECENT_RECORDS_MAX = 1000
 
 
 class ForensicBlackBox(BaseForensicStore):
@@ -81,6 +84,10 @@ class ForensicBlackBox(BaseForensicStore):
         self.chain_head: str = "GENESIS"
         self.record_count: int = 0
         self._write_lock = threading.Lock()
+        # The last records written by this process, for readers that need
+        # recent activity without reading the backend back (the dashboard
+        # feed when no analytics store is configured).
+        self._recent: deque[dict] = deque(maxlen=RECENT_RECORDS_MAX)
         self._state_signing_key = state_signing_key or os.environ.get("ADMINA_FORENSIC_STATE_KEY")
         if self.filesystem_dir is not None:
             self.filesystem_dir.mkdir(parents=True, exist_ok=True)
@@ -346,6 +353,7 @@ class ForensicBlackBox(BaseForensicStore):
             # Store the record and persist the updated chain state
             self._store_to_s3(forensic_record)
             self._persist_chain_state()
+            self._recent.append(forensic_record)
 
             return {
                 "sequence_number": self.record_count,
@@ -353,6 +361,19 @@ class ForensicBlackBox(BaseForensicStore):
                 "previous_hash": forensic_record["previous_hash"],
                 "stored": (self.boto3_client is not None or self.filesystem_dir is not None),
             }
+
+    def recent_records(self, limit: int = RECENT_RECORDS_MAX) -> list[dict]:
+        """Return up to *limit* records written by this process, newest first.
+
+        Only the last ``RECENT_RECORDS_MAX`` records are kept, in memory, with
+        every backend; records written before the process started are not
+        read back. Use :meth:`verify_chain` for the persisted chain.
+        """
+        if limit <= 0:
+            return []
+        with self._write_lock:
+            records = list(self._recent)
+        return records[::-1][:limit]
 
     def _store_to_s3(self, record: dict):
         """Persist a forensic record using the configured backend."""

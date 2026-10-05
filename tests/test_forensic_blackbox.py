@@ -577,3 +577,44 @@ class TestSignedChainStateS3:
         box = ForensicBlackBox(boto3_client=s3, bucket="b")
         box.record({"i": 1})
         assert _CHAIN_STATE_SIG_KEY not in s3._store
+
+
+class TestRecentRecords:
+    """recent_records(): the last records written by this process, in memory."""
+
+    def test_newest_first_with_chain_metadata(self, tmp_path):
+        box = ForensicBlackBox(filesystem_dir=str(tmp_path / "f"))
+        for i in range(3):
+            box.record({"event_id": f"e{i}"})
+        recent = box.recent_records()
+        assert [r["event"]["event_id"] for r in recent] == ["e2", "e1", "e0"]
+        assert [r["sequence_number"] for r in recent] == [3, 2, 1]
+        assert recent[0]["record_hash"] == box.chain_head
+
+    def test_limit(self):
+        box = ForensicBlackBox()
+        for i in range(5):
+            box.record({"event_id": f"e{i}"})
+        assert [r["event"]["event_id"] for r in box.recent_records(2)] == ["e4", "e3"]
+        assert box.recent_records(0) == []
+
+    def test_kept_with_the_in_memory_ledger(self):
+        box = ForensicBlackBox()
+        box.record({"event_id": "only"})
+        assert len(box.recent_records()) == 1
+
+    def test_bounded(self, monkeypatch):
+        from collections import deque
+
+        box = ForensicBlackBox()
+        monkeypatch.setattr(box, "_recent", deque(maxlen=3))
+        for i in range(5):
+            box.record({"event_id": f"e{i}"})
+        assert [r["event"]["event_id"] for r in box.recent_records()] == ["e4", "e3", "e2"]
+
+    def test_not_read_back_after_a_restart(self, tmp_path):
+        base = tmp_path / "f"
+        ForensicBlackBox(filesystem_dir=str(base)).record({"event_id": "before"})
+        restarted = ForensicBlackBox(filesystem_dir=str(base))
+        assert restarted.record_count == 1
+        assert restarted.recent_records() == []
