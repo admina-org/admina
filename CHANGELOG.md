@@ -762,6 +762,13 @@ the engines in use on `/health`, an OISG score from external evidence, and
   texts longer than 100 000 characters (`firewall.LONG_TEXT_CHARS`; it
   counted texts longer than 2000).
 
+### Notes
+
+- As of 0.12.1, Admina is developed with AI assistance (Claude). Commits
+  written with it carry a `Co-Authored-By` trailer that names the
+  assistant, and every change is reviewed and tested by the maintainers.
+  See "AI-Assisted Contributions" in `CONTRIBUTING.md`.
+
 ## [0.13.0rc1] — 2026-09-27
 
 Release candidate of 0.13.0: an OpenAI-compatible gateway for embedded
