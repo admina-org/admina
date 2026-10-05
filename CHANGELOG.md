@@ -56,6 +56,7 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `matched_terms` and `matched_areas`. The English keyword lists and their
   results are unchanged; a non-English description can now get a higher
   class than before.
+- An upgrade guide from 0.12 to 0.13: `docs/guides/upgrade-0.13.md`.
 - `admina forensic acknowledge-rebuild` and
   `ForensicBlackBox.acknowledge_rebuild()`: verify the whole chain with the
   key and clear the `rebuilt` status of a chain whose state was rebuilt.
