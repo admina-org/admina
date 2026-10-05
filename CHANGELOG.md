@@ -36,6 +36,18 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   a truncated hash of the prompt, never the prompt. A failing analytics
   store is logged and never fails the request.
 
+- **The dashboard feed, trend and suggestions work without ClickHouse.**
+  `/api/dashboard/feed`, `/api/dashboard/trend` and
+  `/api/dashboard/suggestions` used to answer empty, with
+  `"error": "ClickHouse not available"`, when no ClickHouse was configured.
+  They now read the recent records of the forensic black box: one event
+  per governed request (`/mcp` and the gateway), in the same columns as a
+  ClickHouse row, and the answer carries `"source": "forensic_recent"`.
+  `ForensicBlackBox.recent_records()` keeps the last 1,000 records written
+  by the running proxy, in memory, with every backend; records written
+  before a restart are not read back. The WebSocket live feed keeps
+  reading the event bus.
+
 ## [0.12.1] — 2026-10-05
 
 Patch release: hardened dashboard session handling. Upgrading is
