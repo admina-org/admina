@@ -207,6 +207,22 @@ docs(contributing): add architecture overview
 
 Scopes: `sdk`, `proxy`, `domains`, `plugins`, `dashboard`, `cli`, `docker`, `config`, `integrations`, `docs`, `ci`, `core`.
 
+### AI-Assisted Contributions
+
+Since 0.12.1 the maintainers develop Admina with AI assistance (Claude).
+A commit written with an AI assistant names it in a trailer:
+
+```
+Co-Authored-By: Claude <noreply@anthropic.com>
+```
+
+Contributions written with an AI assistant are accepted under the same
+rules as any other. The author of the pull request is responsible for the
+change: they have read and understood it, and the tests and linters above
+pass. Add a `Co-Authored-By` trailer that names the assistant when it
+wrote part of the change. Every change is reviewed and tested by the
+maintainers before it is merged.
+
 ### Areas Where Help Is Welcome
 
 See [ROADMAP.md](ROADMAP.md) for the planned direction from 0.9.x to 1.0
