@@ -42,6 +42,12 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   before a restart are not read back. The WebSocket live feed keeps
   reading the event bus.
 
+- The dashboard's EU AI Act countdown shows the deadline it counts down
+  to. The date next to the countdown was a fixed "August 2, 2026", while
+  the number of days came from the `enforcement_deadline` of
+  `/api/dashboard/compliance` (2 December 2027 for Annex III); both now
+  read that field.
+
 - **The dashboard's EU AI Act help shows a command that works.** The
   example `curl` for `POST /api/compliance/gap-analysis` targeted
   `http://localhost:8080`; it now targets the origin that served the page,

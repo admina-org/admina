@@ -515,7 +515,7 @@
           </div>
           <div>
             <div class="label">days until enforcement</div>
-            <div class="sublabel">Deadline: August 2, 2026</div>
+            <div class="sublabel" x-text="'Deadline: ' + enforcementDeadlineLabel"></div>
           </div>
         </div>
 
@@ -930,16 +930,25 @@ function dashboard() {
       return !!(this.complianceData && this.complianceData.has_assessment);
     },
 
-    get daysUntilDeadline() {
-      // Pick the deadline from the live /api/dashboard/compliance payload
-      // when available, otherwise fall back to the Annex III high-risk date
-      // as agreed in the Omnibus VII deal (Council/Parliament, 7 May 2026).
-      const apiDeadline =
-        (this.complianceData && this.complianceData.enforcement_deadline) ||
+    get enforcementDeadline() {
+      // The deadline of the live /api/dashboard/compliance payload when
+      // available, otherwise the Annex III high-risk date as agreed in the
+      // Omnibus VII deal (Council/Parliament, 7 May 2026).
+      return (this.complianceData && this.complianceData.enforcement_deadline) ||
         (this.complianceData && this.complianceData.latest &&
          this.complianceData.latest.enforcement_deadline) ||
         '2027-12-02';
-      const deadline = new Date(apiDeadline + 'T00:00:00Z');
+    },
+
+    get enforcementDeadlineLabel() {
+      const deadline = new Date(this.enforcementDeadline + 'T00:00:00Z');
+      return deadline.toLocaleDateString('en-US', {
+        year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC',
+      });
+    },
+
+    get daysUntilDeadline() {
+      const deadline = new Date(this.enforcementDeadline + 'T00:00:00Z');
       const now = new Date();
       return Math.max(0, Math.ceil((deadline - now) / (1000 * 60 * 60 * 24)));
     },
