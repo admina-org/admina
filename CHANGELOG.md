@@ -13,6 +13,8 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.12.1] — 2026-10-05
+
 Patch release: hardened dashboard session handling. Upgrading is
 recommended.
 
