@@ -54,6 +54,13 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   and the help states that the route accepts `POST` only (a `GET`, such as
   opening the address in the browser, answers `405 Method Not Allowed`).
 
+### Notes
+
+- As of 0.12.1, Admina is developed with AI assistance (Claude). Commits
+  written with it carry a `Co-Authored-By` trailer that names the
+  assistant, and every change is reviewed and tested by the maintainers.
+  See "AI-Assisted Contributions" in `CONTRIBUTING.md`.
+
 ## [0.12.1] — 2026-10-05
 
 Patch release: hardened dashboard session handling. Upgrading is
