@@ -67,3 +67,30 @@ def test_presidio_mask_format_parity_with_spacy_regex():
 def test_presidio_empty_text_returns_full_shape():
     out = _engine_or_skip().redact("")
     assert out == {"redacted_text": "", "entities": [], "categories": [], "count": 0}
+
+
+def test_only_mapped_entity_types_are_requested(monkeypatch):
+    from admina.engines import presidio
+
+    engine = _engine_or_skip()
+    requested = []
+
+    def analyze(text, language, entities=None):
+        requested.append(entities)
+        return []
+
+    monkeypatch.setattr(engine._analyzer, "analyze", analyze)
+    engine.redact("testo")
+    assert requested == [list(presidio._PRESIDIO_TO_ADMINA)] * len(engine.languages)
+
+
+def test_text_with_many_dots_is_analyzed_quickly():
+    import time
+
+    engine = _engine_or_skip()
+    text = "a." * 4_000
+    start = time.perf_counter()
+    engine.redact(text)
+    # Every recognizer of Presidio took about 10 s on this text; the mapped
+    # ones take a fraction of a second.
+    assert time.perf_counter() - start < 2.0

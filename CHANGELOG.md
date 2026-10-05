@@ -13,6 +13,14 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+### Security
+
+- The Presidio PII engine (`ADMINA_PII_ENGINE=presidio`) asks the analyzer
+  only for the entity types it maps to Admina categories. It ran every
+  Presidio recognizer and discarded the other results; the URL recognizer
+  took about 1.2 ms per character on text with many dots (80 seconds on
+  64,000 characters). Detected spans are unchanged.
+
 ### Fixed
 
 - **The OpenAI-compatible gateway now publishes governance decisions on

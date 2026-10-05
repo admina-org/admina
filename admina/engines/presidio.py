@@ -57,6 +57,9 @@ _PRESIDIO_TO_ADMINA: dict[str, str] = {
 }
 
 # Languages Admina configures for Presidio, each mapped to its spaCy model.
+# The Presidio entity types requested from the analyzer.
+_ENTITIES: list[str] = list(_PRESIDIO_TO_ADMINA)
+
 _LANG_MODELS: dict[str, str] = {
     "en": "en_core_web_sm",
     "it": "it_core_news_sm",
@@ -111,9 +114,11 @@ class PresidioPIIEngine:
 
         # Union of per-language analyses: a recognizer registered for only one
         # language is missed by the other pass, so both are run and merged.
+        # Only the mapped entity types are requested: the other recognizers
+        # (URL among them, slow on text with many dots) would be discarded.
         raw = []
         for lang in self.languages:
-            raw.extend(self._analyzer.analyze(text=text, language=lang))
+            raw.extend(self._analyzer.analyze(text=text, language=lang, entities=_ENTITIES))
 
         spans: list[tuple[int, int, str, str]] = []
         for r in raw:
