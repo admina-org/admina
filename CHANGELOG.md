@@ -23,6 +23,12 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ### Fixed
 
+- The `role_hijacking` pattern of the Rust firewall (`admina-core`) matches
+  whole words only. It matched "act as" inside longer words, so English
+  text such as "impact assessment" or "the AI Act asks" was reported as a
+  role-hijacking attempt. Attacks written with whole words ("act as",
+  "you are now", "pretend you are", "from now on you") are still matched.
+
 - **The OpenAI-compatible gateway now publishes governance decisions on
   the event bus.** Every `/v1/chat/completions` request emits one
   `GOVERNANCE_DECISION` event (`domain="gateway"`) for allow, block and
