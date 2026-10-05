@@ -52,6 +52,7 @@ __all__ = [
     "ForwardSettings",
     "ForwardedValueError",
     "forward_field_names",
+    "invalid_value_message",
 ]
 
 #: Fields forwarded whatever ``ADMINA_GATEWAY_FORWARD_FIELDS`` lists.
@@ -62,12 +63,17 @@ _TOKEN_FIELDS = ("max_tokens", "max_completion_tokens")
 _FIELD_NAME = re.compile(r"[A-Za-z0-9_-]+")
 
 
+def invalid_value_message(field: str) -> str:
+    """The message of :class:`ForwardedValueError` for *field*."""
+    return f"'{field}' must be an integer of at least 1."
+
+
 class ForwardedValueError(ValueError):
     """A field a limit applies to holds a value other than an integer of at
     least 1; :attr:`field` names it."""
 
     def __init__(self, field: str) -> None:
-        super().__init__(f"'{field}' must be an integer of at least 1.")
+        super().__init__(invalid_value_message(field))
         self.field = field
 
 

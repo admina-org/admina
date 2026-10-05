@@ -157,7 +157,11 @@ from admina.domains.governance import (
     unfinished_pipeline_result,
 )
 from admina.proxy.decisions import Decision
-from admina.proxy.gateway_body import ForwardedValueError, ForwardSettings
+from admina.proxy.gateway_body import (
+    ForwardedValueError,
+    ForwardSettings,
+    invalid_value_message,
+)
 from admina.proxy.gateway_correlation import (
     context_of,
     forward_header_names,
@@ -362,7 +366,7 @@ def _model_not_allowed() -> JSONResponse:
 def _invalid_value(exc: ForwardedValueError) -> JSONResponse:
     """400 in the OpenAI error format for a value a forwarding limit refuses."""
     error = {
-        "message": str(exc),
+        "message": invalid_value_message(exc.field),
         "type": "invalid_request_error",
         "param": exc.field,
         "code": "invalid_value",
