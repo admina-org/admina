@@ -530,3 +530,21 @@ def test_committed_baseline_declares_presidio_pii_entry():
     assert "type_recall" in entry
     assert "fp" in entry and "fp_samples" in entry
     assert entry["mode"].startswith("presidio:")
+
+
+def test_gate_fails_when_the_false_positive_set_changed_size():
+    # fp counts are comparable only on the same benign samples: a corpus
+    # that grew or shrank needs a new baseline, not a comparison.
+    committed = {"injection": {"python": _binary(0.57, 1, fp_samples=27)}}
+    current = {"injection": {"python": _binary(0.57, 1, fp_samples=30)}}
+    res = gate.compare(committed, current)
+    assert res["failures"] == [
+        "injection/python fp_samples 30 != baseline 27 "
+        "(the benign samples changed: regenerate the baseline)"
+    ]
+
+
+def test_gate_same_false_positive_set_size_compares_normally():
+    committed = {"injection": {"python": _binary(0.57, 1, fp_samples=27)}}
+    current = {"injection": {"python": _binary(0.57, 1, fp_samples=27)}}
+    assert gate.compare(committed, current)["failures"] == []

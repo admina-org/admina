@@ -63,6 +63,11 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   nested data by the Python engine, and answered `500` with the Rust
   engine.
 
+- The red-team gate (`admina redteam --gate`, `admina.redteam.gate.compare`)
+  fails when the number of benign samples of a detector (`fp_samples`)
+  differs from the baseline, with a message that asks for a new baseline:
+  false-positive counts are compared only over the same benign samples.
+
 ### Deprecated
 
 - **The API key in the query string (`?api_key=`).** It is still accepted;

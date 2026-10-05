@@ -251,6 +251,25 @@ def test_new_false_positive_fails_the_gate(tmp_path, external):
     _write(
         external,
         "extra-attacks",
+        # The benign sample now holds attack text: same number of benign
+        # samples, one more of them flagged.
+        [_row(1, ATTACK, "attack"), _row(2, MARKER, "attack"), _row(3, ATTACK, "benign")],
+    )
+    _seal(external)
+    card = redteam.run_suite(
+        engines=["python"], corpora=["extra-attacks"], corpora_dir=external, baseline=baseline
+    )
+    assert card["gate"]["failures"] == ["extra-attacks/python fp 1 > baseline 0"]
+
+
+def test_a_grown_benign_set_asks_for_a_new_baseline(tmp_path, external):
+    baseline = _baseline_file(
+        tmp_path,
+        redteam.run_suite(engines=["python"], corpora=["extra-attacks"], corpora_dir=external),
+    )
+    _write(
+        external,
+        "extra-attacks",
         [
             _row(1, ATTACK, "attack"),
             _row(2, MARKER, "attack"),
@@ -262,7 +281,10 @@ def test_new_false_positive_fails_the_gate(tmp_path, external):
     card = redteam.run_suite(
         engines=["python"], corpora=["extra-attacks"], corpora_dir=external, baseline=baseline
     )
-    assert card["gate"]["failures"] == ["extra-attacks/python fp 1 > baseline 0"]
+    assert card["gate"]["failures"] == [
+        "extra-attacks/python fp_samples 2 != baseline 1 "
+        "(the benign samples changed: regenerate the baseline)"
+    ]
 
 
 def test_packaged_baseline_does_not_declare_external_corpora(external):

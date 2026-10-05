@@ -317,6 +317,11 @@ Markdown scorecard and writes the JSON one to `--out` (`--format
 md|json|both`; `--corpus NAME` runs one corpus). `scripts/redteam.py` runs
 the same command.
 
+The packaged corpora are small (tens of samples per detector, a few per
+language) and their labels are assigned by the maintainers, not by a third
+party: read the scorecard as indicative, and measure on corpora of your own
+traffic with `--corpora-dir`.
+
 - `--corpora-dir DIR` adds external corpora, run after the packaged ones:
   each `<name>.jsonl` has the rows of the packaged corpus of its detector
   (`{"id", "text", "label": "attack" | "benign", "lang", "tag"}` for the
@@ -334,8 +339,10 @@ the same command.
 - `--write-baseline [FILE]` writes the baseline of the run (default:
   `baseline.json` next to `--out`). `--baseline FILE` compares the run with
   a baseline and prints the result on standard error; `--gate` exits with
-  status 1 when a recall drops or a false positive appears, or when a corpus
-  ran only on engines the baseline does not declare (default baseline: the
+  status 1 when a recall drops or a false positive appears, when the number
+  of benign samples of a corpus differs from the baseline (`fp_samples`:
+  regenerate the baseline after changing a corpus), or when a corpus ran
+  only on engines the baseline does not declare (default baseline: the
   packaged one, for the packaged corpora with the default settings).
 - Exit status 2: an option, a corpus, the configuration or the baseline is
   not valid (a hash that does not match, a row without `tag`, an unknown
