@@ -13,6 +13,21 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The dashboard feed, trend and suggestions work without ClickHouse.**
+  `/api/dashboard/feed`, `/api/dashboard/trend` and
+  `/api/dashboard/suggestions` used to answer empty, with
+  `"error": "ClickHouse not available"`, when no ClickHouse was configured,
+  as in an embedded deployment. They now read the recent records of the
+  forensic black box: one event per governed request (`/mcp`, the gateway
+  and `/api/v1/validate`), in the same columns as a ClickHouse row, and the
+  answer carries `"source": "forensic_recent"`.
+  `ForensicBlackBox.recent_records()` keeps the last 1,000 records written
+  by the running proxy, in memory, with every backend; records written
+  before a restart are not read back. The WebSocket live feed keeps
+  reading the event bus.
+
 ## [0.13.0] — 2026-09-29
 
 Everything in 0.13.0rc1, and: the governance outcome on the gateway's

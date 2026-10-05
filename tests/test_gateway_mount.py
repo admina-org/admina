@@ -115,3 +115,25 @@ def test_gateway_allows_with_bearer_key(monkeypatch):
     resp = _post(app, headers={"Authorization": "Bearer secret-key-1234567890"})
     assert resp.status_code == 200
     assert resp.json()["choices"][0]["message"]["content"] == "hi"
+
+
+def test_gateway_request_reaches_the_dashboard_feed_without_clickhouse(monkeypatch):
+    from admina.domains.compliance.forensic import ForensicBlackBox
+
+    app = _inject(monkeypatch, api_key="secret-key-1234567890", allow_unauth=False)
+    app.state.proxy.forensic_box = ForensicBlackBox()
+    headers = {"Authorization": "Bearer secret-key-1234567890"}
+    body = {"model": "llama3", "messages": [{"role": "user", "content": "the codeword is KIWI"}]}
+
+    async def go():
+        transport = httpx.ASGITransport(app=app, raise_app_exceptions=True)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+            assert (await c.post("/v1/chat/completions", json=body, headers=headers)).is_success
+            return await c.get("/api/dashboard/feed", headers=headers)
+
+    data = asyncio.run(go()).json()
+    assert data["source"] == "forensic_recent"
+    assert [e["event_type"] for e in data["events"]] == ["gateway_request"]
+    assert data["events"][0]["method"] == "chat.completions"
+    assert data["events"][0]["action"] == "allow"
+    assert "KIWI" not in json.dumps(data)
