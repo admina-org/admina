@@ -99,10 +99,12 @@ class TestExtractTextFields:
         assert result == ["a", "b"]
 
     def test_depth_limit(self):
-        # DoS cap: content nested beyond _MAX_SCAN_DEPTH is not returned.
-        # Build 10 levels deep; the leaf string "hello" at depth 10 must be dropped.
+        # DoS cap: content nested beyond SCAN_DEPTH is not returned (the
+        # pipeline refuses such a request, see test_scan_depth.py).
+        from admina.domains.governance import SCAN_DEPTH
+
         deep = "hello"
-        for _ in range(10):
+        for _ in range(SCAN_DEPTH + 4):
             deep = {"nested": deep}
         result = _extract_text_fields(deep)
         assert "hello" not in result

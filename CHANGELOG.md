@@ -15,11 +15,27 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ### Security
 
+- **`/mcp` and `/api/v1/validate` refuse text they cannot scan.** Their
+  pipeline scanned and redacted strings down to 6 levels of nesting and let
+  deeper text through unscanned and unredacted: an injection nested in five
+  objects inside a tool call's `arguments` was allowed. They now scan and
+  redact 32 levels deep, as the gateway does, and with the firewall or PII
+  redaction on, a request holding text deeper than that is blocked in
+  `enforce` mode (a would-be block in `observe` and `dry-run`), with
+  `checks.scan_depth = {"action": "BLOCK", "reason": "depth_limit_exceeded"}`.
+  `admina.domains.governance.SCAN_DEPTH` is the limit.
 - The Presidio PII engine (`ADMINA_PII_ENGINE=presidio`) asks the analyzer
   only for the entity types it maps to Admina categories. It ran every
   Presidio recognizer and discarded the other results; the URL recognizer
   took about 1.2 ms per character on text with many dots (80 seconds on
   64,000 characters). Detected spans are unchanged.
+
+### Changed
+
+- `POST /api/v1/validate` answers `400` (`'content' must be a string`)
+  when `content` is not a string. An object or an array was scanned as
+  nested data by the Python engine, and answered `500` with the Rust
+  engine.
 
 ### Fixed
 

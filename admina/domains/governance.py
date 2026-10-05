@@ -39,8 +39,12 @@ from admina.core.types import GovernanceResponse as GovResponse
 
 logger = logging.getLogger("admina.proxy")
 
-# Recursion cap: DoS protection against deeply nested payloads.
-_MAX_SCAN_DEPTH = 6
+#: Deepest level of a request whose strings the pipeline scans and redacts
+#: (the body is level 0), as :data:`~admina.domains.agent_security.
+#: scan_policy.REQUEST_SCAN_DEPTH` for the gateway. Text nested deeper is
+#: neither scanned nor redacted, and the pipeline refuses the request.
+SCAN_DEPTH = 32
+_MAX_SCAN_DEPTH = SCAN_DEPTH
 
 
 def normalize_guard_fail_mode(value: str | None) -> str:
@@ -119,7 +123,10 @@ async def run_pipeline(
     :func:`~admina.domains.agent_security.egress.resolve_egress_mode`.
 
     ``scan_texts`` are the texts the firewall scans; ``None`` (default)
-    scans every string of ``body``, keys included. ``scan_truncated`` says
+    scans every string of ``body``, keys included, down to
+    :data:`SCAN_DEPTH`: with the firewall or PII redaction on, text nested
+    deeper blocks the request (``checks["scan_depth"]``) in ``enforce``
+    mode. ``scan_truncated`` says
     that the caller left text out of ``scan_texts`` because it lies deeper
     than the caller's depth limit: with the firewall on, the request is then
     blocked (risk HIGH, ``checks["scan_depth"]``), in ``enforce`` mode.
@@ -144,9 +151,13 @@ async def run_pipeline(
     else:
         loop_result = {"is_loop": False, "similarity": None}
 
+    # Text nested past SCAN_DEPTH is neither scanned nor redacted below.
+    deep_text = scan_texts is None and (injection_enabled or pii_enabled) and _has_deep_text(body)
+
     # 2. Anti-Injection Firewall
     if result.action != GovernanceAction.CIRCUIT_BREAK and injection_enabled:
         texts_to_scan = _extract_text_fields(body) if scan_texts is None else scan_texts
+        scan_truncated = scan_truncated or deep_text
         for text in texts_to_scan:
             fw_result = firewall.check(text)
             result.checks["firewall"] = fw_result
@@ -160,6 +171,12 @@ async def run_pipeline(
             if result.action == GovernanceAction.ALLOW:
                 result.action = GovernanceAction.BLOCK
                 result.risk_level = RiskLevel.HIGH
+
+    if deep_text and not injection_enabled and result.action == GovernanceAction.ALLOW:
+        # PII redaction alone would leave the deep text as it is: fail closed.
+        result.checks["scan_depth"] = {"action": "BLOCK", "reason": "depth_limit_exceeded"}
+        result.action = GovernanceAction.BLOCK
+        result.risk_level = RiskLevel.HIGH
 
     # 3. PII Redaction
     pii_count = 0
@@ -312,6 +329,21 @@ def _extract_text_fields(obj: Any, depth: int = 0) -> list[str]:
         for item in obj:
             texts.extend(_extract_text_fields(item, depth + 1))
     return texts
+
+
+def _has_deep_text(obj: Any, depth: int = 0) -> bool:
+    """Whether *obj* holds text deeper than :data:`SCAN_DEPTH`: a string, or
+    a non-empty object or array, past that level. Numbers, booleans, null
+    and empty values hold none."""
+    if depth > SCAN_DEPTH:
+        return isinstance(obj, (str, dict, list)) and bool(obj)
+    if isinstance(obj, dict):
+        return any(
+            _has_deep_text(k, depth + 1) or _has_deep_text(v, depth + 1) for k, v in obj.items()
+        )
+    if isinstance(obj, list):
+        return any(_has_deep_text(item, depth + 1) for item in obj)
+    return False
 
 
 def _pii_accumulator() -> dict[str, Any]:

@@ -1327,6 +1327,12 @@ has `checks.scan_depth = {"action": "BLOCK", "reason":
 parser reads are scanned as they are, and the request is blocked the same
 way.
 
+`/mcp` and `/api/v1/validate` scan and redact to the same depth. With the
+firewall or PII redaction on, a request holding a string, or a non-empty
+object or array, past level 32 is blocked the same way, since that text
+would be neither scanned nor redacted. `content` of `/api/v1/validate` must
+be a string.
+
 #### Scan scope
 
 The firewall of the gateway scans the messages whose role is in

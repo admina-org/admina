@@ -206,6 +206,8 @@ def create_integration_endpoints(
         content = body.get("content", "")
         if not content:
             raise HTTPException(status_code=400, detail="'content' field is required")
+        if not isinstance(content, str):
+            raise HTTPException(status_code=400, detail="'content' must be a string")
         _require_forensic_records(get_forensic_box())
 
         session_id = body.get("session_id", "rest-" + uuid.uuid4().hex[:8])
