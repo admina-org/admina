@@ -30,7 +30,8 @@ At startup a durable store checks its chain state (``chain_status``):
 ``ok`` when the saved state verifies and matches the stored records,
 ``rebuilt`` when a missing or unverifiable state was rebuilt from records
 that all verify with the key (logged, and recorded as a
-``chain_state_rebuilt`` event), ``invalid`` otherwise — then no record is
+``chain_state_rebuilt`` event; the status stays ``rebuilt`` across restarts
+until :meth:`ForensicBlackBox.acknowledge_rebuild`), ``invalid`` otherwise — then no record is
 written until the forensic directory is restored or moved aside.
 :func:`verify_directory` and :func:`verify_bucket` verify a stored chain
 without writing to it.
@@ -187,6 +188,9 @@ class ForensicBlackBox(BaseForensicStore):
         # for an invalid chain, chain_error holds reason and sequence_number.
         self.chain_status: str | None = None
         self.chain_error: dict[str, Any] | None = None
+        # The rebuild not yet acknowledged ({"cause", "record_count", "at"}),
+        # kept in the chain state so that "rebuilt" survives a restart.
+        self._rebuilt: dict[str, Any] | None = None
         if self.filesystem_dir is not None:
             ensure_directory(self.filesystem_dir)
         self._ensure_bucket()
@@ -387,6 +391,8 @@ class ForensicBlackBox(BaseForensicStore):
         self.record_count = state.get("record_count", 0)
         head_key = state.get("head_key")
         self._head_key = head_key if isinstance(head_key, str) and record_seq(head_key) else None
+        rebuilt = state.get("rebuilt")
+        self._rebuilt = rebuilt if isinstance(rebuilt, dict) else None
         if self._signing_key is not None:
             signed_from = state.get("signed_from")
             # A state written before records were signed: the records from
@@ -435,6 +441,15 @@ class ForensicBlackBox(BaseForensicStore):
             self.chain_head[:16],
         )
         self._check_tail()
+        if self.chain_status == CHAIN_OK and self._rebuilt is not None:
+            self.chain_status = CHAIN_REBUILT
+            logger.warning(
+                "Forensic chain state was rebuilt (%s, at record %s) and the rebuild has not "
+                "been acknowledged: run `admina forensic acknowledge-rebuild` once the chain "
+                "is checked",
+                self._rebuilt.get("cause"),
+                self._rebuilt.get("record_count"),
+            )
 
     def _alarm(self, reason: str, sequence_number: int | None, detail: str) -> None:
         """Mark the chain invalid: nothing is recorded until an operator acts."""
@@ -473,6 +488,11 @@ class ForensicBlackBox(BaseForensicStore):
         self._head_key = last_key[0]
         self._signed_from = 1
         self.chain_status = CHAIN_REBUILT
+        self._rebuilt = {
+            "cause": cause,
+            "record_count": self.record_count,
+            "at": datetime.now(UTC).isoformat(),
+        }
         logger.critical(
             "Forensic chain state rebuilt from verified records (%s): %d records, head %s...",
             cause,
@@ -552,16 +572,17 @@ class ForensicBlackBox(BaseForensicStore):
         """Persist chain_head and record_count (and the HMAC sidecar when a
         signing key is set). A failure is logged, and raised as
         :class:`ForensicWriteError` in closed mode."""
-        payload = json.dumps(
-            {
-                "chain_head": self.chain_head,
-                "record_count": self.record_count,
-                "updated_at": datetime.now(UTC).isoformat(),
-                "format": FORMAT,
-                "head_key": self._head_key,
-                "signed_from": self._signed_from,
-            }
-        ).encode("utf-8")
+        state: dict[str, Any] = {
+            "chain_head": self.chain_head,
+            "record_count": self.record_count,
+            "updated_at": datetime.now(UTC).isoformat(),
+            "format": FORMAT,
+            "head_key": self._head_key,
+            "signed_from": self._signed_from,
+        }
+        if self._rebuilt is not None:
+            state["rebuilt"] = self._rebuilt
+        payload = json.dumps(state).encode("utf-8")
         sig = self._sign_state_payload(payload)
         try:
             # The chain state is rewritten after every record, so it is
@@ -840,6 +861,39 @@ class ForensicBlackBox(BaseForensicStore):
                 checkpoint=None,
             )
         return {**result, "last_hash": head}
+
+    def acknowledge_rebuild(self) -> dict[str, Any]:
+        """Clear the ``rebuilt`` status of a chain whose state was rebuilt,
+        once the whole stored chain verifies.
+
+        Returns ``{"acknowledged": True, "records": <checked>, "last_hash":
+        ...}``, or ``{"acknowledged": False, "reason": ...}``: ``not_rebuilt``
+        when the chain status is not ``rebuilt``, else the reason the chain
+        does not verify (see :meth:`verify`) and the status stays.
+        """
+        if self.chain_status != CHAIN_REBUILT:
+            return {"acknowledged": False, "reason": "not_rebuilt"}
+        result = self.verify()
+        if not result["valid"]:
+            return {
+                "acknowledged": False,
+                "reason": result["reason"],
+                "sequence_number": result["sequence_number"],
+            }
+        with self._write_lock:
+            self._rebuilt = None
+            self.chain_status = CHAIN_OK
+            self._persist_chain_state()
+        logger.warning(
+            "Forensic chain rebuild acknowledged: %d records verified, head %s...",
+            result["records"],
+            result["last_hash"][:16],
+        )
+        return {
+            "acknowledged": True,
+            "records": result["records"],
+            "last_hash": result["last_hash"],
+        }
 
     # ── BaseForensicStore interface ─────────────────────────────
     # ForensicBlackBox is the proxy's production forensic store. It satisfies

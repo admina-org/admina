@@ -36,7 +36,8 @@ the first record, else the ``record_hash`` of the record before) and
 reports the first failure as a reason code and the sequence number of the
 record concerned:
 
-- ``hash_mismatch``: the record's bytes are not a JSON object, or its
+- ``hash_mismatch``: the record's bytes are not a JSON object, an object
+  in them repeats a key (parsers disagree on which value is meant), or its
   ``record_hash`` is not the hash of its content;
 - ``link_broken``: its ``previous_hash`` is not the ``record_hash`` of the
   record before it (``GENESIS`` for record 1, the checkpoint's hash for the
@@ -242,10 +243,18 @@ def _load(load: Callable[[], bytes]) -> dict[str, Any] | None:
     Raises FileNotFoundError when it is gone."""
     data = load()
     try:
-        record = json.loads(data)
+        record = json.loads(data, object_pairs_hook=_unique_keys)
     except (ValueError, UnicodeDecodeError):
         return None
     return record if isinstance(record, dict) else None
+
+
+def _unique_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """A JSON object, or ValueError when it repeats a key."""
+    record = dict(pairs)
+    if len(record) != len(pairs):
+        raise ValueError("duplicate key in a JSON object")
+    return record
 
 
 def _hash_ok(record: dict[str, Any]) -> bool:

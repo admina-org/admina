@@ -14,8 +14,8 @@
 
 """``admina forensic``: export and verify the chain of a filesystem store.
 
-Both commands only read the store directory (``--dir``, default
-``$FORENSIC_BASE_DIR``); they can run while the proxy writes to it.
+``export`` and ``verify`` only read the store directory (``--dir``,
+default ``$FORENSIC_BASE_DIR``); they can run while the proxy writes to it.
 
 - ``admina forensic export --from-seq N --format jsonl [--out FILE|-]``: the
   records from sequence number N on, in sequence order, one per line: the
@@ -26,6 +26,11 @@ Both commands only read the store directory (``--dir``, default
   :mod:`admina.domains.compliance.forensic_integrity`); exit status 0 when
   the chain is valid, 1 when it is not. With ``ADMINA_FORENSIC_STATE_KEY``
   (or ``_FILE``) set, the record signatures are checked.
+- ``admina forensic acknowledge-rebuild``: after the chain state was rebuilt
+  from the records, verify the whole chain with the key and, when it is
+  valid, clear the ``rebuilt`` status kept in the chain state. It writes the
+  chain state: run it while the proxy is stopped. Exit status 0 when
+  acknowledged, 1 otherwise.
 """
 
 from __future__ import annotations
@@ -42,7 +47,7 @@ from typing import BinaryIO
 import click
 
 from admina.core.secretfile import secret_from_env
-from admina.domains.compliance.forensic import verify_directory
+from admina.domains.compliance.forensic import ForensicBlackBox, verify_directory
 from admina.domains.compliance.forensic_files import iter_record_files
 
 __all__ = ["forensic"]
@@ -168,3 +173,24 @@ def verify(directory: str | None, from_seq: int | None, checkpoint: str | None) 
     )
     click.echo(json.dumps(result, indent=2))
     sys.exit(0 if result["valid"] else 1)
+
+
+@forensic.command("acknowledge-rebuild")
+@click.option("--dir", "directory", default=None, help=_DIR_HELP)
+def acknowledge_rebuild(directory: str | None) -> None:
+    """Clear the "rebuilt" status of a chain once the whole chain verifies.
+
+    Needs ADMINA_FORENSIC_STATE_KEY (or _FILE). Writes the chain state: run
+    it while the proxy is stopped. Exit status 0 when acknowledged, 1 when
+    not (the result, as JSON, says why).
+    """
+    base = _store_dir(directory)
+    key = secret_from_env("ADMINA_FORENSIC_STATE_KEY")
+    if not key:
+        raise click.UsageError(
+            "set ADMINA_FORENSIC_STATE_KEY (or _FILE): the chain is verified with the key"
+        )
+    box = ForensicBlackBox(filesystem_dir=str(base), state_signing_key=key)
+    result = box.acknowledge_rebuild()
+    click.echo(json.dumps(result, indent=2))
+    sys.exit(0 if result["acknowledged"] else 1)

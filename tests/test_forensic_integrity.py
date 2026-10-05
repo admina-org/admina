@@ -241,7 +241,11 @@ def test_a_lost_state_with_intact_signed_records_is_rebuilt(tmp_path, key, caplo
     assert box.record({"event_id": "next"})["sequence_number"] == 8
     assert _verify(box)["valid"] is True
     assert verify_directory(base, state_key=key)["valid"] is True
-    # The next start finds a valid signed state: no second rebuild.
+    # The next start finds a valid signed state: no second rebuild, and the
+    # status stays "rebuilt" until the rebuild is acknowledged.
+    again = _store(base, key)
+    assert (again.chain_status, again.record_count) == ("rebuilt", 8)
+    assert again.acknowledge_rebuild()["acknowledged"] is True
     assert _store(base, key).chain_status == "ok"
 
 

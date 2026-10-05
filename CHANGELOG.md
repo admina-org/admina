@@ -15,6 +15,16 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ### Security
 
+- **A rebuilt forensic chain state stays visible.** After the chain state
+  was rebuilt from the records, `forensic_chain` was `rebuilt` until the
+  next restart, then `ok`: removing the last records together with the
+  chain state left no lasting trace. The chain state now keeps the rebuild
+  (`rebuilt`: cause, record count, time) and `/health` reports `rebuilt`
+  until it is acknowledged.
+- **A forensic record whose JSON repeats a key does not verify**
+  (`hash_mismatch`). The hash was computed on the record as Python's parser
+  reads it, which keeps the last of the repeated values, while another
+  parser of an exported record can keep the first.
 - **`/mcp` and `/api/v1/validate` refuse text they cannot scan.** Their
   pipeline scanned and redacted strings down to 6 levels of nesting and let
   deeper text through unscanned and unredacted: an injection nested in five
@@ -46,6 +56,9 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   `matched_terms` and `matched_areas`. The English keyword lists and their
   results are unchanged; a non-English description can now get a higher
   class than before.
+- `admina forensic acknowledge-rebuild` and
+  `ForensicBlackBox.acknowledge_rebuild()`: verify the whole chain with the
+  key and clear the `rebuilt` status of a chain whose state was rebuilt.
 - `admina.sdk.active_ruleset_sha256()`: the ruleset hash of the firewall the
   SDK builds from `admina.yaml`, on the engine `get_firewall()` selects. For
   the same file and `ADMINA_ENGINE` it is the value the proxy reports in

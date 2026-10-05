@@ -861,7 +861,11 @@ still there after the retries is a read error, as for a file:
   logged at `CRITICAL` (`Forensic chain state rebuilt from verified
   records`) and recorded as a signed record with `event.event_type:
   "chain_state_rebuilt"`, `cause` (`state_missing` or `state_invalid`),
-  `records_verified` and `head_hash`.
+  `records_verified` and `head_hash`. The chain state keeps the rebuild,
+  so `/health` reports `forensic_chain: "rebuilt"` after every restart
+  until an operator, with the proxy stopped, runs `admina forensic
+  acknowledge-rebuild` (with the key in `ADMINA_FORENSIC_STATE_KEY`): it
+  verifies the whole chain and, when it is valid, clears the status.
   An external copy of the head (for example the `checkpoint` of the last
   export) shows whether records after it are missing;
 - otherwise (no key, a record that does not verify, a missing last record)
@@ -983,7 +987,7 @@ does not start when they are enabled without it.
   written (`forensic_writable` is `false`, the last record or chain-state
   write failed, or the chain is invalid); the HTTP status is 200 either way;
 - `forensic_chain`: `ok`, `rebuilt` (the chain state was rebuilt from
-  verified records at startup) or `invalid` (see
+  verified records, and the rebuild has not been acknowledged) or `invalid` (see
   [Embedded deployment](#embedded-deployment), *Chain state at startup*);
   `null` for the `memory` store;
 - `mode`: the governance mode (`enforce`, `observe` or `dry-run`);
