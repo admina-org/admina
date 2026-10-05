@@ -52,7 +52,8 @@ from admina.domains.compliance.forensic_files import iter_record_files
 
 __all__ = ["forensic"]
 
-_CHECKPOINT = re.compile(r"([0-9]+):([0-9a-f]{64})")
+# SEQ of at most 19 digits (int() refuses strings of more than 4300 digits).
+_CHECKPOINT = re.compile(r"([0-9]{1,19}):([0-9a-f]{64})")
 
 _DIR_HELP = "Directory of the filesystem forensic store. Defaults to $FORENSIC_BASE_DIR."
 

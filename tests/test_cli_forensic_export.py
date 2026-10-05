@@ -202,7 +202,16 @@ def test_verify_from_a_checkpoint(tmp_path, runner):
     assert body["records"] == 7
 
 
-@pytest.mark.parametrize("value", ["3", "x:" + "0" * 64, "3:nothex", "0:" + "0" * 64])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "3",
+        "x:" + "0" * 64,
+        "3:nothex",
+        "0:" + "0" * 64,
+        pytest.param("9" * 5000 + ":" + "0" * 64, id="long-seq"),
+    ],
+)
 def test_verify_rejects_a_malformed_checkpoint(tmp_path, runner, value):
     base = tmp_path / "forensic"
     write_chain(base, 3)

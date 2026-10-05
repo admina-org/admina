@@ -101,8 +101,9 @@ def _scrub_check_errors(checks: dict[str, Any]) -> dict[str, Any]:
     return scrubbed
 
 
-# The checkpoint of GET /api/v1/forensic/verify: SEQ:HASH.
-_CHECKPOINT = re.compile(r"([0-9]+):([0-9a-f]{64})")
+# The checkpoint of GET /api/v1/forensic/verify: SEQ:HASH, SEQ of at most
+# 19 digits (int() refuses strings of more than 4300 digits).
+_CHECKPOINT = re.compile(r"([0-9]{1,19}):([0-9a-f]{64})")
 
 #: ``source`` of every record written through ``POST /api/v1/audit``.
 AUDIT_SOURCE = "api_v1_audit"

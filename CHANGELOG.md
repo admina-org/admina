@@ -526,7 +526,8 @@ first, since several defaults and failure modes change.
   backend in `admina.yaml` stops the proxy. `admina.proxy.forensic_backend`
   builds the store.
 - `GET /api/v1/forensic/verify` takes `from_seq` or `checkpoint=SEQ:HASH`
-  (not both; a malformed value is answered `400`) and verifies from there.
+  (not both; a malformed value, or a `SEQ` of more than 19 digits, is
+  answered `400`) and verifies from there.
 - `admina forensic export --from-seq N --format jsonl [--dir DIR] [--out
   FILE|-]`: the records of a filesystem store from sequence number N on, in
   sequence order, one per line, each the bytes of its file followed by a

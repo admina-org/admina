@@ -224,6 +224,7 @@ def test_the_verify_route_from_a_sequence_number(tmp_path):
     [
         "?checkpoint=3",
         "?checkpoint=x:" + "0" * 64,
+        pytest.param("?checkpoint=" + "9" * 5000 + ":" + "0" * 64, id="checkpoint-long-seq"),
         "?from_seq=0",
         "?from_seq=2&checkpoint=1:" + "0" * 64,
     ],
