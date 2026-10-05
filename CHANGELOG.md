@@ -59,6 +59,13 @@ recommended.
 - `verify_credential()` in `admina.proxy.main` considers the dashboard
   session only when called with `allow_session=True`.
 
+### Notes
+
+- Starting with this release, Admina is developed with AI assistance
+  (Claude). Commits written with it carry a `Co-Authored-By` trailer that
+  names the assistant, and every change is reviewed and tested by the
+  maintainers. See "AI-Assisted Contributions" in `CONTRIBUTING.md`.
+
 ## [0.12.0] — 2026-09-23
 
 Minor release: destination-based egress control on tool calls and a
