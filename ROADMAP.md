@@ -85,10 +85,7 @@ items.
 
 ---
 
-## 0.12.0 — Observability and performance
-
-Production observability and performance work beyond the current OTEL +
-Grafana baseline.
+## 0.12.0 — Egress control and coordination detection
 
 - Destination-based egress control on tool calls, evaluated independently of
   the HTTP method, shared by all five governed surfaces. Default-deny under
@@ -99,32 +96,33 @@ Grafana baseline.
   destination to a fleet-wide write quarantine once keyed content confirms
   it — refused under `enforce`, recorded under `observe` like every other
   egress decision.
-- Emission of the streaming-request metadata shaped in 0.11 onto the
-  OpenTelemetry GenAI semantic conventions (`gen_ai.request.model`,
-  `gen_ai.usage.*`, `gen_ai.response.finish_reasons`,
-  `gen_ai.client.operation.duration`) — no metadata field is renamed at
-  the emission boundary.
-- Native Prometheus metrics endpoint with an SLO panel.
-- Structured error taxonomy: stable error codes across proxy, SDK, and
-  REST API.
-- Benchmark regression gate in CI (fail on a >10% regression versus
-  baseline).
-- Request-level tracing correlation across SDK, proxy, and upstream LLM.
+
+The observability items first planned for 0.12 are listed under
+[Not yet scheduled](#not-yet-scheduled), except those shipped in 0.13.
 
 ---
 
-## 0.13.0 — Multi-tenancy and RBAC
+## 0.13.0 — Embedded gateway and forensic integrity
 
-Operating Admina as a shared service.
+The OpenAI-compatible gateway as the governed surface of an embedded
+deployment, and a forensic store that can be verified record by record.
 
-- Organisation / workspace isolation in the proxy
-- Per-tenant quotas (request rate, forensic retention, compliance
-  templates enabled)
-- Role-based access control on proxy endpoints (read / write / admin)
-- OIDC authentication provider as a built-in plugin
-- Shared async pool for data connectors; decision cache for the injection
-  firewall fast path.
-- Per-tenant forensic namespace with independent hash chains
+- Gateway: named upstream routes with keys, streams passed through
+  unchanged, upstream errors and timeouts propagated, request limits, the
+  whole chat completion body in the scan, the governance outcome on every
+  response, request ids and W3C trace context.
+- Deployment: secrets from files, `ADMINA_CONFIG`, `ADMINA_ENABLED_SURFACES`,
+  the `proxy-minimal` extra, an offline mode, a schema check of
+  `admina.yaml`, and signed release images with a `-slim` variant.
+- Forensic store: atomic writes, a signature on each record, verification
+  from a checkpoint and JSON Lines export.
+- Firewall and PII: linear-time pattern matching, stable pattern ids,
+  pattern packs, an Italian baseline, PII engines from other packages and
+  an `[OMISSIS]` mask style.
+- Observability: per-surface request metrics, event loop lag, and
+  governance events without request text.
+- Compliance and testing: an OISG score from external evidence and
+  `admina redteam` on external corpora.
 
 ---
 
@@ -138,6 +136,38 @@ Beyond the EU AI Act.
 - Cross-framework gap analysis: surface obligations that satisfy
   multiple frameworks in a single control
 - Report export in PDF and DOCX, signed with the forensic key
+
+---
+
+## Not yet scheduled
+
+Planned, without a release assigned yet.
+
+**Observability**
+
+- Emission of the streaming-request metadata shaped in 0.11 onto the
+  OpenTelemetry GenAI semantic conventions (`gen_ai.request.model`,
+  `gen_ai.usage.*`, `gen_ai.response.finish_reasons`,
+  `gen_ai.client.operation.duration`) — no metadata field is renamed at
+  the emission boundary.
+- An SLO panel on the Prometheus metrics.
+- Structured error taxonomy: stable error codes across proxy, SDK, and
+  REST API.
+- Benchmark regression gate in CI (fail on a >10% regression versus
+  baseline).
+- Tracing correlation from the SDK through the proxy to the upstream LLM
+  (the gateway already records W3C trace context).
+
+**Multi-tenancy and RBAC** — operating Admina as a shared service.
+
+- Organisation / workspace isolation in the proxy
+- Per-tenant quotas (request rate, forensic retention, compliance
+  templates enabled)
+- Role-based access control on proxy endpoints (read / write / admin)
+- OIDC authentication provider as a built-in plugin
+- Shared async pool for data connectors; decision cache for the injection
+  firewall fast path.
+- Per-tenant forensic namespace with independent hash chains
 
 ---
 
