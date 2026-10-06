@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
+import pytest
 from fastapi import FastAPI
 
 from admina.domains.compliance.oisg import (
@@ -39,14 +40,21 @@ from admina.domains.compliance.oisg import (
     compute_oisg_score,
     get_level,
 )
+from admina.domains.compliance.otel import OTELGovernanceExporter
 
 # ── Stubs ───────────────────────────────────────────────────
 
 
 class _FakeForensicBox:
-    def __init__(self, *, has_records: bool = True) -> None:
+    def __init__(self, *, has_records: bool = True, chain_status: str | None = None) -> None:
         self.record_count = 5 if has_records else 0
         self.chain_head = "abc123def456" if has_records else "GENESIS"
+        self.chain_status = chain_status
+        self.chain_error = (
+            {"reason": "record_hash_mismatch", "sequence_number": 3}
+            if chain_status == "invalid"
+            else None
+        )
 
 
 class _FakeCompliance:
@@ -259,6 +267,19 @@ class TestComputeOISGScore:
         result_yes = compute_oisg_score(forensic_box=_FakeForensicBox())
         assert result_yes.pillars["governed"].criteria[1].satisfied is True
 
+    @pytest.mark.parametrize("status", [None, "ok", "rebuilt"])
+    def test_governed_forensic_criterion_with_a_verified_chain(self, status) -> None:
+        result = compute_oisg_score(forensic_box=_FakeForensicBox(chain_status=status))
+        assert result.pillars["governed"].criteria[1].satisfied is True
+
+    def test_governed_forensic_criterion_fails_on_an_invalid_chain(self) -> None:
+        """G2 asks for an immutable log: an invalid chain writes no record."""
+        result = compute_oisg_score(forensic_box=_FakeForensicBox(chain_status="invalid"))
+        g2 = result.pillars["governed"].criteria[1]
+        assert g2.satisfied is False
+        assert "invalid" in g2.reason
+        assert "record_hash_mismatch" in g2.reason
+
     def test_governed_compliance_criterion(self) -> None:
         """G1 depends on compliance engine being active."""
         result_no = compute_oisg_score(compliance_engine=None)
@@ -282,6 +303,39 @@ class TestComputeOISGScore:
 
         result_yes = compute_oisg_score(config=_FakeConfig(admina_api_key="key123"))
         assert result_yes.pillars["secure"].criteria[1].satisfied is True
+
+    def test_g4_reads_dashboard_enabled_over_the_config(self) -> None:
+        """The proxy passes whether it serves the dashboard; the value wins
+        over ``dashboard.enabled`` of admina.yaml."""
+        config = _FakeConfig(dashboard=_FakeDashboardConfig(enabled=True))
+        off = compute_oisg_score(config=config, dashboard_enabled=False)
+        g4 = next(c for c in off.pillars["governed"].criteria if c.id == "g4")
+        assert g4.satisfied is False
+        assert "no dashboard" in g4.reason
+
+        on = compute_oisg_score(
+            config=_FakeConfig(dashboard=_FakeDashboardConfig(enabled=False)),
+            dashboard_enabled=True,
+        )
+        assert next(c for c in on.pillars["governed"].criteria if c.id == "g4").satisfied
+
+    def test_g4_falls_back_to_the_config(self) -> None:
+        config = _FakeConfig(dashboard=_FakeDashboardConfig(enabled=False))
+        result = compute_oisg_score(config=config)
+        assert not next(c for c in result.pillars["governed"].criteria if c.id == "g4").satisfied
+
+    def test_g4_with_otel_and_no_dashboard(self) -> None:
+        result = compute_oisg_score(otel_exporter=_FakeOTEL(), dashboard_enabled=False)
+        assert next(c for c in result.pillars["governed"].criteria if c.id == "g4").satisfied
+
+    def test_g4_and_o3_ignore_a_disabled_otel_exporter(self) -> None:
+        exporter = OTELGovernanceExporter(enabled=False)
+        result = compute_oisg_score(otel_exporter=exporter, dashboard_enabled=False)
+        g4 = next(c for c in result.pillars["governed"].criteria if c.id == "g4")
+        o3 = next(c for c in result.pillars["open"].criteria if c.id == "o3")
+        assert not g4.satisfied
+        assert "no OTEL" in g4.reason
+        assert "OTEL not configured" in o3.reason
 
     def test_s2_satisfied_when_api_key_configured(self) -> None:
         """S2 reads api_key_configured param directly, overriding config fallback."""
@@ -336,6 +390,7 @@ def _build_test_app(
     engine_status: dict | None = None,
     metrics: dict | None = None,
     settings: Any = None,
+    dashboard_enabled: bool | None = None,
 ) -> FastAPI:
     from admina.proxy.api.dashboard import create_dashboard_endpoints
 
@@ -369,6 +424,7 @@ def _build_test_app(
         get_governance_guards=lambda: governance_guards,
         get_config=lambda: config,
         get_engine_status=lambda: engine_status,
+        get_dashboard_enabled=None if dashboard_enabled is None else lambda: dashboard_enabled,
     )
     app.include_router(dash)
     return app
@@ -384,6 +440,17 @@ def _client(app: FastAPI) -> httpx.AsyncClient:
 
 
 class TestDashboardOISGEndpoint:
+    def test_g4_follows_get_dashboard_enabled(self) -> None:
+        app = _build_test_app(config=_FakeConfig(), dashboard_enabled=False)
+
+        async def go():
+            async with _client(app) as c:
+                return (await c.get("/api/dashboard/oisg")).json()
+
+        data = _run(go())
+        g4 = next(c for c in data["pillars"]["governed"]["criteria"] if c["id"] == "g4")
+        assert g4["satisfied"] is False
+
     """GET /api/dashboard/oisg"""
 
     def test_returns_200(self) -> None:

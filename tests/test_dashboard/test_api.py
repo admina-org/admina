@@ -36,9 +36,10 @@ from fastapi import FastAPI
 class _FakeForensicBox:
     """Minimal stand-in for ForensicBlackBox."""
 
-    def __init__(self, *, has_records: bool = True) -> None:
+    def __init__(self, *, has_records: bool = True, chain_status: str | None = None) -> None:
         self.record_count = 5 if has_records else 0
         self.chain_head = "abc123def456" if has_records else "GENESIS"
+        self.chain_status = chain_status
 
     def record(self, event: dict) -> dict:
         self.record_count += 1
@@ -350,6 +351,59 @@ class TestDashboardScore:
         bd = data["breakdown"]
         assert bd["interactions_audited"] == 25
         assert bd["forensic_chain_valid"] == 10
+
+    @pytest.mark.parametrize("status", ["ok", "rebuilt"])
+    def test_score_with_a_verified_chain(self, status: str) -> None:
+        app = _build_test_app(forensic_box=_FakeForensicBox(chain_status=status))
+
+        async def go():
+            async with _client(app) as c:
+                return (await c.get("/api/dashboard/score")).json()
+
+        bd = _run(go())["breakdown"]
+        assert bd["interactions_audited"] == 25
+        assert bd["forensic_chain_valid"] == 10
+
+    def test_score_with_an_invalid_chain(self) -> None:
+        """An invalid chain writes no record: neither the audit nor the
+        chain points are earned, whatever the records written before."""
+        app = _build_test_app(forensic_box=_FakeForensicBox(chain_status="invalid"))
+
+        async def go():
+            async with _client(app) as c:
+                return (await c.get("/api/dashboard/score")).json()
+
+        bd = _run(go())["breakdown"]
+        assert bd["interactions_audited"] == 0
+        assert bd["forensic_chain_valid"] == 0
+
+    def test_score_with_a_real_invalid_chain(self, tmp_path) -> None:
+        """A head record altered on disk no longer matches the chain state:
+        the store restarts with its records counted and chain_status
+        "invalid"."""
+        from admina.domains.compliance.forensic import CHAIN_INVALID, ForensicBlackBox
+
+        directory = tmp_path / "forensic"
+        first = ForensicBlackBox(filesystem_dir=str(directory))
+        first.record({"event": "e1"})
+        first.record({"event": "e2"})
+        head = sorted(p for p in directory.rglob("*.json") if not p.name.startswith("_"))[-1]
+        record = _json.loads(head.read_text())
+        record["event"] = {"event": "altered"}
+        head.write_text(_json.dumps(record))
+        box = ForensicBlackBox(filesystem_dir=str(directory))
+        assert box.chain_status == CHAIN_INVALID
+        assert box.record_count == 2
+        assert box.chain_head != "GENESIS"
+        app = _build_test_app(forensic_box=box)
+
+        async def go():
+            async with _client(app) as c:
+                return (await c.get("/api/dashboard/score")).json()
+
+        bd = _run(go())["breakdown"]
+        assert bd["interactions_audited"] == 0
+        assert bd["forensic_chain_valid"] == 0
 
     def test_score_no_attacks_bonus(self) -> None:
         app = _build_test_app(
@@ -1283,6 +1337,29 @@ class TestDashboardSuggestionsWouldAction:
         data = r.json()
         types = {s["type"] for s in data["suggestions"]}
         assert "observe_clean" in types
+
+
+class TestDashboardSuggestionsLoopBreaker:
+    def test_the_loop_breaker_suggestion_names_real_settings(self) -> None:
+        """The variables the suggestion tells the operator to tune are the
+        proxy's settings, so the unknown-variable startup check accepts them."""
+        from admina.proxy.config import Settings
+
+        row = ("circuit_break", "high", _json.dumps({"loop_breaker": {"is_loop": True}}))
+        ch = _FakeCH(rows_by_call=[[row] * 10, []])
+        app = _build_test_app(clickhouse=ch)
+
+        async def go():
+            async with _client(app) as c:
+                return await c.get("/api/dashboard/suggestions?min_count=1")
+
+        r = _run(go())
+        assert r.status_code == 200
+        (suggestion,) = [s for s in r.json()["suggestions"] if s["type"] == "loop_breaker_active"]
+        names = [action.split()[1] for action in suggestion["actions"]]
+        assert names == ["LOOP_SIMILARITY_THRESHOLD", "LOOP_MAX_CONSECUTIVE"]
+        assert all(name in Settings.model_fields for name in names)
+        assert "raising the similarity threshold" in suggestion["message"]
 
 
 # ══════════════════════════════════════════════════════════════

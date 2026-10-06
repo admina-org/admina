@@ -531,3 +531,102 @@ def test_audit_open_mode_reports_the_record_as_not_written(proxy_deps, tmp_path,
         "recorded": False,
         "error": "The forensic record could not be written",
     }
+
+
+# ── A keyed store started without its key ─────────────────────
+#
+# A store whose chain was written with ADMINA_FORENSIC_STATE_KEY keeps the
+# signature of its chain state (_chain_state.json.sig) beside it. Started
+# without the key, it would write unsigned records, which a keyed
+# verification reports as "unsigned": in closed mode the store does not
+# start (ForensicKeyError), in open mode it starts with a WARNING, at every
+# start until the key is set again or the store is moved aside.
+
+
+def _keyless(monkeypatch) -> None:
+    monkeypatch.delenv("ADMINA_FORENSIC_STATE_KEY", raising=False)
+    monkeypatch.delenv("ADMINA_FORENSIC_STATE_KEY_FILE", raising=False)
+
+
+def _keyed_store(directory) -> None:
+    box = ForensicBlackBox(filesystem_dir=str(directory), state_signing_key=secrets.token_hex(16))
+    box.record({"event_id": "e1"})
+    box.record({"event_id": "e2"})
+
+
+def test_a_keyed_store_without_its_key_does_not_start_in_closed_mode(tmp_path, monkeypatch):
+    from admina.domains.compliance.forensic import ForensicKeyError
+
+    _keyless(monkeypatch)
+    _keyed_store(tmp_path)
+    with pytest.raises(ForensicKeyError, match="ADMINA_FORENSIC_STATE_KEY"):
+        ForensicBlackBox(filesystem_dir=str(tmp_path), fail_mode="closed")
+    assert len(record_files(tmp_path)) == 2
+
+
+def test_a_keyed_store_without_its_key_warns_in_open_mode(tmp_path, monkeypatch, caplog):
+    _keyless(monkeypatch)
+    _keyed_store(tmp_path)
+    for _ in range(2):  # at every start, also after an unsigned record
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="admina.forensic_blackbox"):
+            box = ForensicBlackBox(filesystem_dir=str(tmp_path))
+        warnings = [r for r in caplog.records if "ADMINA_FORENSIC_STATE_KEY" in r.getMessage()]
+        assert [r.levelno for r in warnings] == [logging.WARNING]
+        assert box.record({"event_id": "e3"})["stored"] is True
+
+
+def test_a_store_never_keyed_starts_without_a_key_in_closed_mode(tmp_path, monkeypatch, caplog):
+    _keyless(monkeypatch)
+    ForensicBlackBox(filesystem_dir=str(tmp_path)).record({"event_id": "e1"})
+    with caplog.at_level(logging.WARNING, logger="admina.forensic_blackbox"):
+        box = ForensicBlackBox(filesystem_dir=str(tmp_path), fail_mode="closed")
+    assert box.chain_status == "ok"
+    assert not [r for r in caplog.records if "ADMINA_FORENSIC_STATE_KEY" in r.getMessage()]
+
+
+def test_a_keyed_store_with_its_key_starts_in_closed_mode(tmp_path, monkeypatch, caplog):
+    _keyless(monkeypatch)
+    key = secrets.token_hex(16)
+    ForensicBlackBox(filesystem_dir=str(tmp_path), state_signing_key=key).record({"e": 1})
+    with caplog.at_level(logging.WARNING, logger="admina.forensic_blackbox"):
+        box = ForensicBlackBox(
+            filesystem_dir=str(tmp_path), state_signing_key=key, fail_mode="closed"
+        )
+    assert box.chain_status == "ok"
+    assert not [r for r in caplog.records if "ADMINA_FORENSIC_STATE_KEY" in r.getMessage()]
+
+
+def test_a_keyed_s3_store_without_its_key_does_not_start_in_closed_mode(monkeypatch):
+    from admina.domains.compliance.forensic import ForensicKeyError
+
+    _keyless(monkeypatch)
+    bucket = MemoryBucket()
+    keyed = ForensicBlackBox(boto3_client=bucket, state_signing_key=secrets.token_hex(16))
+    keyed.record({"event_id": "e1"})
+    with pytest.raises(ForensicKeyError):
+        ForensicBlackBox(boto3_client=bucket, fail_mode="closed")
+
+
+def test_a_keyed_store_without_its_key_stops_the_proxy_in_closed_mode(
+    proxy_deps, tmp_path, monkeypatch
+):
+    _keyless(monkeypatch)
+    _keyed_store(tmp_path / "forensic")
+    message = _start_fails(monkeypatch, "filesystem", str(tmp_path / "forensic"))
+    assert "ADMINA_FORENSIC_STATE_KEY" in message
+
+
+def test_a_keyed_store_without_its_key_starts_the_proxy_in_open_mode(
+    proxy_deps, tmp_path, monkeypatch, caplog
+):
+    _keyless(monkeypatch)
+    _keyed_store(tmp_path / "forensic")
+    with caplog.at_level(logging.WARNING):
+        state, health, chat = _start(monkeypatch, "open", "filesystem", str(tmp_path / "forensic"))
+    assert chat.status_code == 200
+    assert state.forensic_box.record_count > 2
+    assert any(
+        r.levelno == logging.WARNING and "ADMINA_FORENSIC_STATE_KEY" in r.getMessage()
+        for r in caplog.records
+    )

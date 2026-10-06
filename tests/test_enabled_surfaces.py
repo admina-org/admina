@@ -111,6 +111,50 @@ def test_gateway_disabled_answers_404_on_v1(proxy):
     assert [r.status_code for r in responses] == [404] * 6
 
 
+# ── The dashboard in the OISG score ───────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("surfaces", "dashboard_enabled", "served"),
+    [
+        ("", True, True),
+        ("gateway,mcp,integration,compliance", True, False),
+        ("dashboard", True, True),
+        ("", False, False),
+    ],
+)
+def test_the_dashboard_is_enabled_by_both_switches(
+    monkeypatch, surfaces, dashboard_enabled, served
+):
+    """ADMINA_ENABLED_SURFACES and ADMINA_DASHBOARD_ENABLED both decide
+    whether the proxy serves the dashboard, and so OISG G4."""
+    from admina.proxy import main as proxy_main
+
+    monkeypatch.setattr(proxy_main.settings, "ADMINA_ENABLED_SURFACES", surfaces)
+    monkeypatch.setattr(proxy_main.settings, "ADMINA_DASHBOARD_ENABLED", dashboard_enabled)
+    assert proxy_main._dashboard_enabled() is served
+
+
+def test_oisg_g4_sees_admina_dashboard_enabled(proxy, monkeypatch):
+    """With the dashboard off, the /api/dashboard/* API is still served to
+    API-key clients, and its OISG G4 reports no dashboard."""
+    from admina.proxy import main as proxy_main
+
+    proxy(None)
+    monkeypatch.setattr(proxy_main.settings, "ADMINA_DASHBOARD_ENABLED", False)
+
+    def no_otel(state):
+        state.otel_exporter = None
+
+    request = with_key({"method": "GET", "url": "/api/dashboard/oisg"})
+    responses, _ = serve([request], prepare=no_otel)
+    assert responses[0].status_code == 200
+    criteria = responses[0].json()["pillars"]["governed"]["criteria"]
+    g4 = next(c for c in criteria if c["id"] == "g4")
+    assert g4["satisfied"] is False
+    assert "no dashboard" in g4["reason"]
+
+
 # ── Default: every surface, as in 0.12 ────────────────────────
 
 

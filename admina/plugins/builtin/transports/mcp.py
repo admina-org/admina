@@ -19,15 +19,23 @@ Converts JSON-RPC 2.0 (MCP wire format) to/from the protocol-agnostic
 
 The governance engine never sees JSON-RPC — this adapter is the only
 place that knows about MCP framing.
+
+The proxy serves ``POST /mcp`` and calls the functions of this module
+directly. :class:`MCPTransportAdapter` exposes them as a transport adapter
+plugin (``mcp``), discovered with the other builtins.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from admina.core.types import GovernanceRequest, GovernanceResponse
+from admina.plugins.base import BaseTransportAdapter
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
 
 logger = logging.getLogger("admina.transport.mcp")
 
@@ -70,16 +78,27 @@ def parse_request(
 def format_block_response(
     gov_response: GovernanceResponse,
     original_body: dict[str, Any],
+    *,
+    reason: str | None = None,
 ) -> dict[str, Any]:
     """Format a BLOCK governance response as a JSON-RPC 2.0 error.
+
+    ``data.reason`` names the cause: ``injection_detected`` (firewall),
+    ``scan_depth_exceeded``, ``egress_refused`` or ``guard_blocked``, as the
+    pipeline sets it in ``gov_response.metadata["reason"]``, or *reason*
+    (``response_blocked`` for a response blocked by a governance guard).
+    Without either it is ``injection_detected``.
 
     Args:
         gov_response: The governance engine's decision.
         original_body: The original JSON-RPC request (for the ``id`` field).
+        reason: The cause, in place of the one of *gov_response*.
 
     Returns:
         A JSON-RPC 2.0 error response dict.
     """
+    if reason is None:
+        reason = gov_response.metadata.get("reason") or "injection_detected"
     return {
         "jsonrpc": "2.0",
         "id": original_body.get("id"),
@@ -88,7 +107,7 @@ def format_block_response(
             "message": "Request blocked by Admina governance",
             "data": {
                 "event_id": gov_response.request_id,
-                "reason": "injection_detected",
+                "reason": reason,
                 "risk_level": gov_response.risk_level,
                 "governance_latency_us": round(gov_response.latency_us, 2),
             },
@@ -171,3 +190,46 @@ def extract_text_fields(obj: Any, depth: int = 0) -> list[str]:
         for item in obj:
             texts.extend(extract_text_fields(item, depth + 1))
     return texts
+
+
+class MCPTransportAdapter(BaseTransportAdapter):
+    """Transport adapter for MCP (JSON-RPC 2.0), built on the functions of
+    this module.
+
+    ``POST /mcp`` is registered by the proxy, so :meth:`register_routes`
+    adds no route.
+    """
+
+    name = "mcp"
+
+    async def parse_request(self, raw_request: Any) -> GovernanceRequest:
+        """Convert a JSON-RPC 2.0 request (a dict, or its JSON text) into a
+        GovernanceRequest."""
+        if isinstance(raw_request, dict):
+            body = raw_request
+        else:
+            body = json.loads(raw_request) if isinstance(raw_request, (str, bytes)) else {}
+        return parse_request(body)
+
+    async def format_response(
+        self,
+        gov_response: GovernanceResponse,
+        original: Any,
+    ) -> Any:
+        """The JSON-RPC 2.0 error of a BLOCK or CIRCUIT_BREAK decision; None
+        for any other action, whose request is forwarded to the upstream MCP
+        server and answered with the upstream response."""
+        body = original if isinstance(original, dict) else {}
+        if gov_response.action == "BLOCK":
+            return format_block_response(gov_response, body)
+        if gov_response.action == "CIRCUIT_BREAK":
+            return format_circuit_break_response(gov_response, body)
+        return None
+
+    def register_routes(self, app: FastAPI) -> None:
+        """No route: the proxy registers ``POST /mcp``."""
+
+    @property
+    def protocol_name(self) -> str:
+        """Protocol identifier."""
+        return "mcp"

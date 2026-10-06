@@ -355,6 +355,17 @@ dependency: one uvicorn serves the proxy API and the dashboard SPA on the
 same port. Use `--stack` for the production-like Docker compose, or
 `--with-llm` to also boot local LLM services.
 
+Local mode uses the forensic backend of `FORENSIC_BACKEND` or of
+`admina.yaml`, and memory when neither sets one. In the compose file that
+`admina init` writes, the dashboard (`127.0.0.1:3000`), OTEL and the
+`--with-llm` services listen on the loopback interface only; the dashboard
+asks for `ADMINA_DASHBOARD_PASSWORD` and the API key (both shown by
+`admina password show`). The proxy reaches the MCP server at
+`UPSTREAM_MCP_URL` (default `http://host.docker.internal:9000`, an MCP
+server on the host). `CLICKHOUSE_PASSWORD` and `GRAFANA_ADMIN_PASSWORD`
+come from the `.env` that `admina dev` writes; a plain `docker compose up`
+stops when they are not set.
+
 ## Dashboard
 
 Real-time governance dashboard on port 3000:
@@ -774,6 +785,12 @@ one trailing newline removed. A missing, unreadable or empty file, or a key
 set both directly and as a file, stops the proxy; the error names the
 setting and the path, never the key. `ADMINA_FORENSIC_STATE_KEY_FILE` inside
 the forensic directory stops it too: the key must be kept outside the store.
+The built-in `apikey` auth provider reads `ADMINA_API_KEY` from the
+environment only, and is loaded only when it is set there. A key given only
+through `ADMINA_API_KEY_FILE` or `.env` is checked by the authentication
+middleware itself (the same headers, the same constant-time comparison), and
+`POST /api/v1/audit` then stamps `submitted_by: "api_key"` instead of
+`"user:api_key_user"`.
 
 **Forensic store.** `FORENSIC_BACKEND` (`memory`, `filesystem`, `s3`) and
 `FORENSIC_BASE_DIR` choose where the forensic records go. When they are not
@@ -815,7 +832,12 @@ directory (UTC hour of the write, sequence number on eight digits), with
   `admina-forensic/1 record signature` under the chain-state key
   (`ADMINA_FORENSIC_STATE_KEY` or `ADMINA_FORENSIC_STATE_KEY_FILE`, kept
   outside the forensic directory); `record_sig_alg`: `hmac-sha256`. Without
-  a key a record has `record_sig_alg: "none"` and no `record_sig`.
+  a key a record has `record_sig_alg: "none"` and no `record_sig`. Since
+  0.13.1, when a store that holds signed records is opened without its
+  key, the proxy does not start in `closed` fail mode
+  (`ADMINA_FORENSIC_FAIL_MODE`) and logs a warning in `open` mode, where
+  the records it then writes are unsigned (a later verification with the
+  key reports `unsigned`).
 
 The chain state (`_chain_state.json`, with its HMAC-SHA256 in
 `_chain_state.json.sig` when a key is set) holds `record_count`,
@@ -890,7 +912,10 @@ introduced.
 **Audit records.** `POST /api/v1/audit` records the event it receives with
 `source: "api_v1_audit"` (a `source` in the request is kept as
 `client_source`) and `submitted_by`: the credential the request was admitted
-with (`api_key`, `append_key`, `user:<id>` or `unauthenticated`). An
+with (`api_key`, `append_key`, `user:<id>` or `unauthenticated`). With
+`ADMINA_API_KEY` in the environment the built-in `apikey` auth provider
+admits API-key requests, stamped `user:api_key_user`; `api_key` is the stamp
+when the key comes only from `ADMINA_API_KEY_FILE` or `.env`. An
 `event_type` of the records the proxy writes itself (`mcp_request`,
 `mcp_response`, `gateway_request`, `gateway_response`, `gateway_response_scan`,
 `policy_violation`, `chain_state_rebuilt`) is refused with `400`.
@@ -1339,18 +1364,18 @@ fields are always scanned.
 
 The scan follows the body 32 levels deep: the body is level 0, its fields
 level 1, and the JSON of tool call arguments is at the level of its string.
-A request with a string nested deeper is blocked in `enforce` mode
-(`X-Admina-Would-Action: BLOCK` in `observe` and `dry-run`), and its record
-has `checks.scan_depth = {"action": "BLOCK", "reason":
+With the firewall on, a request with a string nested deeper is blocked in
+`enforce` mode (`X-Admina-Would-Action: BLOCK` in `observe` and `dry-run`),
+and its record has `checks.scan_depth = {"action": "BLOCK", "reason":
 "depth_limit_exceeded"}`. Tool call arguments nested deeper than the JSON
 parser reads are scanned as they are, and the request is blocked the same
 way.
 
-`/mcp` and `/api/v1/validate` scan and redact to the same depth. With the
-firewall or PII redaction on, a request holding a string, or a non-empty
-object or array, past level 32 is blocked the same way, since that text
-would be neither scanned nor redacted. `content` of `/api/v1/validate` must
-be a string.
+`/mcp` scans and redacts to the same depth. With the firewall or PII
+redaction on, a request holding a string, or a non-empty object or array,
+past level 32 is blocked the same way, since that text would be neither
+scanned nor redacted. `content` of `/api/v1/validate` must be a string, so
+that block does not apply there.
 
 #### Scan scope
 
@@ -1394,6 +1419,10 @@ nested or stray tag leaves the whole text to the scan. Tag names are
 case-sensitive. The caller must keep these tags out of text written by
 untrusted parties, because the gateway cannot tell such text from its own
 blocks.
+
+`ruleset_sha256()` hashes the Admina version too (and the `admina-core`
+version with the Rust engine), so a ruleset hash changes with every release:
+recompute the hashes in `gateway.prescan_rulesets` after each upgrade.
 
 Trust model: with scan policies on, the gateway takes the caller's word for
 what it has scanned. Any caller that holds the API key can send the header,
@@ -1635,7 +1664,10 @@ cd integrations/cheshirecat/admina-plugin
 
 <br>
 
-Governs every LLM call and tool invocation in-process:
+Governs every LLM call and tool invocation in-process. Install
+`admina-framework[proxy,nlp]`: the loop detection that the callbacks turn
+on by default needs scikit-learn from `[proxy]` (or pass
+`loop_detection=False`).
 
 ```python
 from admina.integrations.langchain.callbacks import AdminaCallbackHandler
@@ -1882,6 +1914,14 @@ curl -X POST http://localhost:8080/api/compliance/classify \
 # Dashboard governance score
 curl http://localhost:8080/api/dashboard/score
 ```
+
+A blocked `/mcp` call is answered with a JSON-RPC error (`-32600`, "Request
+blocked by Admina governance") whose `error.data` holds the `event_id` of
+the forensic record and a `reason`: `injection_detected` (firewall),
+`scan_depth_exceeded` (text nested deeper than the scan depth),
+`egress_refused` (egress policy), `guard_blocked` (a request guard, also a
+guard error under `ADMINA_GUARD_FAIL_MODE=closed`) or `response_blocked`
+(a response guard). Before 0.13.1 every block reported `injection_detected`.
 
 </details>
 

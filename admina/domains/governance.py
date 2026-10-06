@@ -532,6 +532,9 @@ def _build_gov_response(
     )
     _action_raw = result.action
     _risk_raw = result.risk_level
+    metadata: dict[str, Any] = {"similarity": loop_result.get("similarity")}
+    if result.action == GovernanceAction.BLOCK:
+        metadata["reason"] = _block_reason(result.checks)
     return GovResponse(
         content=json.dumps(result.redacted_body, default=str),
         action=(_action_raw.value if hasattr(_action_raw, "value") else _action_raw).upper(),
@@ -539,5 +542,26 @@ def _build_gov_response(
         domain=_deciding_domain,
         latency_us=result.latency_ms * 1000,
         request_id=request_id,
-        metadata={"similarity": loop_result.get("similarity")},
+        metadata=metadata,
     )
+
+
+def _block_reason(checks: dict[str, Any]) -> str:
+    """The cause of a BLOCK, from the stage that set it: the firewall
+    (``injection_detected``), text past :data:`SCAN_DEPTH`
+    (``scan_depth_exceeded``), the egress policy (``egress_refused``) or a
+    governance guard, by its verdict or by its failure in closed fail mode
+    (``guard_blocked``). The stages run in this order and each runs only
+    while the request is allowed, so the first one that blocked decides."""
+    if (checks.get("firewall") or {}).get("is_injection"):
+        return "injection_detected"
+    if "scan_depth" in checks:
+        return "scan_depth_exceeded"
+    if (checks.get("egress") or {}).get("allowed") is False:
+        return "egress_refused"
+    if any(
+        name.startswith("guard_") and (check or {}).get("action") in ("BLOCK", "REDACT", "ERROR")
+        for name, check in checks.items()
+    ):
+        return "guard_blocked"
+    return "injection_detected"

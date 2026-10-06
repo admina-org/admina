@@ -1,6 +1,10 @@
 import pytest
 
 from admina.domains.agent_security.egress import EgressStatus, analyze, payload_fields
+from admina.domains.governance import SCAN_DEPTH
+
+#: The first level the egress walk does not reach.
+PAST = SCAN_DEPTH + 1
 
 
 def _nest(levels: int, leaf: dict) -> dict:
@@ -216,18 +220,16 @@ class TestTriState:
         decision = policy.evaluate(analyze(_nest(50, {"url": "https://deep.com"})), "observe")
         assert decision.allowed is True
 
-    @pytest.mark.parametrize("nesting", [7, 8, 11, 30])
+    @pytest.mark.parametrize("nesting", [PAST, PAST + 1, PAST + 4, PAST + 20])
     def test_first_unscanned_level_and_beyond_all_fail_closed(self, nesting):
-        """Level 6 is still scanned; 7 is the first level past the walk.
-
-        Before this was fixed, 7 and everything below it reported NO_EGRESS
-        and were allowed under default-deny.
+        """Level SCAN_DEPTH is still scanned; the next one is the first past
+        the walk, and it and everything below it must not read as NO_EGRESS.
         """
         assert analyze(_nest(nesting, {"url": "https://deep.com"})).status is (
             EgressStatus.UNRESOLVABLE
         )
 
-    @pytest.mark.parametrize("nesting", [0, 3, 6])
+    @pytest.mark.parametrize("nesting", [0, 3, 6, 7, 10, SCAN_DEPTH])
     def test_levels_within_the_scan_still_resolve_the_destination(self, nesting):
         intent = analyze(_nest(nesting, {"url": "https://deep.com"}))
         assert intent.status is not EgressStatus.NO_EGRESS
@@ -246,7 +248,7 @@ class TestTriState:
 
         decoy = {
             "url": "https://api.openai.com/v1",
-            "x": _nest(7, {"url": "https://evil.example/x"}),
+            "x": _nest(SCAN_DEPTH, {"url": "https://evil.example/x"}),
         }
         intent = analyze(decoy)
         assert intent.status is EgressStatus.UNRESOLVABLE
@@ -258,7 +260,7 @@ class TestTriState:
 
         decoy = {
             "url": "https://api.openai.com/v1",
-            "x": _nest(7, {"url": "https://evil.example/x"}),
+            "x": _nest(SCAN_DEPTH, {"url": "https://evil.example/x"}),
         }
         decision = EgressPolicy(allow=["api.openai.com"]).evaluate(analyze(decoy), "observe")
         assert decision.allowed is True
@@ -270,7 +272,7 @@ class TestTriState:
         from admina.domains.agent_security.egress import EgressPolicy
 
         policy = EgressPolicy(allow=["api.openai.com"])
-        depth = policy.evaluate(analyze(_nest(8, {"url": "https://evil.example/x"})), "enforce")
+        depth = policy.evaluate(analyze(_nest(PAST, {"url": "https://evil.example/x"})), "enforce")
         allowlist = policy.evaluate(analyze({"url": "https://evil.example/x"}), "enforce")
         assert "nested past the scan depth limit" in depth.reason
         assert "nested past the scan depth limit" not in allowlist.reason
@@ -279,7 +281,7 @@ class TestTriState:
     def test_truncation_and_an_unresolvable_field_are_both_named(self):
         from admina.domains.agent_security.egress import EgressPolicy
 
-        params = {"host": "${SECRET}", "x": _nest(7, {"url": "https://evil.example/x"})}
+        params = {"host": "${SECRET}", "x": _nest(SCAN_DEPTH, {"url": "https://evil.example/x"})}
         reason = EgressPolicy(allow=[]).evaluate(analyze(params), "enforce").reason
         assert "nested past the scan depth limit" in reason
         assert "'host'" in reason
@@ -292,6 +294,31 @@ class TestTriState:
     def test_deep_but_complete_non_network_call_is_still_no_egress(self):
         """Nesting that stays within the cap is not truncation."""
         assert analyze(_nest(5, {"expression": "2 + 2"})).status is EgressStatus.NO_EGRESS
+
+    def test_the_walk_reaches_as_deep_as_the_pipeline_scan(self):
+        """A call the firewall scans in full is not refused for its depth.
+
+        The egress walk and the firewall/PII walk share SCAN_DEPTH: a call
+        nested 10 levels deep is evaluated, and a destination below level 6
+        is still found.
+        """
+        from admina.domains.agent_security.egress import EgressPolicy
+
+        policy = EgressPolicy(allow=["api.openai.com"])
+        local = analyze(_nest(10, {"expression": "2 + 2"}))
+        assert local.status is EgressStatus.NO_EGRESS
+        assert policy.evaluate(local, "enforce").allowed is True
+
+        remote = analyze(_nest(10, {"url": "https://api.openai.com/v1/chat"}))
+        assert remote.status is EgressStatus.RESOLVED
+        assert remote.destinations == ["api.openai.com"]
+        assert policy.evaluate(remote, "enforce").allowed is True
+
+        unlisted = analyze(_nest(10, {"url": "https://evil.example/x"}))
+        assert unlisted.destinations == ["evil.example"]
+        assert policy.evaluate(unlisted, "enforce").reason == (
+            "destination not on the egress allowlist"
+        )
 
 
 class TestPayloadFields:
@@ -392,7 +419,7 @@ class TestPayloadFields:
 
     def test_arguments_past_the_scan_depth_limit_are_not_reached(self):
         """Same cap as analyze(): a walk that stops is a walk that stops."""
-        assert payload_fields(_nest(9, {"content": "a payload past the depth cap"})) == []
+        assert payload_fields(_nest(PAST, {"content": "a payload past the depth cap"})) == []
 
     def test_a_non_dict_argument_object_does_not_raise(self):
         assert payload_fields(None) == []

@@ -440,3 +440,71 @@ class TestDevCommand:
             result2 = runner.invoke(app, ["dev", "--stack", "--detach", "--no-browser"])
             assert result2.exit_code == 0
             assert "up to date" in result2.output
+
+
+class TestDevLocalForensicBackend:
+    """``admina dev`` (local mode) leaves the forensic backend to the
+    environment and admina.yaml; the proxy uses memory without either."""
+
+    def _run(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        forensic: dict[str, str] | None,
+    ) -> tuple[dict[str, str], str]:
+        from admina.cli import main as cli_main
+
+        monkeypatch.setattr(cli_main, "_require_proxy_extra_for_local_dev", lambda: None)
+        monkeypatch.setattr(cli_main, "_find_free_port", lambda port, host: port)
+        monkeypatch.setattr(cli_main, "_health_check", lambda *a, **k: False)
+        popen = MagicMock()
+        monkeypatch.setattr(cli_main.subprocess, "Popen", popen)
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            _write_full_stack_yaml(Path.cwd())
+            if forensic is not None:
+                data = yaml.safe_load(Path("admina.yaml").read_text())
+                data["domains"]["compliance"]["forensic"] = forensic
+                Path("admina.yaml").write_text(yaml.dump(data))
+            result = runner.invoke(app, ["dev", "--no-browser"])
+        assert result.exit_code == 0, result.output
+        return popen.call_args.kwargs["env"], result.output
+
+    def test_yaml_backend_is_not_overridden(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("FORENSIC_BACKEND", raising=False)
+        env, output = self._run(
+            runner,
+            tmp_path,
+            monkeypatch,
+            {"backend": "filesystem", "base_dir": ".admina/forensic"},
+        )
+        assert "FORENSIC_BACKEND" not in env
+        assert "Forensic backend: filesystem (admina.yaml)" in output
+        assert "in-memory" not in output
+
+    def test_older_storage_key_is_not_overridden(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("FORENSIC_BACKEND", raising=False)
+        env, output = self._run(runner, tmp_path, monkeypatch, {"storage": "s3"})
+        assert "FORENSIC_BACKEND" not in env
+        assert "Forensic backend: s3 (admina.yaml)" in output
+
+    def test_environment_backend_is_passed_through(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("FORENSIC_BACKEND", "s3")
+        env, output = self._run(runner, tmp_path, monkeypatch, {"backend": "filesystem"})
+        assert env["FORENSIC_BACKEND"] == "s3"
+        assert "Forensic backend: s3 (FORENSIC_BACKEND)" in output
+
+    def test_memory_without_environment_or_yaml(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("FORENSIC_BACKEND", raising=False)
+        env, output = self._run(runner, tmp_path, monkeypatch, None)
+        # The proxy's own default (admina.proxy.forensic_backend) is memory.
+        assert env.get("FORENSIC_BACKEND", "memory") == "memory"
+        assert "Forensic backend: in-memory" in output

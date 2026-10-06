@@ -262,7 +262,8 @@ def test_every_unknown_key_is_listed_once(tmp_path):
         ),
         (
             "domains:\n  agent_security:\n    firewall:\n      heuristic_threshold: high\n",
-            "domains.agent_security.firewall.heuristic_threshold: must be a number",
+            "domains.agent_security.firewall.heuristic_threshold: "
+            "must be a finite number greater than 0",
         ),
         (
             "domains:\n  agent_security:\n    firewall:\n      enabled: sometimes\n",

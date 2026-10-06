@@ -55,12 +55,27 @@ def get_pii_redactor():
 
 
 def get_loop_breaker():
-    """Return the shared loop breaker engine (via admina.engines)."""
+    """Return the shared loop breaker engine (via admina.engines).
+
+    Raises:
+        ImportError: the Python loop breaker is selected and numpy or
+            scikit-learn is not installed; the message names the extras
+            and ``loop_detection=False`` of the callbacks.
+    """
     global _loop_breaker
     if _loop_breaker is None:
         with _lock:
             if _loop_breaker is None:
                 from admina.engines import get_loop_breaker as _get_lb
 
-                _loop_breaker = _get_lb()
+                try:
+                    _loop_breaker = _get_lb()
+                except ImportError as exc:
+                    raise ImportError(
+                        "Loop detection (loop_detection=True, the default of the "
+                        "LangChain and CrewAI callbacks) needs numpy and scikit-learn: "
+                        "pip install 'admina-framework[proxy]' (or "
+                        "'admina-framework[rust]' for the Rust loop breaker), or pass "
+                        "loop_detection=False"
+                    ) from exc
     return _loop_breaker

@@ -123,11 +123,67 @@ def test_threshold_default_in_admina_yaml(tmp_path):
 
 def test_invalid_threshold_in_admina_yaml_stops_the_firewall(tmp_path, monkeypatch):
     from admina import engines
+    from admina.core.config import ConfigFileError
 
     monkeypatch.setenv("ADMINA_CONFIG", str(_yaml(tmp_path, "      heuristic_threshold: 0\n")))
     monkeypatch.setenv("ADMINA_ENGINE", "python")
-    with pytest.raises(ValueError, match="heuristic_threshold"):
+    with pytest.raises(ConfigFileError, match="heuristic_threshold"):
         engines.get_firewall()
+
+
+def test_invalid_threshold_in_the_discovered_admina_yaml_stops_the_firewall(tmp_path, monkeypatch):
+    """Without ADMINA_CONFIG, the admina.yaml found in the working
+    directory gives a ConfigSchemaError, a ValueError."""
+    from admina import engines
+    from admina.core.config import ConfigSchemaError
+
+    _yaml(tmp_path, "      heuristic_threshold: 0\n")
+    monkeypatch.delenv("ADMINA_CONFIG", raising=False)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ADMINA_ENGINE", "python")
+    with pytest.raises(ConfigSchemaError, match="heuristic_threshold"):
+        engines.get_firewall()
+
+
+@pytest.mark.parametrize("value", ["0", "-0.1", ".nan", ".inf", "-.inf", "true", "'0.5'"])
+def test_invalid_threshold_is_a_config_error(tmp_path, value):
+    """The configuration refuses the value, whatever engine reads it."""
+    from admina.core.config import ConfigSchemaError
+
+    path = _yaml(tmp_path, f"      heuristic_threshold: {value}\n")
+    with pytest.raises(ConfigSchemaError, match="heuristic_threshold"):
+        load_config(path)
+
+
+@pytest.mark.parametrize("value", ["0.01", "1", "0.5"])
+def test_valid_threshold_is_accepted(tmp_path, value):
+    path = _yaml(tmp_path, f"      heuristic_threshold: {value}\n")
+    assert load_config(path).agent_security.firewall.heuristic_threshold == float(value)
+
+
+def test_invalid_threshold_stops_the_rust_engine_too(tmp_path, monkeypatch):
+    """The Rust firewall does not read heuristic_threshold, so the check
+    cannot be left to the Python firewall: the configuration refuses it
+    before an engine is chosen."""
+    from admina import engines
+    from admina.core.config import ConfigFileError
+
+    built = []
+    monkeypatch.setenv("ADMINA_CONFIG", str(_yaml(tmp_path, "      heuristic_threshold: 0\n")))
+    monkeypatch.setattr(engines, "_resolve_engine", lambda: "rust")
+    monkeypatch.setattr(engines, "_RustFirewallBridge", lambda **kw: built.append(kw))
+    with pytest.raises(ConfigFileError, match="heuristic_threshold"):
+        engines.get_firewall()
+    assert built == []
+
+
+def test_the_firewall_and_the_configuration_share_the_check():
+    from admina.core.config_schema import positive_finite_number
+
+    for value in (0, -0.1, math.nan, math.inf, "0.5", True, None):
+        assert positive_finite_number(value) is False
+    for value in (0.01, 1, 0.5):
+        assert positive_finite_number(value) is True
 
 
 # ── INJECTION_DEEP_PATH_ENABLED ───────────────────────────────
