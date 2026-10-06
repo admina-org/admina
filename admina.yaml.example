@@ -65,13 +65,14 @@ domains:
       # as context switches, e.g. the tag around retrieved documents:
       #   <source>…</source>  →  allowed_tags: [source]
       allowed_tags: []
-      # Governance reaction mode (see ADMINA_GOVERNANCE_MODE):
+      # The reaction to a flagged request is not set in this file: it is
+      # the environment variable ADMINA_GOVERNANCE_MODE, for every governed
+      # surface:
       #   enforce  → block flagged requests (default, restrictive)
       #   observe  → never block, log "would have blocked" (use for the
       #              first 1-2 weeks of a new deployment)
       #   dry-run  → like observe + tag the response so downstream tools
       #              know the request was analysed
-      mode: enforce
       # Categories you want SILENCED in this deployment (e.g. because
       # they trigger too many FPs in your domain). Builtin set:
       # instruction_override, role_hijack, prompt_extraction, jailbreak,
@@ -149,7 +150,7 @@ domains:
       # egress stage never blocks whatever ADMINA_EGRESS_MODE says.
       #
       # Roll out observe-first, then build the list from real traffic:
-      #   admina egress suggest-allowlist --since 7d
+      #   admina egress suggest-allowlist --since 7     # last 7 days
       # (needs FORENSIC_BACKEND=filesystem; the default `memory` keeps no
       # records to read back). Promotion is always a human act — review
       # every candidate before pasting it here.

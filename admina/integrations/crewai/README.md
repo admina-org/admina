@@ -5,9 +5,13 @@ Govern every CrewAI agent step — LLM reasoning, tool invocations, and task out
 ## Install
 
 ```bash
-pip install -e ".[nlp]"   # Admina with NLP (spaCy for PII)
-pip install crewai         # Your CrewAI deps
+pip install -e ".[proxy,nlp]"   # Admina: loop breaker (numpy, scikit-learn) + NLP (spaCy for PII)
+pip install crewai              # Your CrewAI deps
 ```
+
+From PyPI: `pip install "admina-framework[proxy,nlp]"`. Loop detection is on
+by default and needs numpy and scikit-learn (`[proxy]`), or the Rust loop
+breaker (`[rust]`); without either, pass `loop_detection=False`.
 
 ## Quick Start
 
@@ -53,7 +57,7 @@ step_cb = AdminaStepCallback(
     session_id="my-crew",          # Session ID for loop detection
     pii_redaction=True,            # Redact PII (default: True)
     firewall=True,                 # Injection firewall (default: True)
-    loop_detection=True,           # Loop breaker (default: True)
+    loop_detection=True,           # Loop breaker (default: True; needs [proxy] or [rust])
     on_block="raise",              # "raise" or "warn" (default: "raise")
     audit=True,                    # Emit governance events (default: True)
 )

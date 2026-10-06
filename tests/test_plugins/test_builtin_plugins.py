@@ -345,6 +345,47 @@ class TestHTTPRESTTransportAdapter:
         assert result["latency_us"] == 50.5
 
 
+class TestMCPTransportAdapter:
+    def test_is_transport_adapter(self):
+        from admina.plugins.builtin.transports.mcp import MCPTransportAdapter
+
+        adapter = MCPTransportAdapter()
+        assert isinstance(adapter, BaseTransportAdapter)
+        assert adapter.protocol_name == "mcp"
+
+    def test_discovered_as_a_builtin(self):
+        registry = PluginRegistry()
+        registry.discover(user_path=Path("/nonexistent"), entry_point_group="")
+        adapters = registry.list("transport_adapter")
+        assert adapters["mcp"].__name__ == "MCPTransportAdapter"
+
+    def test_parse_request(self):
+        from admina.plugins.builtin.transports.mcp import MCPTransportAdapter
+
+        body = {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "x"}}
+        req = _run(MCPTransportAdapter().parse_request(json.dumps(body)))
+        assert req.method == "tools/call"
+        assert req.protocol == "mcp"
+        assert req.metadata["jsonrpc_id"] == 7
+
+    @pytest.mark.parametrize(
+        ("action", "code"), [("BLOCK", -32600), ("CIRCUIT_BREAK", -32000), ("ALLOW", None)]
+    )
+    def test_format_response(self, action, code):
+        from admina.core.types import GovernanceResponse
+        from admina.plugins.builtin.transports.mcp import MCPTransportAdapter
+
+        gov = GovernanceResponse(
+            content="", action=action, risk_level="HIGH", request_id="r1", latency_us=1.0
+        )
+        result = _run(MCPTransportAdapter().format_response(gov, {"id": 7}))
+        if code is None:
+            assert result is None
+        else:
+            assert result["id"] == 7
+            assert result["error"]["code"] == code
+
+
 # ═══════════════════════════════════════════════════════════════
 # 6. FilesystemForensicStore
 # ═══════════════════════════════════════════════════════════════
