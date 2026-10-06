@@ -2156,6 +2156,7 @@ async def _mcp_exchange(request: Request, path: str, outcome: _McpOutcome) -> JS
                             content=mcp_transport.format_block_response(
                                 gov_response,
                                 body,
+                                reason="response_blocked",
                             ),
                         )
                 except (ValueError, RuntimeError, OSError, TypeError) as exc:
@@ -2204,7 +2205,9 @@ async def _mcp_exchange(request: Request, path: str, outcome: _McpOutcome) -> JS
                         )
                         return JSONResponse(
                             status_code=403,
-                            content=mcp_transport.format_block_response(gov_response, body),
+                            content=mcp_transport.format_block_response(
+                                gov_response, body, reason="response_blocked"
+                            ),
                         )
 
         record_hash = (forensic_record or {}).get("record_hash")

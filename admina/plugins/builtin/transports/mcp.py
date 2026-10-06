@@ -70,16 +70,27 @@ def parse_request(
 def format_block_response(
     gov_response: GovernanceResponse,
     original_body: dict[str, Any],
+    *,
+    reason: str | None = None,
 ) -> dict[str, Any]:
     """Format a BLOCK governance response as a JSON-RPC 2.0 error.
+
+    ``data.reason`` names the cause: ``injection_detected`` (firewall),
+    ``scan_depth_exceeded``, ``egress_refused`` or ``guard_blocked``, as the
+    pipeline sets it in ``gov_response.metadata["reason"]``, or *reason*
+    (``response_blocked`` for a response blocked by a governance guard).
+    Without either it is ``injection_detected``.
 
     Args:
         gov_response: The governance engine's decision.
         original_body: The original JSON-RPC request (for the ``id`` field).
+        reason: The cause, in place of the one of *gov_response*.
 
     Returns:
         A JSON-RPC 2.0 error response dict.
     """
+    if reason is None:
+        reason = gov_response.metadata.get("reason") or "injection_detected"
     return {
         "jsonrpc": "2.0",
         "id": original_body.get("id"),
@@ -88,7 +99,7 @@ def format_block_response(
             "message": "Request blocked by Admina governance",
             "data": {
                 "event_id": gov_response.request_id,
-                "reason": "injection_detected",
+                "reason": reason,
                 "risk_level": gov_response.risk_level,
                 "governance_latency_us": round(gov_response.latency_us, 2),
             },
