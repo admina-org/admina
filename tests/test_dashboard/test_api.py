@@ -1285,6 +1285,29 @@ class TestDashboardSuggestionsWouldAction:
         assert "observe_clean" in types
 
 
+class TestDashboardSuggestionsLoopBreaker:
+    def test_the_loop_breaker_suggestion_names_real_settings(self) -> None:
+        """The variables the suggestion tells the operator to tune are the
+        proxy's settings, so the unknown-variable startup check accepts them."""
+        from admina.proxy.config import Settings
+
+        row = ("circuit_break", "high", _json.dumps({"loop_breaker": {"is_loop": True}}))
+        ch = _FakeCH(rows_by_call=[[row] * 10, []])
+        app = _build_test_app(clickhouse=ch)
+
+        async def go():
+            async with _client(app) as c:
+                return await c.get("/api/dashboard/suggestions?min_count=1")
+
+        r = _run(go())
+        assert r.status_code == 200
+        (suggestion,) = [s for s in r.json()["suggestions"] if s["type"] == "loop_breaker_active"]
+        names = [action.split()[1] for action in suggestion["actions"]]
+        assert names == ["LOOP_SIMILARITY_THRESHOLD", "LOOP_MAX_CONSECUTIVE"]
+        assert all(name in Settings.model_fields for name in names)
+        assert "raising the similarity threshold" in suggestion["message"]
+
+
 # ══════════════════════════════════════════════════════════════
 #  Forensic chain verify endpoint tests
 # ══════════════════════════════════════════════════════════════

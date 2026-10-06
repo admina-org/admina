@@ -887,12 +887,12 @@ def create_dashboard_endpoints(
                         "severity": "warn",
                         "message": (
                             f"Loop breaker fired {lb_count} time(s) in {window_hours}h. "
-                            "If these are legitimate template loops, consider lowering "
-                            "the similarity threshold or raising max_consecutive."
+                            "If these are legitimate template loops, consider raising "
+                            "the similarity threshold or max_consecutive."
                         ),
                         "actions": [
-                            "Tune ADMINA_LOOP_SIMILARITY_THRESHOLD (default 0.85)",
-                            "Tune ADMINA_LOOP_MAX_CONSECUTIVE (default 3)",
+                            "Tune LOOP_SIMILARITY_THRESHOLD (default 0.85)",
+                            "Tune LOOP_MAX_CONSECUTIVE (default 3)",
                         ],
                     }
                 )
