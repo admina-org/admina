@@ -921,7 +921,7 @@ function dashboard() {
           max: 25,
           hint: noAssessment ? 'No gap analysis run yet — see EU AI Act card' : null,
         },
-        { key: 'no_recent_attacks',     label: 'No blocked attacks (24h)',    value: bd.no_recent_attacks ?? 0,     max: 15 },
+        { key: 'no_recent_attacks',     label: 'No blocked requests (since start)', value: bd.no_recent_attacks ?? 0,     max: 15 },
         { key: 'forensic_chain_valid',  label: 'Forensic chain valid',        value: bd.forensic_chain_valid ?? 0,  max: 10 },
       ];
     },

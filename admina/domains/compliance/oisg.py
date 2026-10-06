@@ -36,6 +36,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from admina.domains.compliance.forensic import CHAIN_INVALID
+
 logger = logging.getLogger("admina.compliance.oisg")
 
 # ── Pillar colours (matching oisg.ai design system) ─────────
@@ -603,19 +605,30 @@ def _evaluate_governed(
     )
 
     # G2: Immutable forensic log — satisfied if forensic black box
-    #     is active with valid chain
-    chain_valid = (
+    #     is active and its chain is not invalid (an invalid chain
+    #     writes no record until an operator restores the store)
+    chain_initialised = (
         forensic_box is not None and getattr(forensic_box, "chain_head", "GENESIS") != "GENESIS"
     )
+    chain_invalid = getattr(forensic_box, "chain_status", None) == CHAIN_INVALID
+    if forensic_box is None:
+        g2_reason = "Forensic black box not configured"
+    elif chain_invalid:
+        error = getattr(forensic_box, "chain_error", None) or {}
+        g2_reason = (
+            f"Forensic chain invalid ({error.get('reason')} at record "
+            f"{error.get('sequence_number')}): no record is written"
+        )
+    else:
+        g2_reason = "SHA-256 hash-chained forensic black box active" + (
+            " (chain initialised)" if chain_initialised else " (chain at GENESIS)"
+        )
     results.append(
         CriterionResult(
             id=defs[1]["id"],
             label=defs[1]["label"],
-            satisfied=forensic_box is not None,
-            reason="SHA-256 hash-chained forensic black box active"
-            + (" (chain initialised)" if chain_valid else " (chain at GENESIS)")
-            if forensic_box is not None
-            else "Forensic black box not configured",
+            satisfied=forensic_box is not None and not chain_invalid,
+            reason=g2_reason,
         )
     )
 

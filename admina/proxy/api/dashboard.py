@@ -33,6 +33,7 @@ from typing import Any
 from fastapi import APIRouter, Query, Response, WebSocket, WebSocketDisconnect
 
 from admina.core.event_bus import GovernanceEvent, bus
+from admina.domains.compliance.forensic import CHAIN_INVALID
 from admina.domains.compliance.oisg import PILLAR_COLORS, compute_oisg_score
 
 logger = logging.getLogger("admina.api.dashboard")
@@ -205,16 +206,22 @@ def _compute_governance_score(
       - Data residency 100% enforced?  +25
       - All interactions audited?      +25
       - EU AI Act gap coverage (% articles covered x 25)  +25
-      - No blocked attacks in last 24h?  +15
+      - No request blocked since the proxy started?  +15
       - Forensic chain valid?           +10
+
+    A forensic store whose ``chain_status`` is ``invalid`` writes no record
+    and its chain does not verify, so it earns neither the audit nor the
+    chain points.
     """
     breakdown: dict[str, int] = {}
 
     # Data residency — enforced if proxy is running (always true in proxy mode)
     breakdown["data_residency"] = 25
 
-    # All interactions audited — true if forensic box is active
-    audited = forensic_box is not None and forensic_box.record_count > 0
+    chain_invalid = getattr(forensic_box, "chain_status", None) == CHAIN_INVALID
+
+    # All interactions audited — true if forensic box is recording
+    audited = forensic_box is not None and forensic_box.record_count > 0 and not chain_invalid
     breakdown["interactions_audited"] = 25 if audited else 0
 
     # EU AI Act gap coverage — use last assessment if available
@@ -226,12 +233,15 @@ def _compute_governance_score(
         gap_score = round(coverage_pct * 25)
     breakdown["eu_ai_act_coverage"] = gap_score
 
-    # No blocked attacks in last 24h
+    # No request blocked: requests_blocked counts from the start of the
+    # process, there is no time window.
     blocked = metrics.get("requests_blocked", 0)
     breakdown["no_recent_attacks"] = 15 if blocked == 0 else 0
 
-    # Forensic chain valid
-    chain_valid = forensic_box is not None and forensic_box.chain_head != "GENESIS"
+    # Forensic chain valid: records written and a chain that is not invalid
+    chain_valid = (
+        forensic_box is not None and forensic_box.chain_head != "GENESIS" and not chain_invalid
+    )
     breakdown["forensic_chain_valid"] = 10 if chain_valid else 0
 
     total = sum(breakdown.values())

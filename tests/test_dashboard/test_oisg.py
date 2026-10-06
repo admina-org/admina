@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import httpx
+import pytest
 from fastapi import FastAPI
 
 from admina.domains.compliance.oisg import (
@@ -44,9 +45,15 @@ from admina.domains.compliance.oisg import (
 
 
 class _FakeForensicBox:
-    def __init__(self, *, has_records: bool = True) -> None:
+    def __init__(self, *, has_records: bool = True, chain_status: str | None = None) -> None:
         self.record_count = 5 if has_records else 0
         self.chain_head = "abc123def456" if has_records else "GENESIS"
+        self.chain_status = chain_status
+        self.chain_error = (
+            {"reason": "record_hash_mismatch", "sequence_number": 3}
+            if chain_status == "invalid"
+            else None
+        )
 
 
 class _FakeCompliance:
@@ -258,6 +265,19 @@ class TestComputeOISGScore:
 
         result_yes = compute_oisg_score(forensic_box=_FakeForensicBox())
         assert result_yes.pillars["governed"].criteria[1].satisfied is True
+
+    @pytest.mark.parametrize("status", [None, "ok", "rebuilt"])
+    def test_governed_forensic_criterion_with_a_verified_chain(self, status) -> None:
+        result = compute_oisg_score(forensic_box=_FakeForensicBox(chain_status=status))
+        assert result.pillars["governed"].criteria[1].satisfied is True
+
+    def test_governed_forensic_criterion_fails_on_an_invalid_chain(self) -> None:
+        """G2 asks for an immutable log: an invalid chain writes no record."""
+        result = compute_oisg_score(forensic_box=_FakeForensicBox(chain_status="invalid"))
+        g2 = result.pillars["governed"].criteria[1]
+        assert g2.satisfied is False
+        assert "invalid" in g2.reason
+        assert "record_hash_mismatch" in g2.reason
 
     def test_governed_compliance_criterion(self) -> None:
         """G1 depends on compliance engine being active."""
