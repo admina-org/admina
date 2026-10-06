@@ -13,6 +13,12 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.13.2] — 2026-10-07
+
+Patch release: the PyPI package `admina`, an alias of `admina-framework`,
+and the `mistral` extra on mistralai 3.x. The code of the framework is
+unchanged from 0.13.1.
+
 ### Added
 
 - The PyPI package `admina`: `pip install admina` installs
@@ -21,6 +27,14 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   (`packaging/admina`), and `release.yml` publishes it after
   admina-framework from the same tag. `scripts/check-versions.py` checks its
   version and its admina-framework pin.
+
+### Changed
+
+- The `mistral` extra accepts `mistralai>=1.0,<4`, and the lockfile has
+  mistralai 3.1.0. The Mistral adapter imports `Mistral` from
+  `mistralai.client` when the package root does not export it, and its
+  `chat.complete()` call and the response fields it reads (`choices`,
+  `message.content`, `usage.total_tokens`) are the same in 3.x.
 
 ### Notes
 
@@ -2218,7 +2232,8 @@ environment in `docker-compose.benchmark.yml`.
 
 ---
 
-[Unreleased]: https://github.com/admina-org/admina/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/admina-org/admina/compare/v0.13.2...HEAD
+[0.13.2]: https://github.com/admina-org/admina/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/admina-org/admina/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/admina-org/admina/compare/v0.12.2...v0.13.0
 [0.12.2]: https://github.com/admina-org/admina/compare/v0.12.1...v0.12.2
