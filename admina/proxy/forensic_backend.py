@@ -31,6 +31,11 @@ proxy starts with an
 records nothing and reports itself not writable. A directory that exists but
 cannot be written is kept in ``open`` mode (its writes fail and are logged
 until it can be written).
+
+A store whose chain was written with ``ADMINA_FORENSIC_STATE_KEY``, opened
+while the key is not set, stops the proxy in ``closed`` mode
+(:class:`ForensicBackendError`); in ``open`` mode it is used, its new records
+unsigned, and a warning is logged at every start.
 """
 
 from __future__ import annotations
@@ -42,6 +47,7 @@ from typing import Any
 from admina.core.secretfile import SecretFileError
 from admina.domains.compliance.forensic import (
     ForensicBlackBox,
+    ForensicKeyError,
     ForensicWriteError,
     UnavailableForensicStore,
 )
@@ -149,8 +155,9 @@ def _filesystem_store(base_dir: str, fail_mode: str) -> ForensicBlackBox:
         return _unavailable(
             "filesystem", f"the forensic directory {base_dir} cannot be used ({reason})", fail_mode
         )
-    except ForensicWriteError as exc:
-        # Closed mode: the chain state could not be written at startup.
+    except (ForensicWriteError, ForensicKeyError) as exc:
+        # Closed mode: the chain state could not be written at startup, or
+        # the chain was written with a key that is not set.
         raise ForensicBackendError(f"the forensic directory {base_dir}: {exc}") from exc
     if box.writable() is False:
         message = f"the forensic directory {base_dir} is not writable"
@@ -195,6 +202,8 @@ def _s3_store(settings: Any, fail_mode: str) -> ForensicBlackBox:
         )
     except SecretFileError:
         raise
+    except ForensicKeyError as exc:
+        raise ForensicBackendError(f"the forensic bucket {bucket}: {exc}") from exc
     except Exception as exc:  # noqa: BLE001 — any read or write error at startup
         return _unavailable(
             "s3",

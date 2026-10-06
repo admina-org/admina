@@ -32,7 +32,11 @@ At startup a durable store checks its chain state (``chain_status``):
 that all verify with the key (logged, and recorded as a
 ``chain_state_rebuilt`` event; the status stays ``rebuilt`` across restarts
 until :meth:`ForensicBlackBox.acknowledge_rebuild`), ``invalid`` otherwise — then no record is
-written until the forensic directory is restored or moved aside.
+written until the forensic directory is restored or moved aside. A store
+whose chain was written with a key (its chain state names the first signed
+record, or has a signature beside it), opened without one, raises
+:class:`ForensicKeyError` in ``closed`` mode; in ``open`` mode it logs a
+warning and writes unsigned records.
 :func:`verify_directory` and :func:`verify_bucket` verify a stored chain
 without writing to it.
 """
@@ -111,6 +115,11 @@ CHAIN_INVALID = "invalid"
 class ForensicWriteError(Exception):
     """A forensic record, or the chain state after it, was not written
     (``fail_mode="closed"``)."""
+
+
+class ForensicKeyError(RuntimeError):
+    """A durable store whose chain was written with a key was opened without
+    one (``fail_mode="closed"``): its records would be written unsigned."""
 
 
 class ForensicBlackBox(BaseForensicStore):
@@ -386,6 +395,20 @@ class ForensicBlackBox(BaseForensicStore):
             return None
         return stored_hex_digest(data) if data is not None else None
 
+    def _was_keyed(self, payload: bytes) -> bool:
+        """Whether the chain was written with a key: its chain state names
+        the first signed record, or has a signature beside it. A write
+        without the key rewrites the state but leaves the signature in
+        place, so the store stays marked after unsigned records."""
+        state = _state_of(payload)
+        if state is not None and isinstance(state.get("signed_from"), int):
+            return True
+        try:
+            return self._read_object(_CHAIN_STATE_SIG_KEY) is not None
+        except OSError as exc:
+            logger.error("Cannot read the forensic chain-state signature: %s", exc)
+            return False
+
     def _apply_state(self, state: dict[str, Any]) -> None:
         self.chain_head = state.get("chain_head", GENESIS)
         self.record_count = state.get("record_count", 0)
@@ -420,6 +443,17 @@ class ForensicBlackBox(BaseForensicStore):
             logger.critical("Forensic chain state missing (%s) while records exist", where)
             self._rebuild(STATE_MISSING)
             return
+        if not self._state_signing_key and self._was_keyed(payload):
+            message = (
+                f"The forensic chain ({where}) was written with ADMINA_FORENSIC_STATE_KEY, "
+                "which is not set: its next records would be written unsigned, and a "
+                "verification with the key reports them as unsigned. Set "
+                "ADMINA_FORENSIC_STATE_KEY (or ADMINA_FORENSIC_STATE_KEY_FILE) to the key "
+                "of the store, or move the store aside to start a new chain"
+            )
+            if self.fail_mode == "closed":
+                raise ForensicKeyError(message)
+            logger.warning("%s.", message)
         if self._state_signing_key and not self._state_sig_is_valid(
             payload, self._read_state_sig()
         ):

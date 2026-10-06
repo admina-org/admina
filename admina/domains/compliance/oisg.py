@@ -36,6 +36,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from admina.domains.compliance.forensic import CHAIN_INVALID
+
 logger = logging.getLogger("admina.compliance.oisg")
 
 # ── Pillar colours (matching oisg.ai design system) ─────────
@@ -236,6 +238,7 @@ def compute_oisg_score(
     api_key_configured: bool | None = None,
     engine_status: dict[str, Any] | None = None,
     metrics: dict[str, Any] | None = None,
+    dashboard_enabled: bool | None = None,
 ) -> OISGResult:
     """Compute the OISG adequacy score from Admina's live runtime state.
 
@@ -247,6 +250,12 @@ def compute_oisg_score(
     from ``config``.  Pass ``True`` when the proxy ``Settings.ADMINA_API_KEY``
     is non-empty.  When omitted the function falls back to
     ``getattr(config, "admina_api_key", "")`` for backwards compatibility.
+
+    ``dashboard_enabled`` overrides the dashboard part of G4 (End-to-end
+    observability) in the same way: the proxy passes whether it serves the
+    dashboard, which also depends on ``ADMINA_DASHBOARD_ENABLED`` and
+    ``ADMINA_ENABLED_SURFACES``. When omitted, ``dashboard.enabled`` of
+    ``config`` is read (default ``True``).
     """
     if governance_guards is None:
         governance_guards = []
@@ -293,6 +302,7 @@ def compute_oisg_score(
         otel_exporter=otel_exporter,
         governance_guards=governance_guards,
         config=config,
+        dashboard_enabled=dashboard_enabled,
     )
     pillars["governed"] = _build_pillar("Governed", g_criteria)
 
@@ -578,6 +588,7 @@ def _evaluate_governed(
     otel_exporter: Any | None,
     governance_guards: list,
     config: Any | None,
+    dashboard_enabled: bool | None = None,
 ) -> list[CriterionResult]:
     defs = CRITERIA["governed"]
     results: list[CriterionResult] = []
@@ -603,19 +614,30 @@ def _evaluate_governed(
     )
 
     # G2: Immutable forensic log — satisfied if forensic black box
-    #     is active with valid chain
-    chain_valid = (
+    #     is active and its chain is not invalid (an invalid chain
+    #     writes no record until an operator restores the store)
+    chain_initialised = (
         forensic_box is not None and getattr(forensic_box, "chain_head", "GENESIS") != "GENESIS"
     )
+    chain_invalid = getattr(forensic_box, "chain_status", None) == CHAIN_INVALID
+    if forensic_box is None:
+        g2_reason = "Forensic black box not configured"
+    elif chain_invalid:
+        error = getattr(forensic_box, "chain_error", None) or {}
+        g2_reason = (
+            f"Forensic chain invalid ({error.get('reason')} at record "
+            f"{error.get('sequence_number')}): no record is written"
+        )
+    else:
+        g2_reason = "SHA-256 hash-chained forensic black box active" + (
+            " (chain initialised)" if chain_initialised else " (chain at GENESIS)"
+        )
     results.append(
         CriterionResult(
             id=defs[1]["id"],
             label=defs[1]["label"],
-            satisfied=forensic_box is not None,
-            reason="SHA-256 hash-chained forensic black box active"
-            + (" (chain initialised)" if chain_valid else " (chain at GENESIS)")
-            if forensic_box is not None
-            else "Forensic black box not configured",
+            satisfied=forensic_box is not None and not chain_invalid,
+            reason=g2_reason,
         )
     )
 
@@ -636,11 +658,12 @@ def _evaluate_governed(
     # G4: End-to-end observability — satisfied if OTEL exporter
     #     and dashboard are configured
     has_otel = otel_exporter is not None
-    dashboard_enabled = True
-    if config is not None:
-        dash_cfg = getattr(config, "dashboard", None)
-        if dash_cfg is not None:
-            dashboard_enabled = getattr(dash_cfg, "enabled", True)
+    if dashboard_enabled is None:
+        dashboard_enabled = True
+        if config is not None:
+            dash_cfg = getattr(config, "dashboard", None)
+            if dash_cfg is not None:
+                dashboard_enabled = getattr(dash_cfg, "enabled", True)
     g4_ok = has_otel or dashboard_enabled
     results.append(
         CriterionResult(

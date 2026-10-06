@@ -678,6 +678,7 @@ _dashboard_router = create_dashboard_endpoints(
     get_otel_exporter=lambda: app.state.proxy.otel_exporter,
     get_governance_guards=lambda: app.state.proxy.governance_guards,
     get_config=lambda: _admina_config,
+    get_dashboard_enabled=lambda: _dashboard_enabled(),
     # The router's only credential check is the /api/dashboard/live upgrade,
     # a read-only dashboard feed, so the browser session is admitted there.
     verify_credential=lambda **kw: verify_credential(allow_session=True, **kw),
@@ -734,11 +735,13 @@ def _dashboard_index_html() -> str:
 def _dashboard_enabled() -> bool:
     """True if the bundled dashboard and its browser sign-in are served.
 
-    Off when ``ADMINA_DASHBOARD_ENABLED=false`` or ``dashboard.enabled:
-    false`` in admina.yaml. The ``/api/dashboard/*`` data API is not affected:
-    it stays available to API-key clients either way.
+    Off when ``ADMINA_ENABLED_SURFACES`` leaves out ``dashboard``, when
+    ``ADMINA_DASHBOARD_ENABLED=false`` or with ``dashboard.enabled: false``
+    in admina.yaml. ``ADMINA_DASHBOARD_ENABLED`` and ``dashboard.enabled``
+    leave the ``/api/dashboard/*`` data API alone: it stays available to
+    API-key clients.
     """
-    if not settings.ADMINA_DASHBOARD_ENABLED:
+    if "dashboard" not in enabled_surfaces() or not settings.ADMINA_DASHBOARD_ENABLED:
         return False
     dash_cfg = getattr(_admina_config, "dashboard", None)
     return bool(getattr(dash_cfg, "enabled", True))
@@ -1249,7 +1252,8 @@ async def prometheus_metrics(request: Request) -> Response:
     _metric(
         "avg_latency_ms",
         round(m.get("avg_latency_ms", 0.0), 2),
-        "Rolling average pipeline latency in milliseconds",
+        "Mean duration of the governed requests since startup, from arrival to the end "
+        "of the response, upstream included, in milliseconds",
         "gauge",
     )
     _metric(
@@ -1879,6 +1883,7 @@ async def _mcp_exchange(request: Request, path: str, outcome: _McpOutcome) -> JS
                     "code": -32000,
                     "message": "Request too large",
                     "data": {
+                        "event_id": event_id,
                         "content_length": len(content_str),
                         "max_tokens": settings.MAX_REQUEST_TOKENS,
                     },
@@ -2152,6 +2157,7 @@ async def _mcp_exchange(request: Request, path: str, outcome: _McpOutcome) -> JS
                             content=mcp_transport.format_block_response(
                                 gov_response,
                                 body,
+                                reason="response_blocked",
                             ),
                         )
                 except (ValueError, RuntimeError, OSError, TypeError) as exc:
@@ -2200,7 +2206,9 @@ async def _mcp_exchange(request: Request, path: str, outcome: _McpOutcome) -> JS
                         )
                         return JSONResponse(
                             status_code=403,
-                            content=mcp_transport.format_block_response(gov_response, body),
+                            content=mcp_transport.format_block_response(
+                                gov_response, body, reason="response_blocked"
+                            ),
                         )
 
         record_hash = (forensic_record or {}).get("record_hash")

@@ -327,6 +327,20 @@ def test_max_request_tokens_still_applies_to_mcp(monkeypatch):
     assert proxy.upstream.calls == []
 
 
+def test_the_mcp_token_limit_error_carries_the_event_id(monkeypatch):
+    """Like the other JSON-RPC errors of /mcp, in ``error.data.event_id``."""
+    proxy = _Proxy(monkeypatch, max_bytes=0, max_tokens=10)
+    body = {**_MCP_BODY, "params": {"name": "echo", "arguments": {"text": "x" * 50}}}
+
+    error = proxy.post("/mcp", _raw(body)).json()["error"]
+
+    assert error["code"] == -32000
+    assert error["message"] == "Request too large"
+    assert isinstance(error["data"]["event_id"], str) and error["data"]["event_id"]
+    assert error["data"]["max_tokens"] == 10
+    assert error["data"]["content_length"] > 10
+
+
 def test_gateway_message_length_limit_defaults_to_no_limit():
     from admina.proxy.config import Settings
 

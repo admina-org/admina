@@ -26,11 +26,11 @@ import pytest
 
 from admina.core.types import GovernanceAction
 from admina.domains.agent_security.egress import EgressPolicy
-from admina.domains.governance import build_governance_details, run_pipeline
+from admina.domains.governance import SCAN_DEPTH, build_governance_details, run_pipeline
 from admina.engines import get_firewall, get_loop_breaker, get_pii_engine
 
 
-async def _run(params, policy, mode):
+async def _run(params, policy, mode, *, text_stages=True):
     return await run_pipeline(
         body={"params": params},
         content_str=str(params),
@@ -43,6 +43,8 @@ async def _run(params, policy, mode):
         loop_breaker=get_loop_breaker(),
         governance_guards=[],
         loop_enabled=False,
+        injection_enabled=text_stages,
+        pii_enabled=text_stages,
         egress_policy=policy,
         egress_mode=mode,
     )
@@ -122,14 +124,18 @@ class TestEgressStage:
         assert r.checks["egress"]["blocked"] == ["publictestwiki.com"]
 
     async def test_a_buried_destination_is_denied_not_passed_through(self):
-        """The depth cap must fail closed on every surface, not just in analyze()."""
+        """The depth cap must fail closed on every surface, not just in analyze().
+
+        The firewall and PII stages are off: with either on, text this deep
+        is refused by the pipeline's own depth check before egress runs.
+        """
         buried: dict = {}
         cur = buried
-        for _ in range(9):
+        for _ in range(SCAN_DEPTH + 1):
             cur["k"] = {}
             cur = cur["k"]
         cur["url"] = "https://publictestwiki.com/w.pl?action=edit"
-        r = await _run(buried, EgressPolicy(allow=["api.openai.com"]), "enforce")
+        r = await _run(buried, EgressPolicy(allow=["api.openai.com"]), "enforce", text_stages=False)
         assert r.action == GovernanceAction.BLOCK
         assert r.checks["egress"]["status"] == "unresolvable"
         assert r.checks["egress"]["evidence"]["scan_truncated"] is True
@@ -138,19 +144,41 @@ class TestEgressStage:
         """Truncation outranks a destination resolved above it, end to end."""
         decoy: dict = {"url": "https://api.openai.com/v1", "x": {}}
         cur = decoy["x"]
-        for _ in range(8):
+        for _ in range(SCAN_DEPTH):
             cur["k"] = {}
             cur = cur["k"]
         cur["url"] = "https://publictestwiki.com/w.pl?action=edit"
-        r = await _run(decoy, EgressPolicy(allow=["api.openai.com"]), "enforce")
+        r = await _run(decoy, EgressPolicy(allow=["api.openai.com"]), "enforce", text_stages=False)
         assert r.action == GovernanceAction.BLOCK
         assert r.checks["egress"]["status"] == "unresolvable"
         assert r.checks["egress"]["evidence"]["scan_truncated"] is True
         assert "nested past the scan depth limit" in r.checks["egress"]["reason"]
 
-        observed = await _run(decoy, EgressPolicy(allow=["api.openai.com"]), "observe")
+        observed = await _run(
+            decoy, EgressPolicy(allow=["api.openai.com"]), "observe", text_stages=False
+        )
         assert observed.action == GovernanceAction.ALLOW
         assert observed.checks["egress"]["evidence"]["scan_truncated"] is True
+
+    async def test_a_call_within_the_scan_depth_is_evaluated_not_refused(self):
+        """Egress walks as deep as the firewall: a call nested 10 levels deep
+        passes both, and a destination at that depth is checked by name."""
+        local: dict = {"name": "calc", "arguments": {}}
+        cur = local["arguments"]
+        for _ in range(10):
+            cur["k"] = {}
+            cur = cur["k"]
+        cur["expression"] = "2 + 2"
+        r = await _run(local, EgressPolicy(allow=["api.openai.com"]), "enforce")
+        assert r.action == GovernanceAction.ALLOW
+        assert r.checks["egress"]["status"] == "no_egress"
+        assert "scan_depth" not in r.checks
+
+        cur["url"] = "https://publictestwiki.com/w.pl?action=edit"
+        r = await _run(local, EgressPolicy(allow=["api.openai.com"]), "enforce")
+        assert r.action == GovernanceAction.BLOCK
+        assert r.checks["egress"]["blocked"] == ["publictestwiki.com"]
+        assert "scan_truncated" not in r.checks["egress"]["evidence"]
 
     async def test_read_only_tools_are_read_off_the_policy_not_from_config(self):
         """The stage must not touch admina.yaml: the names ride on the policy."""

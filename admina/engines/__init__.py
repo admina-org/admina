@@ -527,11 +527,10 @@ def get_firewall(*, deep_path_enabled: bool | None = None) -> FirewallBridge:
             not installed, or admina.yaml sets a key of
             :data:`PYTHON_ONLY_FIREWALL_KEYS` (the message names them).
         ConfigSchemaError: a value of admina.yaml has the wrong type (the
-            message names its key).
-        ValueError: ``ADMINA_ENGINE`` has another value;
-            ``heuristic_threshold`` is not a finite number greater than 0; a
-            pattern pack cannot be loaded, or is too slow with
-            ``strict_pack_timing``
+            message names its key), ``heuristic_threshold`` included: it
+            must be a finite number greater than 0, on either engine.
+        ValueError: ``ADMINA_ENGINE`` has another value; a pattern pack
+            cannot be loaded, or is too slow with ``strict_pack_timing``
             (:class:`~admina.domains.agent_security.pattern_packs.PatternPackError`).
     """
     if deep_path_enabled is None:
