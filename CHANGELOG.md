@@ -13,6 +13,13 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+### Notes
+
+- `tests/test_iban_it.py::test_matching_time_on_long_runs` (a 50 ms budget
+  on 64k characters) carries the `benchmark` marker and is excluded from CI,
+  as the timing tests of `tests/test_firewall_pattern_timing.py` are. It
+  runs with `pytest -m benchmark tests/test_iban_it.py`.
+
 ## [0.13.1] — 2026-10-06
 
 Patch release: the compose file of `admina init` binds the dashboard, OTEL

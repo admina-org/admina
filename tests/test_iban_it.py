@@ -208,6 +208,9 @@ def test_card_and_phone_numbers_in_one_text(regex_only):
 # ── Matching time on long inputs ──────────────────────────────
 
 
+# A time budget on 64k characters: run with `pytest -m benchmark` (CI runs
+# -m "not benchmark"; shared runners vary between runs).
+@pytest.mark.benchmark
 @pytest.mark.parametrize("unit", ["IT60", "IT60 ", "IT60X", "IT60 X", "A1 ", "1 ", "+39 3"])
 def test_matching_time_on_long_runs(regex_only, unit):
     from types import SimpleNamespace
