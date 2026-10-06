@@ -1249,7 +1249,8 @@ async def prometheus_metrics(request: Request) -> Response:
     _metric(
         "avg_latency_ms",
         round(m.get("avg_latency_ms", 0.0), 2),
-        "Rolling average pipeline latency in milliseconds",
+        "Mean duration of the governed requests since startup, from arrival to the end "
+        "of the response, upstream included, in milliseconds",
         "gauge",
     )
     _metric(

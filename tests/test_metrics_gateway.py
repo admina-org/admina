@@ -137,6 +137,30 @@ def test_the_request_duration_includes_the_upstream(proxy):
     assert samples['admina_governance_duration_seconds_sum{surface="gateway"}'] < 0.3
 
 
+def test_the_average_latency_is_the_mean_request_duration(proxy):
+    """``admina_avg_latency_ms`` averages the request durations of the
+    histogram, upstream included, and its HELP says so."""
+    import time
+
+    import httpx
+    from _proxy_app import upstream
+
+    def slow(request: httpx.Request) -> httpx.Response:
+        time.sleep(0.3)
+        return upstream(request)
+
+    responses, _ = serve([ALLOW, METRICS], gateway=slow)
+    body = responses[-1].text
+    samples = _samples(body)
+    assert samples["admina_avg_latency_ms"] >= 300
+    assert samples["admina_avg_latency_ms"] == pytest.approx(
+        samples['admina_request_duration_seconds_sum{surface="gateway"}'] * 1000, abs=0.01
+    )
+    help_line = next(line for line in body.splitlines() if line.startswith("# HELP admina_avg_"))
+    assert "pipeline" not in help_line
+    assert "upstream included" in help_line
+
+
 def test_a_request_with_masked_pii_is_counted_as_redact(proxy, monkeypatch):
     monkeypatch.setattr(proxy, "PII_REDACTION_ENABLED", True)
     responses, _ = serve([REDACT, METRICS])
