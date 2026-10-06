@@ -1,0 +1,69 @@
+
+# Copyright © 2025–2026 Stefano Noferi & Admina contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The PyPI project "admina": no code of its own, it installs admina-framework
+# at the same version. Every extra of admina-framework has an extra of the same
+# name here (admina[proxy] installs admina-framework[proxy]). The version and
+# the pin are checked by scripts/check-versions.py, the extras by
+# tests/test_admina_alias.py; release.yml publishes it after admina-framework.
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "admina"
+version = "0.13.1"
+description = "Admina — governed AI development framework (installs admina-framework)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [
+    {name = "Stefano Noferi", email = "info@admina.org"},
+]
+maintainers = [
+    {name = "Stefano Noferi", email = "info@admina.org"},
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+]
+dependencies = ["admina-framework==0.13.1"]
+
+[project.urls]
+Homepage = "https://admina.org"
+Repository = "https://github.com/admina-org/admina"
+Documentation = "https://github.com/admina-org/admina#readme"
+Changelog = "https://github.com/admina-org/admina/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+proxy = ["admina-framework[proxy]==0.13.1"]
+proxy-minimal = ["admina-framework[proxy-minimal]==0.13.1"]
+nlp = ["admina-framework[nlp]==0.13.1"]
+telemetry = ["admina-framework[telemetry]==0.13.1"]
+rust = ["admina-framework[rust]==0.13.1"]
+full = ["admina-framework[full]==0.13.1"]
+openai = ["admina-framework[openai]==0.13.1"]
+ollama = ["admina-framework[ollama]==0.13.1"]
+anthropic = ["admina-framework[anthropic]==0.13.1"]
+mistral = ["admina-framework[mistral]==0.13.1"]
+gemini = ["admina-framework[gemini]==0.13.1"]
+bedrock = ["admina-framework[bedrock]==0.13.1"]
+adapters = ["admina-framework[adapters]==0.13.1"]
+presidio = ["admina-framework[presidio]==0.13.1"]
+all = ["admina-framework[all]==0.13.1"]
+
+[tool.setuptools]
+packages = []
