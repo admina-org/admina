@@ -38,6 +38,12 @@
 
 ## API Key Auth
 
+The provider reads `ADMINA_API_KEY` from the environment when it is created
+without arguments, and the proxy loads it only when that variable is set. A
+key given only through `ADMINA_API_KEY_FILE` or `.env` does not reach the
+provider: the proxy's authentication middleware checks it instead, with the
+same headers (`X-API-Key`, `Authorization: Bearer`).
+
 ::: plugins.builtin.auth.apikey
 
 
