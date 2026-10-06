@@ -300,6 +300,7 @@ def create_dashboard_endpoints(
     get_otel_exporter: Any = None,
     get_governance_guards: Any = None,
     get_config: Any = None,
+    get_dashboard_enabled: Any = None,
     verify_credential: Any = None,
     session_expiry: Any = None,
 ) -> APIRouter:
@@ -323,6 +324,9 @@ def create_dashboard_endpoints(
         get_otel_exporter: Callable returning OTEL exporter | None.
         get_governance_guards: Callable returning list of guards.
         get_config: Callable returning AdminaConfig | None.
+        get_dashboard_enabled: Callable returning whether the proxy serves
+            the dashboard (OISG G4); None reads ``dashboard.enabled`` of the
+            config.
         verify_credential: Callable(headers, query_params, cookies) -> bool.
             Shared credential verifier for header/query/cookie auth.  When
             provided, the WebSocket live endpoint routes all auth through it
@@ -1111,6 +1115,7 @@ def create_dashboard_endpoints(
             api_key_configured=bool(get_settings().ADMINA_API_KEY),
             engine_status=get_engine_status() if get_engine_status else {},
             metrics=get_metrics(),
+            dashboard_enabled=get_dashboard_enabled() if get_dashboard_enabled else None,
         )
         return {**result.to_dict(), "colors": PILLAR_COLORS}
 

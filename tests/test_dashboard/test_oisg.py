@@ -303,6 +303,30 @@ class TestComputeOISGScore:
         result_yes = compute_oisg_score(config=_FakeConfig(admina_api_key="key123"))
         assert result_yes.pillars["secure"].criteria[1].satisfied is True
 
+    def test_g4_reads_dashboard_enabled_over_the_config(self) -> None:
+        """The proxy passes whether it serves the dashboard; the value wins
+        over ``dashboard.enabled`` of admina.yaml."""
+        config = _FakeConfig(dashboard=_FakeDashboardConfig(enabled=True))
+        off = compute_oisg_score(config=config, dashboard_enabled=False)
+        g4 = next(c for c in off.pillars["governed"].criteria if c.id == "g4")
+        assert g4.satisfied is False
+        assert "no dashboard" in g4.reason
+
+        on = compute_oisg_score(
+            config=_FakeConfig(dashboard=_FakeDashboardConfig(enabled=False)),
+            dashboard_enabled=True,
+        )
+        assert next(c for c in on.pillars["governed"].criteria if c.id == "g4").satisfied
+
+    def test_g4_falls_back_to_the_config(self) -> None:
+        config = _FakeConfig(dashboard=_FakeDashboardConfig(enabled=False))
+        result = compute_oisg_score(config=config)
+        assert not next(c for c in result.pillars["governed"].criteria if c.id == "g4").satisfied
+
+    def test_g4_with_otel_and_no_dashboard(self) -> None:
+        result = compute_oisg_score(otel_exporter=_FakeOTEL(), dashboard_enabled=False)
+        assert next(c for c in result.pillars["governed"].criteria if c.id == "g4").satisfied
+
     def test_s2_satisfied_when_api_key_configured(self) -> None:
         """S2 reads api_key_configured param directly, overriding config fallback."""
         result = compute_oisg_score(api_key_configured=True)
@@ -356,6 +380,7 @@ def _build_test_app(
     engine_status: dict | None = None,
     metrics: dict | None = None,
     settings: Any = None,
+    dashboard_enabled: bool | None = None,
 ) -> FastAPI:
     from admina.proxy.api.dashboard import create_dashboard_endpoints
 
@@ -389,6 +414,7 @@ def _build_test_app(
         get_governance_guards=lambda: governance_guards,
         get_config=lambda: config,
         get_engine_status=lambda: engine_status,
+        get_dashboard_enabled=None if dashboard_enabled is None else lambda: dashboard_enabled,
     )
     app.include_router(dash)
     return app
@@ -404,6 +430,17 @@ def _client(app: FastAPI) -> httpx.AsyncClient:
 
 
 class TestDashboardOISGEndpoint:
+    def test_g4_follows_get_dashboard_enabled(self) -> None:
+        app = _build_test_app(config=_FakeConfig(), dashboard_enabled=False)
+
+        async def go():
+            async with _client(app) as c:
+                return (await c.get("/api/dashboard/oisg")).json()
+
+        data = _run(go())
+        g4 = next(c for c in data["pillars"]["governed"]["criteria"] if c["id"] == "g4")
+        assert g4["satisfied"] is False
+
     """GET /api/dashboard/oisg"""
 
     def test_returns_200(self) -> None:
