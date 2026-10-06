@@ -88,7 +88,10 @@ items.
 ## 0.12.0 — Egress control and coordination detection
 
 - Destination-based egress control on tool calls, evaluated independently of
-  the HTTP method, shared by all five governed surfaces. Default-deny under
+  the HTTP method. It reads the tool-call arguments of `/mcp`; on the
+  gateway, `POST /api/v1/validate` and `GovernedModel` it reads prompt
+  text, which seldom holds a destination it recognises, and
+  `GovernedAgent.call()` has none (see MODEL_CARD §5b). Default-deny under
   `ADMINA_EGRESS_MODE=enforce`, with an observe-first rollout and an
   `admina egress suggest-allowlist` command to build the allowlist from
   observed traffic. A cross-agent coordination detector, fed from the MCP
@@ -108,9 +111,10 @@ The OpenAI-compatible gateway as the governed surface of an embedded
 deployment, and a forensic store that can be verified record by record.
 
 - Gateway: named upstream routes with keys, streams passed through
-  unchanged, upstream errors and timeouts propagated, request limits, the
-  whole chat completion body in the scan, the governance outcome on every
-  response, request ids and W3C trace context.
+  unchanged while PII redaction is off, upstream errors and timeouts
+  propagated, request limits, the whole chat completion body in the scan,
+  the governance outcome on every response, request ids and W3C trace
+  context.
 - Deployment: secrets from files, `ADMINA_CONFIG`, `ADMINA_ENABLED_SURFACES`,
   the `proxy-minimal` extra, an offline mode, a schema check of
   `admina.yaml`, and signed release images with a `-slim` variant.
