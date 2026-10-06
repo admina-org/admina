@@ -5,9 +5,13 @@ Drop-in governance for any LangChain application. Validates every LLM call, tool
 ## Install
 
 ```bash
-pip install -e ".[nlp]"   # Admina with NLP (spaCy for PII)
-pip install langchain      # Your LangChain deps
+pip install -e ".[proxy,nlp]"   # Admina: loop breaker (numpy, scikit-learn) + NLP (spaCy for PII)
+pip install langchain           # Your LangChain deps
 ```
+
+From PyPI: `pip install "admina-framework[proxy,nlp]"`. Loop detection is on
+by default and needs numpy and scikit-learn (`[proxy]`), or the Rust loop
+breaker (`[rust]`); without either, pass `loop_detection=False`.
 
 ## Quick Start
 
@@ -41,7 +45,7 @@ handler = AdminaCallbackHandler(
     session_id="my-session",       # Session ID for loop detection
     pii_redaction=True,            # Redact PII (default: True)
     firewall=True,                 # Injection firewall (default: True)
-    loop_detection=True,           # Loop breaker (default: True)
+    loop_detection=True,           # Loop breaker (default: True; needs [proxy] or [rust])
     on_block="raise",              # "raise" or "warn" (default: "raise")
     audit=True,                    # Emit governance events (default: True)
 )
