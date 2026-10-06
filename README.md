@@ -355,6 +355,17 @@ dependency: one uvicorn serves the proxy API and the dashboard SPA on the
 same port. Use `--stack` for the production-like Docker compose, or
 `--with-llm` to also boot local LLM services.
 
+Local mode uses the forensic backend of `FORENSIC_BACKEND` or of
+`admina.yaml`, and memory when neither sets one. In the compose file that
+`admina init` writes, the dashboard (`127.0.0.1:3000`), OTEL and the
+`--with-llm` services listen on the loopback interface only; the dashboard
+asks for `ADMINA_DASHBOARD_PASSWORD` and the API key (both shown by
+`admina password show`). The proxy reaches the MCP server at
+`UPSTREAM_MCP_URL` (default `http://host.docker.internal:9000`, an MCP
+server on the host). `CLICKHOUSE_PASSWORD` and `GRAFANA_ADMIN_PASSWORD`
+come from the `.env` that `admina dev` writes; a plain `docker compose up`
+stops when they are not set.
+
 ## Dashboard
 
 Real-time governance dashboard on port 3000:
@@ -1653,7 +1664,10 @@ cd integrations/cheshirecat/admina-plugin
 
 <br>
 
-Governs every LLM call and tool invocation in-process:
+Governs every LLM call and tool invocation in-process. Install
+`admina-framework[proxy,nlp]`: the loop detection that the callbacks turn
+on by default needs scikit-learn from `[proxy]` (or pass
+`loop_detection=False`).
 
 ```python
 from admina.integrations.langchain.callbacks import AdminaCallbackHandler
@@ -1900,6 +1914,14 @@ curl -X POST http://localhost:8080/api/compliance/classify \
 # Dashboard governance score
 curl http://localhost:8080/api/dashboard/score
 ```
+
+A blocked `/mcp` call is answered with a JSON-RPC error (`-32600`, "Request
+blocked by Admina governance") whose `error.data` holds the `event_id` of
+the forensic record and a `reason`: `injection_detected` (firewall),
+`scan_depth_exceeded` (text nested deeper than the scan depth),
+`egress_refused` (egress policy), `guard_blocked` (a request guard, also a
+guard error under `ADMINA_GUARD_FAIL_MODE=closed`) or `response_blocked`
+(a response guard). Before 0.13.1 every block reported `injection_detected`.
 
 </details>
 
