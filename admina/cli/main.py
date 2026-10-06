@@ -251,8 +251,10 @@ def init(
     for f in created:
         click.echo(f"  ✓ {f}")
 
-    # 4. Bootstrap secrets (first-time setup)
-    _bootstrap_secrets(project_dir)
+    # 4. Bootstrap secrets (first-time setup). A project whose vault exists
+    # gets the vault's secrets in a .env created by this run.
+    if _bootstrap_secrets(project_dir) is None and ".env" in created:
+        SecretVault(project_dir).write_dotenv(project_dir / ".env")
 
     # 5. Docker compose pull (optional)
     if not no_pull and shutil.which("docker"):

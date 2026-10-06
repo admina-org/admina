@@ -196,6 +196,80 @@ class TestScaffoldProject:
         assert isinstance(data["volumes"], dict)
         assert "forensic-data" not in data["volumes"]
 
+    @staticmethod
+    def _full_compose(tmp_project: Path) -> dict:
+        tmp_project.mkdir(parents=True)
+        _scaffold_project(tmp_project, list(AVAILABLE_DOMAINS), "test-project")
+        return yaml.safe_load((tmp_project / "docker-compose.yml").read_text())
+
+    def test_docker_compose_publishes_unauthenticated_ports_on_loopback(
+        self, tmp_project: Path
+    ) -> None:
+        data = self._full_compose(tmp_project)
+        # The proxy (API key) and Grafana (admin password) authenticate every
+        # request; any other published port is bound to 127.0.0.1.
+        authenticated = {("proxy", "8080:8080"), ("grafana", "3001:3000")}
+        for name, service in data["services"].items():
+            for port in service.get("ports", []):
+                if (name, port) in authenticated:
+                    continue
+                assert port.startswith("127.0.0.1:"), f"{name} publishes {port}"
+        assert "127.0.0.1:3000:80" in data["services"]["dashboard"]["ports"]
+        otel_ports = data["services"]["otel-collector"]["ports"]
+        assert set(otel_ports) == {"127.0.0.1:4317:4317", "127.0.0.1:4318:4318"}
+
+    def test_docker_compose_passes_the_dashboard_key_and_password(self, tmp_project: Path) -> None:
+        data = self._full_compose(tmp_project)
+        env = data["services"]["dashboard"]["environment"]
+        assert "ADMINA_API_KEY=${ADMINA_API_KEY:-}" in env
+        assert "ADMINA_DASHBOARD_PASSWORD=${ADMINA_DASHBOARD_PASSWORD:-}" in env
+
+    def test_docker_compose_sets_a_reachable_mcp_upstream(self, tmp_project: Path) -> None:
+        data = self._full_compose(tmp_project)
+        proxy = data["services"]["proxy"]
+        env = dict(item.split("=", 1) for item in proxy["environment"])
+        # Without UPSTREAM_MCP_URL the proxy uses http://localhost:9000, its
+        # own container, where nothing listens.
+        assert env["UPSTREAM_MCP_URL"] == "${UPSTREAM_MCP_URL:-http://host.docker.internal:9000}"
+        assert "host.docker.internal:host-gateway" in proxy["extra_hosts"]
+
+    def test_docker_compose_has_no_default_passwords(self, tmp_project: Path) -> None:
+        data = self._full_compose(tmp_project)
+        text = (tmp_project / "docker-compose.yml").read_text()
+        assert "changeme" not in text
+        clickhouse = data["services"]["clickhouse"]["environment"]
+        grafana = data["services"]["grafana"]["environment"]
+        assert any(e.startswith("CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:?") for e in clickhouse)
+        assert any(
+            e.startswith("GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?") for e in grafana
+        )
+
+    @pytest.mark.parametrize(
+        "domains",
+        [list(AVAILABLE_DOMAINS), ["agent_security"], ["agent_security", "compliance"]],
+    )
+    def test_docker_compose_depends_only_on_defined_services(
+        self, tmp_project: Path, domains: list[str]
+    ) -> None:
+        tmp_project.mkdir(parents=True)
+        _scaffold_project(tmp_project, domains, "test-project")
+        data = yaml.safe_load((tmp_project / "docker-compose.yml").read_text())
+        services = data["services"]
+        for name, service in services.items():
+            for dependency in service.get("depends_on", []):
+                assert dependency in services, f"{name} depends on {dependency}"
+        env = dict(item.split("=", 1) for item in services["proxy"]["environment"])
+        if "compliance" not in domains:
+            assert env["CLICKHOUSE_HOST"] == ""
+            assert env["OTEL_ENABLED"] == "false"
+
+    def test_env_template_has_no_placeholder_secrets(self, tmp_project: Path) -> None:
+        tmp_project.mkdir(parents=True)
+        _scaffold_project(tmp_project, list(AVAILABLE_DOMAINS), "test-project")
+        text = (tmp_project / ".env").read_text()
+        for key in ("ADMINA_API_KEY", "CLICKHOUSE_PASSWORD", "GRAFANA_ADMIN_PASSWORD"):
+            assert f"{key}=" not in text
+
     def test_env_file_not_overwritten(self, tmp_project: Path) -> None:
         tmp_project.mkdir(parents=True)
         env_file = tmp_project / ".env"
@@ -264,6 +338,21 @@ class TestInitCommand:
             runner.invoke(app, ["init", "proj4", "--full-stack", "--no-pull"])
             result = runner.invoke(app, ["init", "proj4", "--full-stack", "--no-pull"])
             assert result.exit_code == 0, result.output
+
+    def test_init_writes_the_vault_secrets_to_a_new_env_file(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """A project whose vault exists and whose .env was removed gets the
+        vault's secrets in the new .env."""
+        from admina.core.secrets import SecretVault
+
+        with runner.isolated_filesystem(temp_dir=tmp_path):
+            runner.invoke(app, ["init", "proj5", "--full-stack", "--no-pull"])
+            Path("proj5/.env").unlink()
+            result = runner.invoke(app, ["init", "proj5", "--full-stack", "--no-pull"])
+            assert result.exit_code == 0, result.output
+            api_key = SecretVault(Path("proj5")).get("ADMINA_API_KEY")
+            assert f'ADMINA_API_KEY="{api_key}"' in Path("proj5/.env").read_text()
 
     def test_version_flag(self, runner: CliRunner) -> None:
         from admina import __version__
