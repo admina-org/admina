@@ -58,7 +58,8 @@ domains:
     forensic:
       # The proxy's forensic backend and directory. FORENSIC_BACKEND and
       # FORENSIC_BASE_DIR, when set, take precedence (the generated
-      # docker-compose.yml sets both; `admina dev` sets FORENSIC_BACKEND).
+      # docker-compose.yml sets both). Without either, the proxy, `admina dev`
+      # included, keeps the records in memory.
       # backend: filesystem
       # base_dir: .admina/forensic
       bucket: forensic-blackbox

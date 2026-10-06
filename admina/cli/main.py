@@ -570,8 +570,28 @@ def _require_proxy_extra_for_local_dev() -> None:
     raise SystemExit(1)
 
 
+def _local_forensic_backend(env: dict[str, str], data: dict[str, object]) -> tuple[str, str]:
+    """The forensic backend the local proxy uses and where it comes from:
+    ``FORENSIC_BACKEND`` when set and not empty, else
+    ``domains.compliance.forensic.backend`` (or ``storage``) of admina.yaml,
+    else ``memory`` (the proxy's default, see admina.proxy.forensic_backend).
+    """
+    value = env.get("FORENSIC_BACKEND", "").strip().lower()
+    if value:
+        return value, "FORENSIC_BACKEND"
+    domains = data.get("domains")
+    compliance = domains.get("compliance") if isinstance(domains, dict) else None
+    forensic = compliance.get("forensic") if isinstance(compliance, dict) else None
+    if isinstance(forensic, dict):
+        value = str(forensic.get("backend") or forensic.get("storage") or "").strip().lower()
+        if value:
+            return ("s3" if value == "minio" else value), "admina.yaml"
+    return "memory", ""
+
+
 def _run_local(
     project_dir: Path,
+    data: dict[str, object],
     vault: SecretVault,
     *,
     no_browser: bool,
@@ -594,8 +614,9 @@ def _run_local(
 
     env = os.environ.copy()
     env.update(vault.export_env())
-    # Local dev defaults — sane for single-user localhost.
-    env.setdefault("FORENSIC_BACKEND", "memory")
+    # Local dev defaults — sane for single-user localhost. The forensic
+    # backend is not set here: the proxy reads FORENSIC_BACKEND, else the
+    # backend of admina.yaml, else uses memory.
     env.setdefault("OTEL_ENDPOINT", "")
     env.setdefault("REDIS_URL", "")
     env.setdefault("CLICKHOUSE_HOST", "")
@@ -622,7 +643,11 @@ def _run_local(
 
     click.echo(f"\n  Starting Admina proxy + dashboard on http://{display_host}:{port}")
     click.echo("  Mode: local (no Docker)")
-    click.echo("  Forensic backend: in-memory (events live for the process lifetime)")
+    forensic_backend, forensic_source = _local_forensic_backend(env, data)
+    if forensic_source:
+        click.echo(f"  Forensic backend: {forensic_backend} ({forensic_source})")
+    else:
+        click.echo("  Forensic backend: in-memory (events live for the process lifetime)")
     if is_public:
         click.echo(
             f"  ⚠ Listening on {host}:{port} — accessible from the LAN. "
@@ -848,6 +873,7 @@ def dev(
         bind_host = "0.0.0.0" if public else host
         _run_local(
             project_dir,
+            data,
             vault,
             no_browser=no_browser,
             port=port,
