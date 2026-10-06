@@ -19,13 +19,13 @@ Dual-layer defense: regex pattern matching + heuristic analysis.
 
 import base64
 import logging
-import math
 import re
 import time
 import unicodedata
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from admina.core.config_schema import positive_finite_number
 from admina.core.types import RiskLevel
 
 if TYPE_CHECKING:
@@ -809,12 +809,7 @@ def parse_custom_patterns(
 
 
 def _threshold(value: Any) -> float:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(value)
-        or value <= 0
-    ):
+    if not positive_finite_number(value):
         raise ValueError(
             "agent_security.firewall.heuristic_threshold must be a finite number "
             f"greater than 0 (got {value!r})"

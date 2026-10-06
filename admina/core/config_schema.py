@@ -19,8 +19,8 @@ paths (``domains.agent_security.firewall.pattern_packs``,
 ``alert_channels[0].url``):
 
 - **errors**: values of the wrong type, each as ``<path>: must be …``
-  (true or false, an integer, a number, a string, a list of strings, a list
-  of mappings, a mapping);
+  (true or false, an integer, a number, a finite number greater than 0, a
+  string, a list of strings, a list of mappings, a mapping);
 - **unknown**: keys the schema does not know.
 
 An empty value (null) is not checked: the reader of the key treats it as
@@ -35,28 +35,43 @@ malformed entry is skipped with a warning).
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-__all__ = ["SCHEMA", "SchemaProblems", "find_problems"]
+__all__ = ["SCHEMA", "SchemaProblems", "find_problems", "positive_finite_number"]
+
+
+def positive_finite_number(value: Any) -> bool:
+    """Whether *value* is a finite number greater than 0 (an int or a float,
+    not a bool)."""
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, int | float)
+        and math.isfinite(value)
+        and value > 0
+    )
 
 
 @dataclass(frozen=True)
 class _Scalar:
-    kind: str  # bool | int | number | str
+    kind: str  # bool | int | number | positive | str
 
     def describe(self) -> str:
         return {
             "bool": "true or false",
             "int": "an integer",
             "number": "a number",
+            "positive": "a finite number greater than 0",
             "str": "a string",
         }[self.kind]
 
     def accepts(self, value: Any) -> bool:
         if self.kind == "bool":
             return isinstance(value, bool)
+        if self.kind == "positive":
+            return positive_finite_number(value)
         if isinstance(value, bool):
             return False
         if self.kind == "int":
@@ -117,6 +132,7 @@ class _List:
 BOOL = _Scalar("bool")
 INT = _Scalar("int")
 NUMBER = _Scalar("number")
+POSITIVE = _Scalar("positive")
 STR = _Scalar("str")
 STRINGS = _List(STR)
 ANY = _Any()
@@ -181,7 +197,10 @@ SCHEMA = _Section(
                             {
                                 "enabled": BOOL,
                                 "mode": STR,
-                                "heuristic_threshold": NUMBER,
+                                # Read by the Python firewall only, and
+                                # refused here so that an invalid value
+                                # stops either engine.
+                                "heuristic_threshold": POSITIVE,
                                 "allowed_tags": STRINGS,
                                 "custom_patterns": _List(ANY),
                                 "disabled_categories": STRINGS,
