@@ -1883,6 +1883,7 @@ async def _mcp_exchange(request: Request, path: str, outcome: _McpOutcome) -> JS
                     "code": -32000,
                     "message": "Request too large",
                     "data": {
+                        "event_id": event_id,
                         "content_length": len(content_str),
                         "max_tokens": settings.MAX_REQUEST_TOKENS,
                     },
