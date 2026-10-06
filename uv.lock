@@ -10,12 +10,12 @@ resolution-markers = [
 
 [[package]]
 name = "admina-core"
-version = "0.13.0"
+version = "0.13.1"
 source = { directory = "core-rust" }
 
 [[package]]
 name = "admina-framework"
-version = "0.13.0"
+version = "0.13.1"
 source = { editable = "." }
 dependencies = [
     { name = "click" },

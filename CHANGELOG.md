@@ -13,6 +13,114 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.13.1] — 2026-10-06
+
+Patch release: the compose file of `admina init` binds the dashboard, OTEL
+and the local LLM services to loopback and has no default passwords; a
+forensic store with signed records refuses to start without its key in
+`closed` mode; the egress walk reaches the governance scan depth (32);
+distinct block reasons on `/mcp`; the Admina Score and OISG read the chain
+status and the dashboard switches; documentation aligned with the code of
+0.13.0. Upgrading is recommended.
+
+### Security
+
+- `admina init` writes a compose file with the dashboard on
+  `127.0.0.1:3000`, signed in with `ADMINA_DASHBOARD_PASSWORD` and the API
+  key as in the repository `docker-compose.yml`. OTEL (4317, 4318), Ollama,
+  ChromaDB and Open WebUI are published on `127.0.0.1` only. ClickHouse and
+  Grafana have no default passwords: `CLICKHOUSE_PASSWORD` and
+  `GRAFANA_ADMIN_PASSWORD` come from the `.env` that `admina dev` writes,
+  and `docker compose` stops when they are not set. The generated `.env`
+  holds the secrets of the vault, and no placeholder key.
+- A forensic store that holds signed records (an integer `signed_from` in
+  its chain state, or the `_chain_state.json.sig` sidecar) and starts
+  without `ADMINA_FORENSIC_STATE_KEY` raises `ForensicKeyError` under
+  `ADMINA_FORENSIC_FAIL_MODE=closed`, and the proxy does not start. Under
+  `open` it logs a warning at every start and writes unsigned records, as
+  in 0.13.0. To drop the key on purpose, move the store aside.
+
+### Changed
+
+- The JSON-RPC error of a blocked `/mcp` call carries a `data.reason` per
+  cause: `injection_detected` (firewall), `scan_depth_exceeded`,
+  `egress_refused`, `guard_blocked` (a request guard, also a guard error
+  under `ADMINA_GUARD_FAIL_MODE=closed`) and `response_blocked` (a response
+  guard). In 0.13.0 every block reported `injection_detected`. `code` and
+  `message` are unchanged.
+- `agent_security.firewall.heuristic_threshold` is checked by the
+  configuration (a finite number greater than 0) whichever firewall engine
+  runs: an invalid value raises `ConfigSchemaError` (`ConfigFileError` for
+  the file named by `ADMINA_CONFIG`). The Rust engine ignored it.
+- The Admina Score gives no `interactions_audited` (+25) and
+  `forensic_chain_valid` (+10) points, and OISG G2 is not satisfied, when
+  the forensic chain status is `invalid`. The "no blocked requests"
+  criterion counts since the proxy started; the dashboard label says so.
+- OISG G4 follows `ADMINA_DASHBOARD_ENABLED` and `ADMINA_ENABLED_SURFACES`,
+  as the dashboard itself does, and G4 and O3 count OTEL only when the
+  exporter exports spans (`OTEL_ENABLED`).
+- `admina dev` local mode uses the forensic backend of `FORENSIC_BACKEND` or
+  of `admina.yaml`, and memory when neither sets one; it set
+  `FORENSIC_BACKEND=memory`. The startup banner names the backend and its
+  source.
+- The proxy of the `admina init` compose file reaches the MCP server at
+  `UPSTREAM_MCP_URL`, default `http://host.docker.internal:9000`.
+
+### Fixed
+
+- The egress walk of tool-call arguments goes as deep as the governance
+  scan (`SCAN_DEPTH`, 32 levels). It stopped at 6, so under
+  `ADMINA_EGRESS_MODE=enforce` a call nested 7 to 31 levels deep passed the
+  firewall and was refused by egress.
+- The `413` of `MAX_REQUEST_TOKENS` on `/mcp` carries the `event_id` in
+  `error.data`, as the other `/mcp` errors do.
+- `admina init` with modules that do not include compliance writes a valid
+  compose file: the proxy depended on a ClickHouse service that was not in
+  the file.
+- `admina plugin list` lists the MCP transport adapter (`mcp`).
+- The LangChain and CrewAI callbacks raise an `ImportError` that names the
+  `[proxy]` extra and `loop_detection=False` when scikit-learn is missing;
+  their READMEs install `[proxy,nlp]`.
+- The dashboard suggestions name `LOOP_MAX_CONSECUTIVE` and
+  `LOOP_SIMILARITY_THRESHOLD`, and say to raise the similarity threshold to
+  detect fewer loops.
+- The `# HELP` of `admina_avg_latency_ms` describes the mean request
+  duration since startup, upstream included.
+- `admina.yaml.example`: `admina egress suggest-allowlist --since 7` (a
+  number of days), and no `agent_security.firewall.mode` key, which nothing
+  reads; the governance mode is `ADMINA_GOVERNANCE_MODE`.
+
+### Documentation
+
+- The `[0.13.0]` entries, the 0.13 upgrade guide, MODEL_CARD, ROADMAP and
+  README describe what the code of 0.13.0 does:
+  - `?api_key=` is accepted only on the WebSocket upgrade of
+    `/api/dashboard/live`, never on HTTP;
+  - the 32-level scan-depth block applies to `/mcp` and to the gateway
+    with the firewall on, not to `POST /api/v1/validate`;
+  - `submitted_by` is `user:api_key_user` when the `apikey` provider is
+    loaded, and `api_key` when the key comes only from
+    `ADMINA_API_KEY_FILE` or `.env`;
+  - the `401` and `413` of `/v1/chat/completions` carry `X-Admina-Ruleset`
+    and not `X-Admina-Version`;
+  - streams pass through unchanged only while PII redaction is off;
+  - an invalid `from_seq` of `GET /api/v1/forensic/verify` is answered
+    `422`;
+  - the gateway has been counted in `admina_requests_total` since 0.12.2,
+    and the dashboard feed without ClickHouse has no `/api/v1/validate`
+    events;
+  - the ruleset hash includes `admina_version` (and `admina_core_version`
+    on Rust), so a pinned `gateway.prescan_rulesets` is recomputed after
+    every upgrade;
+  - `ADMINA_ENABLED_SURFACES` takes `gateway`, `mcp`, `integration`,
+    `compliance` and `dashboard`.
+- MODEL_CARD §5b states which strings egress reads as destinations (a
+  string that begins with a URL, an IP literal as the whole string, every
+  `image_url`, the `params` of every `/mcp` method); §3 states that
+  `disabled_categories` takes any category name, pack and custom ones
+  included.
+- ROADMAP 0.12.0 states the egress coverage of each surface.
+
 ## [0.13.0] — 2026-10-05
 
 Minor release: an OpenAI-compatible gateway for embedded deployments
@@ -2094,7 +2202,8 @@ environment in `docker-compose.benchmark.yml`.
 
 ---
 
-[Unreleased]: https://github.com/admina-org/admina/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/admina-org/admina/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/admina-org/admina/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/admina-org/admina/compare/v0.12.2...v0.13.0
 [0.12.2]: https://github.com/admina-org/admina/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/admina-org/admina/compare/v0.12.0...v0.12.1
