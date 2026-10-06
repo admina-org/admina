@@ -174,6 +174,11 @@ pip install admina-framework
 > matters more than that extra coverage. See
 > [Performance](#performance--hybrid-python--rust-engine) for the trade-off.
 
+The PyPI package `admina` is an alias: `pip install admina` installs
+`admina-framework` at the same version, and `admina[X]` installs
+`admina-framework[X]` for every extra above. It has no code of its own, so
+both names install the same `admina` module.
+
 ### Or install from source
 
 ```bash

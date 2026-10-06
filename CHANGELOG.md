@@ -13,6 +13,15 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+### Added
+
+- The PyPI package `admina`: `pip install admina` installs
+  `admina-framework` at the same version, and `admina[X]` installs
+  `admina-framework[X]` for every extra. It has no code of its own
+  (`packaging/admina`), and `release.yml` publishes it after
+  admina-framework from the same tag. `scripts/check-versions.py` checks its
+  version and its admina-framework pin.
+
 ### Notes
 
 - `tests/test_iban_it.py::test_matching_time_on_long_runs` (a 50 ms budget

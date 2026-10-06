@@ -44,13 +44,24 @@ def _write_repo(
     cargo: str | None = None,
     runtime: str | None = None,
     locked_core: str | None = None,
+    alias: str | None = None,
+    alias_pin: str | None = None,
 ) -> Path:
-    """Write the eight tracked manifests of a repository at ``version``.
+    """Write the tracked manifests of a repository at ``version``.
 
     ``cargo`` is the crate version (Cargo.toml and Cargo.lock), ``runtime``
     the ``__version__`` and ``locked_core`` the admina-core entry of uv.lock;
-    each defaults to ``version``.
+    each defaults to ``version``. ``alias`` and ``alias_pin`` are the
+    version of the ``admina`` alias and its admina-framework pin.
     """
+    alias = alias or version
+    alias_pin = alias_pin or version
+    (root / "packaging" / "admina").mkdir(parents=True)
+    (root / "packaging" / "admina" / "pyproject.toml").write_text(
+        f'[project]\nname = "admina"\nversion = "{alias}"\n'
+        f'dependencies = ["admina-framework=={alias_pin}"]\n',
+        encoding="utf-8",
+    )
     cargo = cargo or version
     runtime = runtime or version
     locked_core = locked_core or version
@@ -128,6 +139,8 @@ def test_aligned_final_release_passes(tmp_path):
         ({"cargo": "0.13.0"}, "core-rust/Cargo.toml"),
         ({"runtime": "0.12.1"}, "admina/__init__.py"),
         ({"locked_core": "0.9.3"}, "uv.lock (admina-core)"),
+        ({"alias": "0.12.2"}, "packaging/admina/pyproject.toml"),
+        ({"alias_pin": "0.12.2"}, "packaging/admina (admina-framework pin)"),
     ],
 )
 def test_real_drift_fails(tmp_path, capsys, overrides, drifting):

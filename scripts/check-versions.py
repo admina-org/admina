@@ -33,6 +33,8 @@ Tracked points of truth:
     6. uv.lock                        →  resolved admina-framework entry
     7. uv.lock                        →  resolved admina-core entry ([rust] extra)
     8. core-rust/uv.lock              →  resolved admina-core entry
+    9. packaging/admina/pyproject.toml  →  admina (PyPI alias)
+   10. packaging/admina/pyproject.toml  →  its admina-framework pin
 
 Docker images and dashboard HTML derive their version dynamically from
 pyproject.toml at build time, so they need no separate check here.
@@ -103,7 +105,18 @@ def _uv_lock_package(path: Path, pkg: str) -> str:
     raise RuntimeError(f"{pkg!r} entry not found in {path}")
 
 
+def _alias_framework_pin(path: Path) -> str:
+    """The version of the ``admina-framework==X`` dependency of the alias."""
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    for dep in data["project"].get("dependencies", []):
+        m = re.fullmatch(r"admina-framework==(\S+)", dep.strip())
+        if m:
+            return m.group(1)
+    raise RuntimeError(f"no admina-framework==X dependency in {path}")
+
+
 def main(repo: Path = REPO) -> int:
+    alias = repo / "packaging" / "admina" / "pyproject.toml"
     versions: dict[str, str] = {
         "pyproject.toml": _toml_version(repo / "pyproject.toml"),
         "admina/__init__.py": _python_dunder_version(repo / "admina" / "__init__.py"),
@@ -113,6 +126,8 @@ def main(repo: Path = REPO) -> int:
         "core-rust/Cargo.toml": _toml_version(repo / "core-rust" / "Cargo.toml", table="package"),
         "core-rust/Cargo.lock": _cargo_lock_admina_core(repo / "core-rust" / "Cargo.lock"),
         "core-rust/uv.lock": _uv_lock_package(repo / "core-rust" / "uv.lock", "admina-core"),
+        "packaging/admina/pyproject.toml": _toml_version(alias),
+        "packaging/admina (admina-framework pin)": _alias_framework_pin(alias),
     }
 
     canonical = versions["pyproject.toml"]
