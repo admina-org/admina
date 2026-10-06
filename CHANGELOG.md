@@ -16,25 +16,26 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 ## [0.13.0] — 2026-10-05
 
 Minor release: an OpenAI-compatible gateway for embedded deployments
-(named upstream routes with keys, streams passed through unchanged,
-upstream errors propagated, request limits, the governance pipeline in
-worker threads, the governance outcome on every response, request ids and
-W3C trace context, request and completion records with hashes, the whole
-chat completion body in the scan), secrets from files, `ADMINA_CONFIG`,
-`ADMINA_ENABLED_SURFACES`, the `proxy-minimal` extra and an offline mode,
-linear-time pattern matching, signed release images with a `-slim`
-variant, egress checks per surface, a forensic store that writes
-atomically, signs each record, verifies from a checkpoint and exports JSON
-Lines, PII engines from other packages with value-only redaction and an
-`[OMISSIS]` mask style, per-surface request metrics and governance events
-without request text, stable firewall pattern ids with pattern packs and
-Italian baseline patterns, a schema check of admina.yaml, the engines in
-use on `/health`, an OISG score from external evidence, `admina redteam` on
-external corpora, a scan depth of 32 levels with a block past it on every
-surface, EU AI Act classification of Italian, French and German
-descriptions, a versioned ruleset document, and an upgrade guide
-(`docs/guides/upgrade-0.13.md`). Upgrading is recommended; read the guide
-first, since several defaults and failure modes change.
+(named upstream routes with keys, streams passed through unchanged while
+PII redaction is off, upstream errors propagated, request limits, the
+governance pipeline in worker threads, the governance outcome on every
+response, request ids and W3C trace context, request and completion
+records with hashes, the whole chat completion body in the scan), secrets
+from files, `ADMINA_CONFIG`, `ADMINA_ENABLED_SURFACES`, the
+`proxy-minimal` extra and an offline mode, linear-time pattern matching,
+signed release images with a `-slim` variant, egress checks per surface, a
+forensic store that writes atomically, signs each record, verifies from a
+checkpoint and exports JSON Lines, PII engines from other packages with
+value-only redaction and an `[OMISSIS]` mask style, per-surface request
+metrics and governance events without request text, stable firewall
+pattern ids with pattern packs and Italian baseline patterns, a schema
+check of admina.yaml, the engines in use on `/health`, an OISG score from
+external evidence, `admina redteam` on external corpora, a scan depth of
+32 levels with a block past it on `/mcp` and the gateway, EU AI Act
+classification of Italian, French and German descriptions, a versioned
+ruleset document, and an upgrade guide (`docs/guides/upgrade-0.13.md`).
+Upgrading is recommended; read the guide first, since several defaults and
+failure modes change.
 
 ### Security
 
@@ -101,14 +102,18 @@ first, since several defaults and failure modes change.
   `api_v1_audit` (a `source` sent by the caller is kept as `client_source`)
   and `submitted_by` is the credential the request was admitted with
   (`api_key`, `append_key`, `user:<id>` for an auth provider's user, or
-  `unauthenticated`). `ADMINA_AUDIT_APPEND_KEY` (or `_FILE`) is a key
-  accepted by this route only, besides the API key; every other route
-  refuses it. Unset (the default), the route needs the API key. An
-  `event_type` of the records the proxy writes itself (`mcp_request`,
-  `mcp_response`, `gateway_request`, `gateway_response`,
-  `gateway_response_scan`, `policy_violation`, `chain_state_rebuilt`;
-  `integration.PROXY_RECORD_TYPES`, compared without case and surrounding
-  white space) is refused with `400`, and nothing is recorded.
+  `unauthenticated`). With `ADMINA_API_KEY` in the environment the built-in
+  `apikey` auth provider admits an API-key request, which is stamped
+  `user:api_key_user`; `api_key` is the stamp when the key comes only from
+  `ADMINA_API_KEY_FILE` or `.env` and no auth provider is loaded.
+  `ADMINA_AUDIT_APPEND_KEY` (or `_FILE`) is a key accepted by this route
+  only, besides the API key; every other route refuses it. Unset (the
+  default), the route needs the API key. An `event_type` of the records the
+  proxy writes itself (`mcp_request`, `mcp_response`, `gateway_request`,
+  `gateway_response`, `gateway_response_scan`, `policy_violation`,
+  `chain_state_rebuilt`; `integration.PROXY_RECORD_TYPES`, compared without
+  case and surrounding white space) is refused with `400`, and nothing is
+  recorded.
 - PII redaction reads text values and keeps the structure around them.
   `_deep_redact` (MCP tool parameters and results, `GovernedAgent`) passes
   the values of a dict to the PII engine and keeps its keys;
@@ -162,9 +167,10 @@ first, since several defaults and failure modes change.
   body. The `arguments` of a tool call (and of a legacy `function_call`) are
   scanned as the JSON they hold, each string separately, and as they are
   when they are not JSON. `ADMINA_GATEWAY_SCAN_ROLES` and
-  `X-Admina-Scan-Policy` narrow the messages only. A request whose body has
-  a string nested more than 32 levels deep, or tool call arguments nested
-  deeper than the JSON parser reads, is blocked in `enforce` mode
+  `X-Admina-Scan-Policy` narrow the messages only. With the firewall on, a
+  request whose body has a string nested more than 32 levels deep, or tool
+  call arguments nested deeper than the JSON parser reads, is blocked in
+  `enforce` mode
   (`would_action` in `observe` and `dry-run`), with `checks.scan_depth =
   {"action": "BLOCK", "reason": "depth_limit_exceeded"}` in its record.
   `request_texts()` of `admina.domains.agent_security.scan_policy` collects
@@ -201,15 +207,18 @@ first, since several defaults and failure modes change.
   (`hash_mismatch`). The hash was computed on the record as Python's parser
   reads it, which keeps the last of the repeated values, while another
   parser of an exported record can keep the first.
-- **`/mcp` and `/api/v1/validate` refuse text they cannot scan.** Their
-  pipeline scanned and redacted strings down to 6 levels of nesting and let
-  deeper text through unscanned and unredacted: an injection nested in five
-  objects inside a tool call's `arguments` was allowed. They now scan and
-  redact 32 levels deep, as the gateway does, and with the firewall or PII
-  redaction on, a request holding text deeper than that is blocked in
-  `enforce` mode (a would-be block in `observe` and `dry-run`), with
-  `checks.scan_depth = {"action": "BLOCK", "reason": "depth_limit_exceeded"}`.
-  `admina.domains.governance.SCAN_DEPTH` is the limit.
+- **`/mcp` refuses text it cannot scan.** The pipeline of `/mcp` and
+  `/api/v1/validate` scanned and redacted strings down to 6 levels of
+  nesting and let deeper text through unscanned and unredacted: an
+  injection nested in five objects inside a tool call's `arguments` was
+  allowed. The pipeline now scans and redacts 32 levels deep, as the
+  gateway does, and on `/mcp`, with the firewall or PII redaction on, a
+  request holding text deeper than that is blocked in `enforce` mode (a
+  would-be block in `observe` and `dry-run`), with `checks.scan_depth =
+  {"action": "BLOCK", "reason": "depth_limit_exceeded"}`.
+  `admina.domains.governance.SCAN_DEPTH` is the limit. `POST
+  /api/v1/validate` takes a string `content` only (see Changed), so its
+  body never reaches that depth and the block does not apply there.
 - The Presidio PII engine (`ADMINA_PII_ENGINE=presidio`) asks the analyzer
   only for the entity types it maps to Admina categories. It ran every
   Presidio recognizer and discarded the other results; the URL recognizer
@@ -431,11 +440,14 @@ first, since several defaults and failure modes change.
   `X-Admina-Categories` (the names of the firewall categories that matched,
   comma-separated; never text) and `X-Admina-Record-Hash` (the `record_hash`
   of the request record, written before the request is forwarded);
-  `X-Admina-Would-Action` in `observe` and `dry-run` mode. Every response of
-  the route carries `X-Admina-Version`. A request body with a value JSON
-  cannot encode for the upstream request (`NaN`, an unpaired surrogate) is
-  answered `400` with `"code": "invalid_request_body"`; any other failure in
-  the gateway `500` with `"type": "server_error"`.
+  `X-Admina-Would-Action` in `observe` and `dry-run` mode. Every response
+  the route handler sends carries `X-Admina-Version`; the 401 of
+  authentication, the 413 of the request size limit and the 500 of a
+  failure before the response starts carry `X-Admina-Ruleset` only. A
+  request body with a value JSON cannot encode for the upstream request
+  (`NaN`, an unpaired surrogate) is answered `400` with `"code":
+  "invalid_request_body"`; any other failure in the gateway `500` with
+  `"type": "server_error"`.
 - `ADMINA_GATEWAY_BLOCK_STATUS`: `200` (default: the block message as a
   completion) or `403` (`{"error": {"message", "type": "governance_blocked",
   "param", "code": "governance_blocked", "categories"}}`, streaming or not).
@@ -526,8 +538,9 @@ first, since several defaults and failure modes change.
   backend in `admina.yaml` stops the proxy. `admina.proxy.forensic_backend`
   builds the store.
 - `GET /api/v1/forensic/verify` takes `from_seq` or `checkpoint=SEQ:HASH`
-  (not both; a malformed value, or a `SEQ` of more than 19 digits, is
-  answered `400`) and verifies from there.
+  and verifies from there. Both together, a malformed `checkpoint` or one
+  whose `SEQ` has more than 19 digits are answered `400`; a `from_seq` that
+  is not an integer or is below 1 is answered `422` (request validation).
 - `admina forensic export --from-seq N --format jsonl [--dir DIR] [--out
   FILE|-]`: the records of a filesystem store from sequence number N on, in
   sequence order, one per line, each the bytes of its file followed by a
@@ -965,9 +978,10 @@ first, since several defaults and failure modes change.
 - `admina_requests_total` has the labels `surface` (`gateway`, `mcp`,
   `integration`) and `action` (`ALLOW`, `BLOCK`, `REDACT`, `CIRCUIT_BREAK`,
   `ERROR`), with a sample for each enabled surface and action from startup;
-  `sum(admina_requests_total)` counts what the unlabelled counter counted,
-  plus the gateway and `/api/v1/validate`, less the `/mcp` requests whose
-  body is not JSON (answered `400` before they are governed).
+  `sum(admina_requests_total)` counts what the unlabelled counter counted
+  (`/mcp` and, since 0.12.2, the gateway), plus `/api/v1/validate`, less the
+  `/mcp` requests whose body is not JSON (answered `400` before they are
+  governed).
   `admina_requests_blocked_total`, `admina_requests_allowed_total`,
   `admina_requests_redacted_total`, `admina_avg_latency_ms` (now the mean
   duration of the counted requests) and the `requests_*` counters of
@@ -1091,9 +1105,10 @@ first, since several defaults and failure modes change.
 
 - The object `ruleset_sha256()` hashes also has `ruleset_format` (`1`),
   the version of its form, so that a later change of the form is explicit
-  (`RULESET_FORMAT`). A caller that pins a hash in
-  `gateway.prescan_rulesets` or `X-Admina-Scan-Policy` recomputes it with
-  this release.
+  (`RULESET_FORMAT`). The object also holds `admina_version` (and, for the
+  `rust` engine, `admina_core_version`), so the hash changes with every
+  release: a caller that pins a hash in `gateway.prescan_rulesets` or
+  `X-Admina-Scan-Policy` recomputes it after each upgrade.
 - `POST /api/v1/validate` answers `400` (`'content' must be a string`)
   when `content` is not a string. An object or an array was scanned as
   nested data by the Python engine, and answered `500` with the Rust
@@ -1106,11 +1121,13 @@ first, since several defaults and failure modes change.
 
 ### Deprecated
 
-- **The API key in the query string (`?api_key=`).** It is still accepted;
-  the first request that authenticates with it logs a warning, once per
-  process, without the key. A URL ends up in access logs, proxy logs and
-  browser history; send `X-API-Key` or `Authorization: Bearer` instead. A
-  later release will refuse it.
+- **The API key in the query string (`?api_key=`).** It is accepted only on
+  the WebSocket upgrade of the dashboard live feed (`/api/dashboard/live`),
+  where a browser cannot set headers; the first connection that
+  authenticates with it logs a warning, once per process, without the key.
+  HTTP requests never accept it: they send `X-API-Key` or
+  `Authorization: Bearer`. A URL ends up in access logs, proxy logs and
+  browser history. A later release will refuse it on the live feed too.
 
 ### Fixed
 
@@ -1136,9 +1153,10 @@ first, since several defaults and failure modes change.
   `/api/dashboard/suggestions` used to answer empty, with
   `"error": "ClickHouse not available"`, when no ClickHouse was configured,
   as in an embedded deployment. They now read the recent records of the
-  forensic black box: one event per governed request (`/mcp`, the gateway
-  and `/api/v1/validate`), in the same columns as a ClickHouse row, and the
-  answer carries `"source": "forensic_recent"`.
+  forensic black box: one event per governed request of `/mcp` and the
+  gateway, in the same columns as a ClickHouse row, and the answer carries
+  `"source": "forensic_recent"`. `POST /api/v1/validate` writes no forensic
+  record, so its requests appear only in the ClickHouse rows.
   `ForensicBlackBox.recent_records()` keeps the last 1,000 records written
   by the running proxy, in memory, with every backend; records written
   before a restart are not read back. The WebSocket live feed keeps

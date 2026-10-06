@@ -122,9 +122,11 @@ what appears in `detections_by_type`
 (`admina/domains/agent_security/firewall.py:602-604`), what becomes the
 `category` label of the Prometheus series
 `admina_firewall_detections_total`
-(`admina/proxy/main.py:777-785`), and the set of values valid in
-`agent_security.firewall.disabled_categories`
-(`admina.yaml.example:53-58`).
+(`admina/proxy/main.py:777-785`), and the builtin set listed for
+`agent_security.firewall.disabled_categories` in `admina.yaml.example`.
+`disabled_categories` itself takes any string and checks none: it also
+turns off the categories of pattern packs and custom patterns, and a name
+that no pattern carries turns off nothing.
 
 Each category covers several **pattern families**. The families are not
 categories: a match in any family is reported under the category label
@@ -148,7 +150,8 @@ of its group.
 
 Operators can add further categories without forking: every entry in
 `agent_security.firewall.custom_patterns` carries its own `category`
-label, which flows through to the same stats and Prometheus series
+label (`user_custom` when the entry has none), which flows through to
+the same stats and Prometheus series
 (`admina/engines/__init__.py:125-131`, `admina.yaml.example:59-71`).
 
 Pattern packs (`agent_security.firewall.pattern_packs`, from installed
@@ -354,11 +357,20 @@ surface passes tool-call arguments:
 
 | Surface | What `params` carries | What egress can see |
 |---|---|---|
-| `/mcp` | the MCP tool call's `name` and `arguments` | destinations as designed |
-| `/v1/chat/completions` | the chat `messages` | only a URL appearing in the prompt text |
-| `/api/v1/validate` | the submitted `content` string | only a URL appearing in that string |
-| `GovernedModel.ask()` | the prompt | only a URL appearing in the prompt |
-| `GovernedModel.stream()` | the prompt | only a URL appearing in the prompt |
+| `/mcp` | the `params` of the JSON-RPC request, for every method: `name` and `arguments` for `tools/call`, `uri` for `resources/read`, and so on | destinations as designed, in the `params` of every method: a `resources/read` of a `file://` URI has no host, so it is an unresolvable destination and is refused under `enforce` |
+| `/v1/chat/completions` | the chat `messages` | a message string that begins with a URL or is an IP literal as a whole; the `url` of every `image_url` part, where a `data:` URI has no host and is always refused under `enforce` |
+| `/api/v1/validate` | `{"content": <the submitted string>}` | the string, when it begins with a URL or is an IP literal as a whole |
+| `GovernedModel.ask()` | `{"content": <the prompt>}` | the prompt, when it begins with a URL or is an IP literal as a whole |
+| `GovernedModel.stream()` | `{"content": <the prompt>}` | the prompt, when it begins with a URL or is an IP literal as a whole |
+
+A string is read in one of two ways, under any key. A string that
+contains `://` is parsed as one URL from its first character: text before
+the scheme ("see https://…") leaves it without a host, so a URL in the
+middle of a sentence is not extracted, and text after the URL becomes part
+of its path or, when the URL has no path, of its host, which then matches
+no allowlist entry. Otherwise the whole string, without surrounding white
+space, must be an IP literal. Scheme-less hostnames count only under the
+argument names listed below.
 
 On the four prompt-shaped surfaces the stage usually finds nothing,
 because a prompt is not a tool call. That is not a defect of those
@@ -396,9 +408,10 @@ included. Wiring it is a separate change, not a configuration option.
   — is not seen at all: the call is classified as not an egress attempt,
   so it passes under `enforce` **and leaves no record under `observe`**.
   There is nothing in the forensic log for an operator to notice, which
-  makes this the quietest limitation on this page. A full URL (anything
-  containing `://`) and an IP literal are still recognised under any key
-  name, since neither is ambiguous.
+  makes this the quietest limitation on this page. A full URL (a string
+  that begins with a scheme and `://`) and an IP literal (the whole
+  string) are still recognised under any key name, since neither is
+  ambiguous.
 
   This is a deliberate departure from the design spec, which lists
   "scheme-less hosts" among the recognised destination forms without
@@ -412,8 +425,12 @@ included. Wiring it is a separate change, not a configuration option.
   deployment. If a tool in your deployment names its destination something
   else, that destination is not governed; the list above is the contract.
 - **Arguments nested deeper than the scan limit are refused under
-  `enforce`.** The walk over the tool arguments stops at a fixed depth
-  (`_MAX_SCAN_DEPTH`, 6, shared with the firewall and PII walks). A region
+  `enforce`.** The walk over the tool arguments stops at a fixed depth:
+  since 0.13.1 the scan depth of the firewall and PII walks, 32 levels
+  (`admina.domains.governance.SCAN_DEPTH`). In 0.13.0 the egress walk
+  stopped at 6 levels counted from `params`, so an `/mcp` call nested 7 to
+  31 levels deep passed the firewall and was refused by egress. A string,
+  object or array past the limit, even an empty one, ends the walk. A region
   the walk never reached could have held a destination, so the call is
   treated as having an undeterminable target and is denied — the same rule
   spec §5.2 applies to any field whose value cannot be resolved, and it
@@ -853,6 +870,13 @@ historical record invalidates all subsequent hashes.
   the events recorded reflect what actually happened in the upstream
   LLM or tool — that requires the upstream system to participate in
   signing or attestation.
+- **Signed records need the key at every start.** With a chain-state key
+  (`ADMINA_FORENSIC_STATE_KEY` or `_FILE`) each record carries an
+  HMAC-SHA256 `record_sig`. A store restarted without the key writes
+  records with `record_sig_alg: "none"`, which a later verification with
+  the key reports as `unsigned`. Since 0.13.1 a store that holds signed
+  records refuses to start without its key in `closed` fail mode
+  (`ADMINA_FORENSIC_FAIL_MODE`) and logs a warning in `open` mode.
 - **No external time anchoring by default.** Timestamps are local to
   the proxy. For non-repudiation against a third party, anchor the
   chain head to an external time-stamping authority (RFC 3161, OpenTSA,

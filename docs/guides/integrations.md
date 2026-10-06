@@ -91,7 +91,10 @@ Log an event to the forensic black box (SHA-256 hash chain).
 The proxy stamps the recorded event: `source` is always `api_v1_audit` (a
 `source` in the request is kept as `client_source`) and `submitted_by` is
 the credential the request was admitted with (`api_key`, `append_key`,
-`user:<id>` for an auth provider's user, or `unauthenticated`).
+`user:<id>` for an auth provider's user, or `unauthenticated`). With
+`ADMINA_API_KEY` in the environment the built-in `apikey` auth provider
+admits API-key requests, so they are stamped `user:api_key_user`; `api_key`
+is the stamp when the key comes only from `ADMINA_API_KEY_FILE` or `.env`.
 
 `ADMINA_AUDIT_APPEND_KEY` (or `ADMINA_AUDIT_APPEND_KEY_FILE`) sets a key
 that this route accepts besides the API key, and that every other route

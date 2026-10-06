@@ -29,7 +29,7 @@ cause.
 | A value of the wrong type in `admina.yaml` | `ConfigSchemaError` naming the key | fix the value; `ADMINA_CONFIG_STRICT=true` also refuses unknown keys |
 | `FORENSIC_BACKEND=filesystem` without a usable directory, or `s3` without boto3 or S3 | no fallback to the in-memory store: `open` mode starts with a store that records nothing (`forensic_writable: false`), `closed` mode does not start | set `FORENSIC_BASE_DIR` to a writable directory, or fix the S3 settings |
 | `ADMINA_FORENSIC_STATE_KEY_FILE` inside the forensic directory | `SecretFileError` | keep the key file outside the store |
-| An unknown name in `ADMINA_ENABLED_SURFACES` | error | use `gateway`, `mcp`, `integration` |
+| An unknown name in `ADMINA_ENABLED_SURFACES` | error | use `gateway`, `mcp`, `integration`, `compliance`, `dashboard` |
 
 ## What is blocked or redacted
 
@@ -39,11 +39,19 @@ cause.
   the value in the file: set `0.5` to keep the previous behaviour.
 - **The gateway scans the whole request body**: tool definitions,
   `response_format`, tool call arguments and every other field, not only
-  the messages. Text nested more than 32 levels deep blocks the request.
-- **`/mcp` and `/api/v1/validate` scan and redact 32 levels deep** (they
-  stopped at 6 and let deeper text through). With the firewall or PII
-  redaction on, a request with text deeper than that is blocked in
-  `enforce` mode (`checks.scan_depth`).
+  the messages. With the firewall on, text nested more than 32 levels deep
+  blocks the request.
+- **`/mcp` scans and redacts 32 levels deep** (it stopped at 6 and let
+  deeper text through). With the firewall or PII redaction on, a request
+  with text deeper than that is blocked in `enforce` mode
+  (`checks.scan_depth`). `POST /api/v1/validate` takes a string `content`
+  only, so the block does not apply there.
+- **Egress walks 6 levels deep in 0.13.0.** Under
+  `ADMINA_EGRESS_MODE=enforce`, an `/mcp` call whose arguments hold a
+  string, object or array nested more than 6 levels deep (counted from
+  `params`) is refused as an unresolvable destination
+  (`evidence.scan_truncated`), although the firewall scans it. Since
+  0.13.1 the egress walk goes as deep as the governance scan (32 levels).
 - **`POST /api/v1/validate` needs a string `content`.** An object or an
   array is answered `400`.
 - **PII redaction keeps keys and structure.** It reads text values only:
@@ -60,10 +68,13 @@ cause.
 
 - `ADMINA_GATEWAY_BLOCK_STATUS=403` answers a block with an OpenAI-style
   error (`governance_blocked`); the default `200` keeps the block message
-  as a completion, as in 0.12. Responses carry `X-Admina-Ruleset` and
-  `X-Admina-Version`, and, once the request has an event id,
-  `X-Admina-Event-Id` and `X-Admina-Action`.
-- Streams are passed through unchanged, and upstream errors (4xx, 5xx,
+  as a completion, as in 0.12. Every response carries `X-Admina-Ruleset`;
+  those the route sends itself (not the 401 of authentication or the 413
+  of the request size limit) also carry `X-Admina-Version`, and, once the
+  request has an event id, `X-Admina-Event-Id` and `X-Admina-Action`.
+- With PII redaction off (`PII_REDACTION_ENABLED=false`), streams are
+  passed through unchanged; with PII redaction on (the default) each chunk
+  is parsed, redacted and re-serialised. Upstream errors (4xx, 5xx,
   timeouts as `504`) reach the client with their status.
 - A chat completion body that is not a JSON object is answered `400`.
 
@@ -71,8 +82,10 @@ cause.
 
 - **Every ruleset hash changes.** The hashed object now holds the pattern
   packs' content, `disabled_patterns`, `allowed_tags` and `ruleset_format`.
-  Recompute any hash you pinned (`gateway.prescan_rulesets`,
-  `X-Admina-Scan-Policy`, your own records) with
+  It also holds `admina_version` (and `admina_core_version` with the Rust
+  engine), so the hash changes with every release, not only with 0.13:
+  recompute any hash you pinned (`gateway.prescan_rulesets`,
+  `X-Admina-Scan-Policy`, your own records) after each upgrade, with
   `admina.domains.agent_security.ruleset.ruleset_sha256()` or
   `admina.sdk.active_ruleset_sha256()`, or read it from
   `GET /v1/admina/ruleset`.
@@ -81,7 +94,10 @@ cause.
 - **Each forensic record is signed** when a chain-state key is set
   (`record_sig`). Records written before the key was set are reported as
   unsigned. `admina forensic verify` checks the signatures with the key in
-  the environment.
+  the environment. Once the store holds signed records, keep the key set:
+  in 0.13.0 a proxy started without it writes unsigned records, which a
+  later verification with the key reports as `unsigned`; since 0.13.1 it
+  does not start in `closed` fail mode and logs a warning in `open` mode.
 - **A chain state that cannot be verified is rebuilt only from verified
   records**, and `/health` reports `forensic_chain: "rebuilt"` until
   `admina forensic acknowledge-rebuild` (proxy stopped) clears it.
@@ -95,8 +111,10 @@ cause.
 
 ## Deprecated
 
-- **`?api_key=`.** The API key in the query string still works and logs a
-  warning once per process. Send `X-API-Key` or `Authorization: Bearer`.
+- **`?api_key=`.** HTTP requests do not accept the API key in the query
+  string: send `X-API-Key` or `Authorization: Bearer`. The query string is
+  accepted only on the WebSocket upgrade of the dashboard live feed
+  (`/api/dashboard/live`), where it logs a warning once per process.
 
 ## After the upgrade
 
@@ -111,6 +129,7 @@ admina forensic verify --dir "$FORENSIC_BASE_DIR"
   `null` for the in-memory store), `forensic_chain` is `ok`, and `engine`
   names the engines you expect.
 - `/v1/admina/ruleset`: the `ruleset_sha256` to use in
-  `gateway.prescan_rulesets` and `X-Admina-Scan-Policy`.
+  `gateway.prescan_rulesets` and `X-Admina-Scan-Policy`; it changes with
+  every release.
 - `admina forensic verify`: `valid: true`; keep the `checkpoint` it prints
   to verify from there next time (`--checkpoint SEQ:HASH`).
