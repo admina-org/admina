@@ -13,7 +13,7 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
-## [0.13.2] — 2026-10-06
+## [0.13.2] — 2026-10-07
 
 Patch release: the PyPI package `admina`, an alias of `admina-framework`,
 and the `mistral` extra on mistralai 3.x. The code of the framework is
