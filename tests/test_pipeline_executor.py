@@ -121,6 +121,16 @@ def _blocked(resp: httpx.Response) -> bool:
 
 # ── The event loop stays free ─────────────────────────────────
 
+# How long the slow job (a firewall check, a redaction) sleeps in the thread
+# that runs it, and the largest event loop stall the tests accept. Run on the
+# event loop, the job stalls it for its whole duration; run in a worker
+# thread, the loop only waits for the scheduler. The bound is half the job:
+# well below the stall of a blocked loop, well above the scheduling delays of
+# a loaded CI runner (stalls just over 0.1 s were seen on macOS runners with
+# the loop free).
+SLOW_JOB = 0.6
+MAX_STALL = SLOW_JOB / 2
+
 
 async def _largest_gap(stop: asyncio.Event) -> float:
     """Largest time between two wake-ups of a task that sleeps 5 ms at a
@@ -144,7 +154,7 @@ def test_slow_firewall_does_not_block_the_event_loop(monkeypatch):
     monkeypatch.setattr(proxy_main.settings, "ADMINA_API_KEY", "")
     monkeypatch.setattr(proxy_main.settings, "ALLOW_UNAUTHENTICATED", True)
     monkeypatch.setattr(proxy_main.settings, "PII_REDACTION_ENABLED", False)
-    firewall = SlowFirewall(delay=0.3)
+    firewall = SlowFirewall(delay=SLOW_JOB)
     # One thread per request, whatever the number of CPUs of the host.
     executor = PipelineExecutor(workers=8)
 
@@ -182,8 +192,8 @@ def test_slow_firewall_does_not_block_the_event_loop(monkeypatch):
     finally:
         executor.shutdown()
     assert [r.status_code for r in responses] == [200] * 8
-    assert largest_gap < 0.1, largest_gap
-    assert max(latencies) < 0.1, latencies
+    assert largest_gap < MAX_STALL, largest_gap
+    assert max(latencies) < MAX_STALL, latencies
     assert threading.main_thread().name not in firewall.threads
     assert firewall.peak == 8  # scanned side by side
 
@@ -554,7 +564,7 @@ def _run_with_gap(coro_factory):
 
 @pytest.mark.parametrize("stream", [False, True])
 def test_completion_redaction_runs_off_the_event_loop(stream):
-    pii = _AnswerPII(delay=0.3)
+    pii = _AnswerPII(delay=SLOW_JOB)
     upstream = _answer_stream() if stream else _answer_completion()
     resp, largest_gap = _run_with_gap(
         lambda: post_through(
@@ -570,7 +580,7 @@ def test_completion_redaction_runs_off_the_event_loop(stream):
     assert "[EMAIL]" in resp.text
     assert threading.main_thread().name not in pii.threads
     assert all(name.startswith("admina-pipeline") for name in pii.threads)
-    assert largest_gap < 0.1, largest_gap
+    assert largest_gap < MAX_STALL, largest_gap
 
 
 def test_completion_redaction_over_the_budget_is_not_returned():
