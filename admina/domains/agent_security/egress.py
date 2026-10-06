@@ -41,6 +41,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from admina.core.types import RiskLevel
+from admina.domains.governance import SCAN_DEPTH
 
 __all__ = [
     "EGRESS_SURFACES",
@@ -60,9 +61,9 @@ logger = logging.getLogger("admina.egress")
 #: Surfaces the egress stage can run on (``agent_security.egress.surfaces``).
 EGRESS_SURFACES = ("gateway", "mcp", "integration", "sdk")
 
-# Mirrors _MAX_SCAN_DEPTH in admina/domains/governance.py so the egress walk
-# and the PII/firewall walk agree on how deep a payload is inspected.
-_MAX_SCAN_DEPTH = 6
+# The walks below stop at the pipeline's SCAN_DEPTH, so egress and the
+# PII/firewall walk agree on how deep a payload is inspected: a call the
+# firewall scans in full is never refused by egress for its depth alone.
 
 # Argument names that declare a network destination. Their presence means the
 # call is an egress attempt even when the value cannot be resolved.
@@ -182,7 +183,7 @@ def _walk(
     A truncated walk means part of the arguments was never inspected, so the
     caller cannot claim the call has no destination — see :func:`analyze`.
     """
-    if depth > _MAX_SCAN_DEPTH:
+    if depth > SCAN_DEPTH:
         # Only a string, dict or list could have hidden a destination; an
         # int, float, bool or None could not, so skipping one loses nothing
         # and must not be reported as an incomplete scan.
@@ -221,7 +222,7 @@ def _walk(
 
 def _classify_write_shaped(obj: Any, depth: int) -> str | None:
     """Return the reason the call is payload-bearing, or None."""
-    if depth > _MAX_SCAN_DEPTH:
+    if depth > SCAN_DEPTH:
         return None
     if isinstance(obj, str):
         # Bare hostnames are recognised here regardless of the key: the
@@ -275,7 +276,7 @@ def _collect_payload_fields(obj: Any, depth: int, found: list[str]) -> None:
     destination and carries a payload, and the payload is what this
     function is for.
     """
-    if depth > _MAX_SCAN_DEPTH:
+    if depth > SCAN_DEPTH:
         return
     if isinstance(obj, str):
         # A host or URL says where the call goes, which is what the fan-in
@@ -351,7 +352,7 @@ def payload_fields(params: Any) -> list[str]:
 
 
 def _remote_hint(obj: Any, depth: int = 0) -> bool | None:
-    if depth > _MAX_SCAN_DEPTH:
+    if depth > SCAN_DEPTH:
         return None
     if isinstance(obj, dict):
         for key, value in obj.items():
