@@ -25,7 +25,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "admina"
-version = "0.13.1"
+version = "0.13.2"
 description = "Admina — governed AI development framework (installs admina-framework)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -40,7 +40,7 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
 ]
-dependencies = ["admina-framework==0.13.1"]
+dependencies = ["admina-framework==0.13.2"]
 
 [project.urls]
 Homepage = "https://admina.org"
@@ -49,21 +49,21 @@ Documentation = "https://github.com/admina-org/admina#readme"
 Changelog = "https://github.com/admina-org/admina/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-proxy = ["admina-framework[proxy]==0.13.1"]
-proxy-minimal = ["admina-framework[proxy-minimal]==0.13.1"]
-nlp = ["admina-framework[nlp]==0.13.1"]
-telemetry = ["admina-framework[telemetry]==0.13.1"]
-rust = ["admina-framework[rust]==0.13.1"]
-full = ["admina-framework[full]==0.13.1"]
-openai = ["admina-framework[openai]==0.13.1"]
-ollama = ["admina-framework[ollama]==0.13.1"]
-anthropic = ["admina-framework[anthropic]==0.13.1"]
-mistral = ["admina-framework[mistral]==0.13.1"]
-gemini = ["admina-framework[gemini]==0.13.1"]
-bedrock = ["admina-framework[bedrock]==0.13.1"]
-adapters = ["admina-framework[adapters]==0.13.1"]
-presidio = ["admina-framework[presidio]==0.13.1"]
-all = ["admina-framework[all]==0.13.1"]
+proxy = ["admina-framework[proxy]==0.13.2"]
+proxy-minimal = ["admina-framework[proxy-minimal]==0.13.2"]
+nlp = ["admina-framework[nlp]==0.13.2"]
+telemetry = ["admina-framework[telemetry]==0.13.2"]
+rust = ["admina-framework[rust]==0.13.2"]
+full = ["admina-framework[full]==0.13.2"]
+openai = ["admina-framework[openai]==0.13.2"]
+ollama = ["admina-framework[ollama]==0.13.2"]
+anthropic = ["admina-framework[anthropic]==0.13.2"]
+mistral = ["admina-framework[mistral]==0.13.2"]
+gemini = ["admina-framework[gemini]==0.13.2"]
+bedrock = ["admina-framework[bedrock]==0.13.2"]
+adapters = ["admina-framework[adapters]==0.13.2"]
+presidio = ["admina-framework[presidio]==0.13.2"]
+all = ["admina-framework[all]==0.13.2"]
 
 [tool.setuptools]
 packages = []
