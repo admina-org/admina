@@ -225,6 +225,12 @@ def get_level(total: int) -> str:
     return "Critical gaps"
 
 
+def _otel_active(otel_exporter: Any) -> bool:
+    """True when *otel_exporter* exports spans (its ``enabled``). The proxy
+    always builds an exporter, also with OTEL off."""
+    return otel_exporter is not None and bool(getattr(otel_exporter, "enabled", True))
+
+
 def compute_oisg_score(
     *,
     firewall: Any | None = None,
@@ -362,8 +368,9 @@ def _evaluate_open(
     )
 
     # O3: Open standards (MCP, OpenTelemetry, A2A) — satisfied when
-    #     the proxy is running (always MCP) and OTEL is configured
-    has_otel = otel_exporter is not None
+    #     the proxy is running (always MCP); the reason says whether OTEL
+    #     exports spans
+    has_otel = _otel_active(otel_exporter)
     results.append(
         CriterionResult(
             id=defs[2]["id"],
@@ -655,9 +662,9 @@ def _evaluate_governed(
         )
     )
 
-    # G4: End-to-end observability — satisfied if OTEL exporter
-    #     and dashboard are configured
-    has_otel = otel_exporter is not None
+    # G4: End-to-end observability — satisfied if the OTEL exporter
+    #     exports spans or the dashboard is enabled
+    has_otel = _otel_active(otel_exporter)
     if dashboard_enabled is None:
         dashboard_enabled = True
         if config is not None:

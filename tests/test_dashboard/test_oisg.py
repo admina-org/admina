@@ -40,6 +40,7 @@ from admina.domains.compliance.oisg import (
     compute_oisg_score,
     get_level,
 )
+from admina.domains.compliance.otel import OTELGovernanceExporter
 
 # ── Stubs ───────────────────────────────────────────────────
 
@@ -326,6 +327,15 @@ class TestComputeOISGScore:
     def test_g4_with_otel_and_no_dashboard(self) -> None:
         result = compute_oisg_score(otel_exporter=_FakeOTEL(), dashboard_enabled=False)
         assert next(c for c in result.pillars["governed"].criteria if c.id == "g4").satisfied
+
+    def test_g4_and_o3_ignore_a_disabled_otel_exporter(self) -> None:
+        exporter = OTELGovernanceExporter(enabled=False)
+        result = compute_oisg_score(otel_exporter=exporter, dashboard_enabled=False)
+        g4 = next(c for c in result.pillars["governed"].criteria if c.id == "g4")
+        o3 = next(c for c in result.pillars["open"].criteria if c.id == "o3")
+        assert not g4.satisfied
+        assert "no OTEL" in g4.reason
+        assert "OTEL not configured" in o3.reason
 
     def test_s2_satisfied_when_api_key_configured(self) -> None:
         """S2 reads api_key_configured param directly, overriding config fallback."""
