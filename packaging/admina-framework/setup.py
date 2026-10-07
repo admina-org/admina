@@ -10,25 +10,14 @@
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
-# limitations under the License.
 
-"""Admina — the open framework for governed AI.
+# The last release of admina-framework: the code is published as admina
+# since 0.14.0. Installing this source distribution stops with the commands
+# to switch, before pip or uv change the installed packages.
 
-Top-level convenience imports::
-
-    from admina import GovernedModel, GovernedData, GovernedAgent, ComplianceKit
-"""
-
-from __future__ import annotations
-
-from admina.sdk import ComplianceKit, GovernedAgent, GovernedData, GovernedModel
-
-__version__ = "0.14.0"
-
-__all__ = [
-    "__version__",
-    "GovernedModel",
-    "GovernedData",
-    "GovernedAgent",
-    "ComplianceKit",
-]
+raise SystemExit(
+    "\n\nadmina-framework is now published as admina (since 0.14.0).\n"
+    "Run:  pip uninstall -y admina admina-framework && pip install admina\n"
+    "Extras keep their names: admina-framework[proxy] is admina[proxy].\n"
+    "See https://github.com/admina-org/admina/blob/main/docs/guides/package-name.md\n"
+)

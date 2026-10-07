@@ -119,7 +119,7 @@ def _no_engine_reason(adapter: Any, engines: list[str], config: str | Path | Non
     """Why none of *engines* can run the corpora of *adapter*."""
     if "rust" in engines:
         if not detectors.rust_available():
-            return "admina-core is not installed (install admina-framework[rust])"
+            return "admina-core is not installed (install admina[rust])"
         keys = adapter.python_only_keys() if hasattr(adapter, "python_only_keys") else []
         if keys:
             names = ", ".join(f"agent_security.firewall.{key}" for key in keys)

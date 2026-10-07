@@ -208,7 +208,7 @@ class PIIRedactor:
         if _spacy is None:
             logger.info(
                 "spaCy not installed — PII redaction running in regex-only mode "
-                "(install admina-framework[nlp] for NER-based detection)"
+                "(install admina[nlp] for NER-based detection)"
             )
             self.nlp = None
         else:

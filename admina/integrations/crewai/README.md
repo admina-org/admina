@@ -9,7 +9,7 @@ pip install -e ".[proxy,nlp]"   # Admina: loop breaker (numpy, scikit-learn) + N
 pip install crewai              # Your CrewAI deps
 ```
 
-From PyPI: `pip install "admina-framework[proxy,nlp]"`. Loop detection is on
+From PyPI: `pip install "admina[proxy,nlp]"`. Loop detection is on
 by default and needs numpy and scikit-learn (`[proxy]`), or the Rust loop
 breaker (`[rust]`); without either, pass `loop_detection=False`.
 

@@ -14,7 +14,7 @@
 
 """Detection-parity tests between the pure-Python and Rust firewalls.
 
-The Rust engine is an OPT-IN accelerator (`pip install admina-framework[rust]`).
+The Rust engine is an OPT-IN accelerator (`pip install admina[rust]`).
 Because enabling it swaps out the detection engine, its behaviour must not
 silently regress below the pure-Python default. These tests pin the parity
 contract as of 0.9.4:

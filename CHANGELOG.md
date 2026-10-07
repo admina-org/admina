@@ -13,6 +13,40 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-10-07
+
+Minor release with a declared breaking change: Admina is published on PyPI
+as `admina`. The module (`import admina`), the `admina` command, the extras,
+`admina-core` and the container images do not change. Upgrading an
+installation of `admina-framework`: see `docs/guides/package-name.md`.
+
+### Changed
+
+- **Breaking:** the distribution is named `admina` (`pip install admina`,
+  `pip install "admina[proxy]"`). `admina-framework` 0.14.0 is its last
+  release: a source distribution that stops the installation with the
+  commands to switch (`pip uninstall -y admina admina-framework && pip
+  install admina`) and leaves the installed packages as they are. A pin
+  such as `admina-framework<0.14` keeps installing the 0.13 releases.
+- The `admina` package holds the code; in 0.13.2 it was an alias that
+  installed `admina-framework`.
+- The `[rust]` extra requires `admina-core>=0.14.0,<0.15`.
+- The `pyproject.toml` that `admina plugin create` writes depends on
+  `admina>=<version>`. A plugin created by an earlier release depends on
+  `admina-framework`: change that line (see the guide).
+- Install hints in error messages, warnings, the README and the docs name
+  `admina[...]`.
+- The Markdown compliance report of the dashboard ends with the forensic
+  section.
+
+### Documentation
+
+- `docs/guides/package-name.md`: the package names by release, the last
+  `admina-framework` release, the upgrade with pip, uv and dependency
+  lists, and the reinstall that restores the module when
+  `admina-framework` is uninstalled after `admina` was installed over it.
+- ROADMAP: the 0.14.0 entry and the released milestones.
+
 ## [0.13.2] — 2026-10-07
 
 Patch release: the PyPI package `admina`, an alias of `admina-framework`,
@@ -2232,7 +2266,8 @@ environment in `docker-compose.benchmark.yml`.
 
 ---
 
-[Unreleased]: https://github.com/admina-org/admina/compare/v0.13.2...HEAD
+[Unreleased]: https://github.com/admina-org/admina/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/admina-org/admina/compare/v0.13.2...v0.14.0
 [0.13.2]: https://github.com/admina-org/admina/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/admina-org/admina/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/admina-org/admina/compare/v0.12.2...v0.13.0

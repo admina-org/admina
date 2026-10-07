@@ -74,8 +74,8 @@ def get_loop_breaker():
                     raise ImportError(
                         "Loop detection (loop_detection=True, the default of the "
                         "LangChain and CrewAI callbacks) needs numpy and scikit-learn: "
-                        "pip install 'admina-framework[proxy]' (or "
-                        "'admina-framework[rust]' for the Rust loop breaker), or pass "
+                        "pip install 'admina[proxy]' (or "
+                        "'admina[rust]' for the Rust loop breaker), or pass "
                         "loop_detection=False"
                     ) from exc
     return _loop_breaker

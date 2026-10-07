@@ -375,7 +375,7 @@ class TestFormatNextSteps:
         out = cli_main._format_next_steps("foo")
         assert "admina dev" in out
         # No upgrade hint when [proxy] is already there.
-        assert "pip install 'admina-framework[proxy]'" not in out
+        assert "pip install 'admina[proxy]'" not in out
 
     def test_next_steps_when_proxy_missing_omits_admina_dev_command(
         self, monkeypatch: pytest.MonkeyPatch
@@ -392,7 +392,7 @@ class TestFormatNextSteps:
             if stripped == "admina dev" or stripped.startswith("admina dev "):
                 # Only --stack is acceptable here, and only if docker is around.
                 assert stripped.startswith("admina dev --stack"), line
-        assert "pip install 'admina-framework[proxy]'" in out
+        assert "pip install 'admina[proxy]'" in out
 
     def test_next_steps_python_main_always_shown(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from admina.cli import main as cli_main
@@ -419,7 +419,7 @@ class TestDevRequiresProxyExtra:
         captured = capsys.readouterr()
         combined = captured.out + captured.err
         assert "[proxy]" in combined
-        assert "pip install 'admina-framework[proxy]'" in combined
+        assert "pip install 'admina[proxy]'" in combined
         assert "Traceback" not in combined
 
     def test_require_proxy_extra_noop_when_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:

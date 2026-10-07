@@ -82,7 +82,7 @@ def test_scaffolded_pyproject_metadata(tmp_path):
     _scaffold_plugin("my-guard", "governance_guard", tmp_path / "my-guard")
     text = (tmp_path / "my-guard" / "pyproject.toml").read_text()
 
-    assert f"admina-framework>={__version__}" in text
+    assert f"admina>={__version__}" in text
     assert "admina>=0.9.0" not in text
     assert 'requires-python = ">=3.11"' in text
     assert '[project.entry-points."admina.plugins"]' in text

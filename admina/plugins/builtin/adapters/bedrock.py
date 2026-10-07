@@ -18,7 +18,7 @@ Wraps the ``boto3`` SDK to provide inference through the Amazon Bedrock
 Converse API.  Authentication follows the standard AWS credential chain
 (environment variables, ``~/.aws/credentials``, IAM instance role, etc.).
 
-Requires: ``pip install 'admina-framework[bedrock]'``  (optional dependency).
+Requires: ``pip install 'admina[bedrock]'``  (optional dependency).
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ class BedrockAdapter(BaseModelAdapter):
             except ImportError as exc:
                 raise ImportError(
                     "The 'boto3' package is required for BedrockAdapter. "
-                    "Install it with: pip install 'admina-framework[bedrock]'"
+                    "Install it with: pip install 'admina[bedrock]'"
                 ) from exc
             self._client = boto3.client("bedrock-runtime", region_name=self._region)
         return self._client

@@ -46,7 +46,7 @@ def no_sklearn(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _assert_actionable(exc: pytest.ExceptionInfo[ImportError]) -> None:
     message = str(exc.value)
-    assert "admina-framework[proxy]" in message
+    assert "admina[proxy]" in message
     assert "loop_detection=False" in message
     assert isinstance(exc.value.__cause__, ImportError)
 

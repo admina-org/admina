@@ -18,7 +18,7 @@ Provides a deterministic checklist + gap analysis for NIS2 (Directive
 (EU) 2022/2555) Art. 21 cybersecurity risk-management measures and
 Art. 23 incident reporting.
 
-Scope of this OSS module: a *triage tool*. It enumerates the ten
+Scope of this module: a *triage tool*. It enumerates the ten
 measure areas required by Art. 21 and lets the operator declare for
 each one which of a small number of standard controls is in place,
 producing a coverage score and a list of gaps.

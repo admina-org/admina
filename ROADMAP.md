@@ -6,7 +6,7 @@ not on a calendar. Scope may shift in response to user feedback, security
 findings, or upstream changes in the governance landscape (EU AI Act
 implementing acts, new frameworks, new attack classes).
 
-The current release is **0.13.2**. Admina is pre-1.0: the public API may
+The current release is **0.14.0**. Admina is pre-1.0: the public API may
 still evolve before the 1.0 stability commitment, so a minor release may
 carry a declared breaking change once its replacement is in place. Shipped
 detail lives in [CHANGELOG.md](CHANGELOG.md).
@@ -130,85 +130,14 @@ deployment, and a forensic store that can be verified record by record.
 
 ---
 
-## 0.14.0 — Compliance template expansion
+## 0.14.0 — Package name
 
-Beyond the EU AI Act.
-
-- NIS2 template (incident response, supply-chain obligations)
-- ISO / IEC 42001 template (AI management system controls)
-- SOC 2 template (Trust Services Criteria mapping)
-- Cross-framework gap analysis: surface obligations that satisfy
-  multiple frameworks in a single control
-- Report export in PDF and DOCX, signed with the forensic key
-
----
-
-## Not yet scheduled
-
-Planned, without a release assigned yet.
-
-**Observability**
-
-- Emission of the streaming-request metadata shaped in 0.11 onto the
-  OpenTelemetry GenAI semantic conventions (`gen_ai.request.model`,
-  `gen_ai.usage.*`, `gen_ai.response.finish_reasons`,
-  `gen_ai.client.operation.duration`) — no metadata field is renamed at
-  the emission boundary.
-- An SLO panel on the Prometheus metrics.
-- Structured error taxonomy: stable error codes across proxy, SDK, and
-  REST API.
-- Benchmark regression gate in CI (fail on a >10% regression versus
-  baseline).
-- Tracing correlation from the SDK through the proxy to the upstream LLM
-  (the gateway already records W3C trace context).
-
-**Multi-tenancy and RBAC** — operating Admina as a shared service.
-
-- Organisation / workspace isolation in the proxy
-- Per-tenant quotas (request rate, forensic retention, compliance
-  templates enabled)
-- Role-based access control on proxy endpoints (read / write / admin)
-- OIDC authentication provider as a built-in plugin
-- Shared async pool for data connectors; decision cache for the injection
-  firewall fast path.
-- Per-tenant forensic namespace with independent hash chains
-
----
-
-## 1.0.0 — API freeze and long-term support
-
-The stability commitment. Shipped when the public surface has settled
-through real-world use.
-
-- Plugin ABI v1 frozen with contract tests; third-party plugin
-  certification suite
-- Official client SDKs: TypeScript, Go
-- Deprecation policy formalised; 18-month LTS window for the 1.0 line
-- Security advisory process documented; CVE assignment workflow
-- Removal of the pre-0.3.0 compatibility shims in `proxy/`
-
----
-
-## 1.1.0 — Horizontal scale
-
-Running Admina as stateless, horizontally-scaled infrastructure.
-
-- Stateless proxy mode backed by shared Redis / ClickHouse
-- Hot-reload of governance configuration without restart
-- Official Helm chart and Kubernetes operator
-- Cross-region federation for the forensic store
-
----
-
-## 2.0.0 — Only if required
-
-Reserved for breaking changes that cannot be delivered under 1.x.
-No breaking changes are planned. Candidate drivers:
-
-- Plugin ABI v2 if real-world use reveals design limitations that cannot be
-  extended under v1
-- Streaming-first pipeline rearchitecture if chunk-level governance
-  becomes the dominant workload
+- Admina is published on PyPI as `admina`; `admina-framework` is no longer
+  released after a final 0.14.0 that stops the installation with the
+  commands to switch. A declared breaking change for installs of
+  `admina-framework`: the module, the `admina` command and the extras do
+  not change. See
+  [docs/guides/package-name.md](docs/guides/package-name.md).
 
 ---
 

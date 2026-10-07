@@ -32,13 +32,14 @@ audited, EU AI Act compliance tracked. Works in-process (SDK) and over the netwo
 ## Install
 
 ```bash
-pip install "admina-framework[proxy]"   # Recommended: SDK + proxy + dashboard
-pip install "admina-framework[full]"    # + NLP (spaCy) + telemetry (OTEL)
-pip install admina-framework            # SDK only — embed it in another service
+pip install "admina[proxy]"   # Recommended: SDK + proxy + dashboard
+pip install "admina[full]"    # + NLP (spaCy) + telemetry (OTEL)
+pip install admina            # SDK only — embed it in another service
 ```
 
-> Distribution name `admina-framework`, import name `admina`
-> (same pattern as `python-dateutil` → `import dateutil`).
+> Distribution name and import name: `admina` (up to 0.13.x the
+> distribution was `admina-framework`; see the
+> [package name guide](guides/package-name.md)).
 
 ## 30-second example
 

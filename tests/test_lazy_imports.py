@@ -230,7 +230,7 @@ def test_loop_breaker_surfaces_explain_the_missing_dependencies(tmp_path):
     proc = _run(code, tmp_path)  # every surface
     assert proc.returncode != 0
     assert "ADMINA_ENABLED_SURFACES=gateway" in proc.stderr
-    assert "admina-framework[proxy]" in proc.stderr
+    assert "admina[proxy]" in proc.stderr
 
 
 def test_configured_redis_without_the_package_is_a_warning(tmp_path):

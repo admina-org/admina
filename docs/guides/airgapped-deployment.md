@@ -63,7 +63,7 @@ If you operate a private registry, `docker tag` + `docker push` to
 
 ### 2. Python wheels
 
-`pip install admina-framework[full]` resolves ~150 wheels from PyPI.
+`pip install admina[full]` resolves ~150 wheels from PyPI.
 Pre-download them once on a connected host, then point pip at the
 local directory.
 
@@ -71,13 +71,13 @@ local directory.
 # On a host with Internet access:
 mkdir -p admina-wheels
 uv pip download \
-    admina-framework[full] \
+    admina[full] \
     --dest admina-wheels \
     --python-version 3.11 \
     --platform-extra manylinux2014_x86_64
 
 # Transfer admina-wheels/ to the air-gapped host, then:
-uv pip install --no-index --find-links ./admina-wheels admina-framework[full]
+uv pip install --no-index --find-links ./admina-wheels admina[full]
 ```
 
 For full reproducibility, pin the lock file: `uv lock --frozen`
