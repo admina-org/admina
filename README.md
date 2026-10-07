@@ -80,7 +80,7 @@
 | Audit trail                    | logs you hope nobody deletes         | **SHA-256 hash chain** — tamper-evident by design                        |
 | Adding governance to existing code | rewrite the call sites           | **Zero code changes** via proxy, or 3 lines via SDK                      |
 | Performance overhead           | unknown                              | **Measured** — engine microbenchmarks and a gateway benchmark to run on your hardware ([Performance](#performance--hybrid-python--rust-engine)) |
-| License                        | varies                               | **Apache 2.0**, open core                                                |
+| License                        | varies                               | **Apache 2.0**                                                           |
 
 > Admina is **decision-support and defense-in-depth**, not legal advice. See [Compliance scope](#compliance-scope) for the full disclaimer and limitations.
 
@@ -1940,7 +1940,7 @@ guard error under `ADMINA_GUARD_FAIL_MODE=closed`) or `response_blocked`
 
 - [CONTRIBUTING.md](https://github.com/admina-org/admina/blob/main/CONTRIBUTING.md) — development setup, testing, and pull request workflow
 - [MODEL_CARD.md](https://github.com/admina-org/admina/blob/main/MODEL_CARD.md) — transparency artifact for every Admina governance component (intended use, scope, limitations, known failure modes), aligned with EU AI Act Art. 13 and NIST AI RMF
-- [ROADMAP.md](https://github.com/admina-org/admina/blob/main/ROADMAP.md) — planned milestones from 0.9.x to 1.0 and beyond
+- [ROADMAP.md](https://github.com/admina-org/admina/blob/main/ROADMAP.md) — released milestones and the next planned release
 - [CHANGELOG.md](https://github.com/admina-org/admina/blob/main/CHANGELOG.md) — release notes
 - [SECURITY.md](https://github.com/admina-org/admina/blob/main/SECURITY.md) — coordinated disclosure policy
 - [CODE_OF_CONDUCT.md](https://github.com/admina-org/admina/blob/main/CODE_OF_CONDUCT.md) — Contributor Covenant 2.1

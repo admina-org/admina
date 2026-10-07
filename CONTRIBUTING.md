@@ -231,8 +231,8 @@ maintainers before it is merged.
 
 ### Areas Where Help Is Welcome
 
-See [ROADMAP.md](ROADMAP.md) for the planned direction from 0.9.x to 1.0
-and beyond. In addition, the following areas accept contributions on an
+See [ROADMAP.md](ROADMAP.md) for the released milestones and the next
+planned release. In addition, the following areas accept contributions on an
 ongoing basis regardless of the current milestone:
 
 - New injection detection patterns (`admina/domains/agent_security/firewall.py`)

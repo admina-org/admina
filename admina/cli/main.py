@@ -1736,8 +1736,7 @@ def configure(output: Path, non_interactive: bool) -> None:
     to disable, loop-breaker thresholds, PII categories.
 
     Defaults are restrictive: enforce mode, all firewall categories on,
-    EU-aware PII set on. The wizard never recommends a "Pro" upgrade
-    or a paid feature — the OSS edition is fully usable as-is.
+    EU-aware PII set on.
     """
 
     if output.exists():

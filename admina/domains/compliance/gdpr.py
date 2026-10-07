@@ -23,7 +23,7 @@ Two primitives required by GDPR Art. 30 and Art. 35:
     this release.
 
   - :func:`render_dpia_template` — Art. 35 DPIA scaffold rendered
-    as Markdown from the operator's input. The OSS module produces
+    as Markdown from the operator's input. The module produces
     a *blank template populated with the operator's facts* — it is
     NOT a guided wizard, it does NOT score or recommend mitigations,
     and it is NOT legal advice. A real DPIA always involves the DPO

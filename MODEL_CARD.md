@@ -939,7 +939,7 @@ to `minimal`.
 - **No coverage of national implementing legislation** beyond EU. Member
   states may enact additional obligations (e.g. on biometric
   identification by law enforcement). Admina does not model these.
-- **ISO/IEC 42001 and SOC 2** are not implemented in OSS.
+- **ISO/IEC 42001 and SOC 2** are not implemented.
 
 ---
 
