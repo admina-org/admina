@@ -117,6 +117,12 @@ report = kit.gap_analysis(risk_category="high", current_compliance={...})
 
 ### Install from PyPI
 
+> **Package name change in 0.14.0.** From 0.14.0, Admina is published as
+> `admina`, and `admina-framework` is no longer released (a breaking change
+> for anything that installs `admina-framework`). The module, the `admina`
+> command and the extras do not change. See
+> [The `admina` package name](https://github.com/admina-org/admina/blob/main/docs/guides/package-name.md) for the steps to upgrade.
+
 ```bash
 # Recommended for new users: SDK + proxy + dashboard.
 # Lets you run `admina dev` and see the dashboard out of the box.
@@ -174,10 +180,10 @@ pip install admina-framework
 > matters more than that extra coverage. See
 > [Performance](#performance--hybrid-python--rust-engine) for the trade-off.
 
-The PyPI package `admina` is an alias: `pip install admina` installs
-`admina-framework` at the same version, and `admina[X]` installs
-`admina-framework[X]` for every extra above. It has no code of its own, so
-both names install the same `admina` module.
+Up to 0.13.x the PyPI package `admina` is an alias: `pip install admina`
+installs `admina-framework` at the same version, and `admina[X]` installs
+`admina-framework[X]` for every extra above. From 0.14.0 `admina` holds the
+code (see [The `admina` package name](https://github.com/admina-org/admina/blob/main/docs/guides/package-name.md)).
 
 ### Or install from source
 

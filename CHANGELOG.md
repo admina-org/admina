@@ -13,6 +13,14 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+### Notes
+
+- From 0.14.0, Admina is published on PyPI as `admina`, and
+  `admina-framework` is no longer released after a final 0.14.0 that stops
+  the installation with the commands to switch. The module, the `admina`
+  command and the extras do not change. `docs/guides/package-name.md`
+  describes the upgrade.
+
 ## [0.13.2] — 2026-10-07
 
 Patch release: the PyPI package `admina`, an alias of `admina-framework`,

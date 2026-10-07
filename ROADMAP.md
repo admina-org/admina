@@ -134,6 +134,8 @@ deployment, and a forensic store that can be verified record by record.
 
 Beyond the EU AI Act.
 
+- Package name: Admina is published as `admina` (breaking for installs of
+  `admina-framework`; see `docs/guides/package-name.md`)
 - NIS2 template (incident response, supply-chain obligations)
 - ISO / IEC 42001 template (AI management system controls)
 - SOC 2 template (Trust Services Criteria mapping)

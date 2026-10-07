@@ -51,6 +51,7 @@ nav:
       - Integrations: guides/integrations.md
       - Air-gapped deployment: guides/airgapped-deployment.md
       - Upgrading to 0.13: guides/upgrade-0.13.md
+      - The admina package name: guides/package-name.md
   - SDK Reference:
       - Overview: api/sdk.md
       - GovernedModel: api/governed-model.md
