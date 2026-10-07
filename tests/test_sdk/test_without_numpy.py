@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""The SDK installed without the scientific stack (``pip install admina-framework``).
+"""The SDK installed without the scientific stack (``pip install admina``).
 
 numpy and scikit-learn come with the ``proxy`` extra, for the Python loop
 breaker. Without them, ``GovernedModel.ask()`` governs a prompt (firewall,
@@ -89,4 +89,4 @@ def test_loop_detection_without_numpy_names_the_extra():
     )
     assert proc.returncode == 0, proc.stderr
     assert "ImportError:" in proc.stdout
-    assert "admina-framework[proxy]" in proc.stdout
+    assert "admina[proxy]" in proc.stdout

@@ -67,7 +67,7 @@ class TestSDKOnlyImport:
     """SDK-only install must not require any [proxy]/[nlp]/[telemetry] extras.
 
     A user following the README's "SDK only (lightweight)" path runs
-    `pip install admina-framework` (no extras) and then
+    `pip install admina` (no extras) and then
     `from admina import GovernedModel`. That import chain must not
     transitively pull in boto3, spacy, sklearn, numpy, or any other
     optional dependency, otherwise the lightweight install is broken.

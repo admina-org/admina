@@ -17,7 +17,7 @@ pip install admina-core
 
 The Python framework auto-detects the Rust engine at runtime and falls
 back to a pure-Python implementation if `admina-core` is not installed,
-so `admina-framework` always works on its own.
+so `admina` always works on its own.
 
 ## License
 

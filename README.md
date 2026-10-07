@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://pypi.org/project/admina-framework/"><img src="https://img.shields.io/pypi/v/admina-framework?style=flat-square&color=32CD32" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/admina/"><img src="https://img.shields.io/pypi/v/admina?style=flat-square&color=32CD32" alt="PyPI version"></a>
   &nbsp;<a href="https://github.com/admina-org/admina/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-32CD32?style=flat-square" alt="License"></a>
   &nbsp;<img src="https://img.shields.io/badge/python-3.11%2B-32CD32?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+">
   &nbsp;<img src="https://img.shields.io/github/last-commit/admina-org/admina?style=flat-square" alt="Last commit">
@@ -20,7 +20,7 @@
   <a href="https://github.com/admina-org/admina/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/admina-org/admina/ci.yml?style=flat-square&label=CI&logo=githubactions&logoColor=white" alt="CI"></a>
   &nbsp;<a href="https://github.com/admina-org/admina/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/admina-org/admina/release.yml?style=flat-square&label=release" alt="Release"></a>
   &nbsp;<a href="https://github.com/admina-org/admina/actions/workflows/security.yml"><img src="https://img.shields.io/github/actions/workflow/status/admina-org/admina/security.yml?style=flat-square&label=security%20scan&logo=shield&logoColor=white" alt="Security scan"></a>
-  &nbsp;<a href="https://pypi.org/project/admina-framework/"><img src="https://img.shields.io/pypi/dm/admina-framework?style=flat-square&label=downloads" alt="PyPI downloads"></a>
+  &nbsp;<a href="https://pypi.org/project/admina/"><img src="https://img.shields.io/pypi/dm/admina?style=flat-square&label=downloads" alt="PyPI downloads"></a>
 </p>
 
 <p align="center">
@@ -117,58 +117,58 @@ report = kit.gap_analysis(risk_category="high", current_compliance={...})
 
 ### Install from PyPI
 
-> **Package name change in 0.14.0.** From 0.14.0, Admina is published as
-> `admina`, and `admina-framework` is no longer released (a breaking change
-> for anything that installs `admina-framework`). The module, the `admina`
-> command and the extras do not change. See
-> [The `admina` package name](https://github.com/admina-org/admina/blob/main/docs/guides/package-name.md) for the steps to upgrade.
+> **Package name since 0.14.0.** Admina is published as `admina`; up to
+> 0.13.x it was `admina-framework`, which is no longer released. The module,
+> the `admina` command and the extras did not change. To upgrade an
+> installation of `admina-framework`, see
+> [The `admina` package name](https://github.com/admina-org/admina/blob/main/docs/guides/package-name.md).
 
 ```bash
 # Recommended for new users: SDK + proxy + dashboard.
 # Lets you run `admina dev` and see the dashboard out of the box.
-pip install "admina-framework[proxy]"
+pip install "admina[proxy]"
 
 # Everything (proxy + NLP + telemetry). Use this if you also want
 # spaCy-based NER for PII detection or OpenTelemetry export.
-pip install "admina-framework[full]"
+pip install "admina[full]"
 python -m spacy download en_core_web_sm   # for [full] only
 
 # Model-adapter provider SDKs (per-provider extras):
-pip install "admina-framework[openai]"      # openai>=1.0
-pip install "admina-framework[ollama]"      # ollama>=0.3
-pip install "admina-framework[anthropic]"   # anthropic>=0.39
-pip install "admina-framework[mistral]"     # mistralai>=1.0
-pip install "admina-framework[gemini]"      # google-genai>=1.0
-pip install "admina-framework[bedrock]"     # boto3>=1.34 (AWS Bedrock)
+pip install "admina[openai]"      # openai>=1.0
+pip install "admina[ollama]"      # ollama>=0.3
+pip install "admina[anthropic]"   # anthropic>=0.39
+pip install "admina[mistral]"     # mistralai>=1.0
+pip install "admina[gemini]"      # google-genai>=1.0
+pip install "admina[bedrock]"     # boto3>=1.34 (AWS Bedrock)
 
 # All provider SDKs at once:
-pip install "admina-framework[adapters]"
+pip install "admina[adapters]"
 
 # Everything (proxy + NLP + telemetry + all adapters):
-pip install "admina-framework[all]"
+pip install "admina[all]"
 python -m spacy download en_core_web_sm   # for [all] only
 
 # Optional: Rust-accelerated engine (auto-detected at runtime).
 # Opt-in extra — pulls in the admina-core wheel from PyPI.
-pip install "admina-framework[rust]"
+pip install "admina[rust]"
 
 # The proxy for the OpenAI-compatible gateway only: without Redis,
 # ClickHouse, boto3 and the scientific stack (see "Embedded deployment").
-pip install "admina-framework[proxy-minimal]"
+pip install "admina[proxy-minimal]"
 
 # Advanced: SDK only (no proxy, no dashboard, no `admina dev`).
 # Use this when embedding the SDK into another service and you don't
 # need the local dev server.
-pip install admina-framework
+pip install admina
 ```
 
-> The PyPI distribution name is `admina-framework`; the Python import
+> The PyPI distribution name is `admina`; the Python import
 > name is `admina` (e.g. `from admina import GovernedModel`). This is
 > a normal Python pattern — same as `python-dateutil` → `import dateutil`.
 
 > The Rust engine is an **optional, opt-in** accelerator. The default
-> `pip install admina-framework` ships only the pure-Python implementation;
-> `admina-framework[rust]` adds the `admina-core` wheel, which Admina
+> `pip install admina` ships only the pure-Python implementation;
+> `admina[rust]` adds the `admina-core` wheel, which Admina
 > auto-detects at runtime: under `ADMINA_ENGINE=auto` (the default) the
 > firewall and the loop breaker run on Rust whenever it is installed, as in
 > the official proxy image (see [Engine selection](#engine-selection)).
@@ -179,11 +179,6 @@ pip install admina-framework
 > wider multilingual pattern set). Enable `[rust]` when per-request latency
 > matters more than that extra coverage. See
 > [Performance](#performance--hybrid-python--rust-engine) for the trade-off.
-
-Up to 0.13.x the PyPI package `admina` is an alias: `pip install admina`
-installs `admina-framework` at the same version, and `admina[X]` installs
-`admina-framework[X]` for every extra above. From 0.14.0 `admina` holds the
-code (see [The `admina` package name](https://github.com/admina-org/admina/blob/main/docs/guides/package-name.md)).
 
 ### Or install from source
 
@@ -278,11 +273,11 @@ from admina import GovernedModel, GovernedData, GovernedAgent, ComplianceKit
 | Transport Adapter | MCP, HTTP REST |
 | Forensic Store | Filesystem, S3-compatible (boto3 — AWS S3, MinIO, R2, …) |
 | Auth Provider | API Key |
-| PII Engine | spaCy + Regex (default), Microsoft Presidio (`pip install admina-framework[presidio]`, `ADMINA_PII_ENGINE=presidio`); engines of other packages through the `admina.pii_engines` entry-point group (see [PII engines](#pii-engines)) |
+| PII Engine | spaCy + Regex (default), Microsoft Presidio (`pip install admina[presidio]`, `ADMINA_PII_ENGINE=presidio`); engines of other packages through the `admina.pii_engines` entry-point group (see [PII engines](#pii-engines)) |
 | Alert Channel | Log, Webhook |
 
 Model adapters lazy-import their provider SDK, so install the ones you
-use: `pip install admina-framework[adapters]` for all of them, or a
+use: `pip install admina[adapters]` for all of them, or a
 single provider (`[openai]`, `[ollama]`, `[anthropic]`, `[mistral]`,
 `[gemini]`, `[bedrock]`). vLLM has no extra of its own — it serves an
 OpenAI-compatible API and subclasses the OpenAI adapter, so install
@@ -478,7 +473,7 @@ that only the Python firewall applies: `agent_security.firewall`
 `pattern_packs` (an empty list is not set). The error names the cause:
 
 ```
-ADMINA_ENGINE=rust, but admina-core is not installed: install admina-framework[rust], or set ADMINA_ENGINE=python (or auto) to run the Python engines
+ADMINA_ENGINE=rust, but admina-core is not installed: install admina[rust], or set ADMINA_ENGINE=python (or auto) to run the Python engines
 ADMINA_ENGINE=rust, but admina.yaml sets agent_security.firewall.pattern_packs, which only the Python firewall applies: remove them, or set ADMINA_ENGINE=python (or auto) to run the Python firewall
 ```
 
@@ -982,7 +977,7 @@ attempt. The `proxy-minimal` extra installs the proxy without Redis,
 ClickHouse, boto3, typer and the scientific stack of the Python loop breaker:
 
 ```bash
-pip install "admina-framework[proxy-minimal]"
+pip install "admina[proxy-minimal]"
 ADMINA_ENABLED_SURFACES=gateway REDIS_URL= CLICKHOUSE_HOST= \
   ADMINA_API_KEY_FILE=/run/secrets/admina_api_key \
   uvicorn admina.proxy.main:app --host 0.0.0.0 --port 8080
@@ -1676,7 +1671,7 @@ cd integrations/cheshirecat/admina-plugin
 <br>
 
 Governs every LLM call and tool invocation in-process. Install
-`admina-framework[proxy,nlp]`: the loop detection that the callbacks turn
+`admina[proxy,nlp]`: the loop detection that the callbacks turn
 on by default needs scikit-learn from `[proxy]` (or pass
 `loop_detection=False`).
 
@@ -1708,9 +1703,9 @@ See [full integration docs](https://github.com/admina-org/admina/blob/main/docs/
 ## Performance — Hybrid Python + Rust engine
 
 The Rust core engine is an optional accelerator. The default
-`pip install admina-framework` ships only the pure-Python implementation;
+`pip install admina` ships only the pure-Python implementation;
 enable the Rust engine with the opt-in extra `pip install
-"admina-framework[rust]"` (or build from source for local development —
+"admina[rust]"` (or build from source for local development —
 `maturin develop --release --manifest-path core-rust/Cargo.toml`, see
 [CONTRIBUTING.md](https://github.com/admina-org/admina/blob/main/CONTRIBUTING.md)). Under `ADMINA_ENGINE=auto` Admina
 runs the Rust firewall and loop breaker when the extension is installed and

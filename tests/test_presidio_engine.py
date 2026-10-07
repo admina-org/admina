@@ -32,7 +32,7 @@ def test_presidio_missing_dependency_error_is_actionable(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fake_import)
     from admina.engines.presidio import PresidioPIIEngine
 
-    with pytest.raises(ImportError, match=r"admina-framework\[presidio\]"):
+    with pytest.raises(ImportError, match=r"admina\[presidio\]"):
         PresidioPIIEngine()
 
 

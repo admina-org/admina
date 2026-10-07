@@ -290,7 +290,7 @@ class TestEngineBridge:
     def test_pii_factory_without_spacy_installed(self, monkeypatch):
         """Regression: admina dev must boot even when spaCy is not installed.
 
-        Simulates a user who ran `pip install admina-framework[proxy]` without
+        Simulates a user who ran `pip install admina[proxy]` without
         the [nlp] extra. The PII bridge must fall back to regex-only mode
         instead of crashing the proxy lifespan with ModuleNotFoundError.
         """

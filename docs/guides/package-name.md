@@ -22,8 +22,10 @@ installation with this message, and leaves the installed packages as they
 are:
 
 ```text
-admina-framework is now published as admina.
+admina-framework is now published as admina (since 0.14.0).
 Run:  pip uninstall -y admina admina-framework && pip install admina
+Extras keep their names: admina-framework[proxy] is admina[proxy].
+See https://github.com/admina-org/admina/blob/main/docs/guides/package-name.md
 ```
 
 So `pip install -U admina-framework`, or a requirement `admina-framework`

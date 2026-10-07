@@ -178,7 +178,7 @@ forwarded by the proxy.
 
 **Import conventions**:
 - Everything is nested under `admina.*` — there are no other top-level
-  packages on `sys.path` after `pip install admina-framework`.
+  packages on `sys.path` after `pip install admina`.
 - Inside the package, prefer absolute imports: `from admina.core.types import RiskLevel`
 - Relative imports (`from .types import ...`) are accepted inside the same sub-package.
 

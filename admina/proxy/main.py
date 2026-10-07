@@ -485,7 +485,7 @@ def _build_loop_breaker() -> Any:
         raise RuntimeError(
             "The mcp and integration surfaces need the loop breaker, whose Python "
             f"engine needs numpy and scikit-learn ({exc}). Install "
-            "admina-framework[proxy] (or admina-framework[rust]), or serve only the "
+            "admina[proxy] (or admina[rust]), or serve only the "
             "gateway: ADMINA_ENABLED_SURFACES=gateway."
         ) from exc
 
@@ -548,7 +548,7 @@ async def _connect_redis(url: str) -> Any:
     except ImportError:
         logger.warning(
             "REDIS_URL is set but the redis package is not installed "
-            "(pip install 'admina-framework[proxy]') — continuing without rate-limit cache"
+            "(pip install 'admina[proxy]') — continuing without rate-limit cache"
         )
         return None
     try:
@@ -573,7 +573,7 @@ def _connect_clickhouse() -> Any:
     except ImportError:
         logger.warning(
             "CLICKHOUSE_HOST is set but clickhouse-connect is not installed "
-            "(pip install 'admina-framework[proxy]') — analytics disabled"
+            "(pip install 'admina[proxy]') — analytics disabled"
         )
         return None
     try:
@@ -1659,12 +1659,6 @@ async def consolidated_compliance_report(
             lines.append(f"- Chain head: `{(fb.get('chain_head') or 'GENESIS')[:16]}...`")
         else:
             lines.append("- Forensic backend not configured")
-        lines += [
-            "",
-            "---",
-            "*OSS-tier report. PDF / Excel / branded reporting are not "
-            "included in admina-framework.*",
-        ]
         return Response(
             content="\n".join(lines) + "\n",
             media_type="text/markdown; charset=utf-8",

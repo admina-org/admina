@@ -129,7 +129,7 @@ def _require_rust() -> None:
     if not _rust_available:
         raise EngineSelectionError(
             "ADMINA_ENGINE=rust, but admina-core is not installed: install "
-            "admina-framework[rust], or set ADMINA_ENGINE=python (or auto) to run "
+            "admina[rust], or set ADMINA_ENGINE=python (or auto) to run "
             "the Python engines"
         )
 
@@ -458,7 +458,7 @@ class _PythonLoopBridge:
         except ImportError as exc:
             raise ImportError(
                 "The Python loop breaker needs numpy and scikit-learn: "
-                "pip install 'admina-framework[proxy]' (or 'admina-framework[rust]' "
+                "pip install 'admina[proxy]' (or 'admina[rust]' "
                 "for the Rust loop breaker)"
             ) from exc
 

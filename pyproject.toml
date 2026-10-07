@@ -18,8 +18,8 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "admina-framework"
-version = "0.13.2"
+name = "admina"
+version = "0.14.0"
 description = "Admina — governed AI development framework"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -101,7 +101,7 @@ nlp = [
     # NOTE: the `en_core_web_sm` model is NOT declared as a direct
     # dependency here because PyPI rejects wheels with URL-pinned
     # dependencies (PEP 440 "direct references"). After installing
-    # `admina-framework[nlp]`, run:
+    # `admina[nlp]`, run:
     #   python -m spacy download en_core_web_sm
     # The PIIRedactor logs a clear error if the model is missing.
 ]
@@ -126,14 +126,14 @@ rust = [
     # stops). It is opt-in so the default install keeps the broader Python
     # detection coverage; enable [rust] when latency matters more.
     #
-    # admina-core and admina-framework are released in lockstep from the same
+    # admina-core and admina are released in lockstep from the same
     # tag (scripts/check-versions.py enforces manifest alignment). The
     # published metadata carries the version range below; uv.lock resolves
     # admina-core from ./core-rust instead ([tool.uv.sources]), so
     # `uv sync --extra rust` (or --all-extras) builds the engine of the same
     # checkout, which needs a Rust toolchain. The range takes the 0.13.x
     # releases of admina-core, the line released with this framework.
-    "admina-core>=0.13.0,<0.14",
+    "admina-core>=0.14.0,<0.15",
 ]
 # NOTE: the [guardrailsai] extra was removed in v0.9.0 because the
 # upstream `guardrails-ai` package is currently in PyPI quarantine
@@ -141,7 +141,7 @@ rust = [
 # admina/plugins/builtin/guards/guardrailsai_guard.py is preserved; if
 # you have a local copy of guardrails-ai installed, the plugin will
 # detect it and work. Re-introduce the extra once upstream is restored.
-full = ["admina-framework[proxy,nlp,telemetry]"]
+full = ["admina[proxy,nlp,telemetry]"]
 # Model-adapter provider SDKs — each adapter lazy-imports its SDK, so the
 # extra only controls whether the provider wheel is present.
 openai = ["openai>=1.0,<4"]
@@ -150,7 +150,7 @@ anthropic = ["anthropic>=0.39,<2"]
 mistral = ["mistralai>=1.0,<4"]
 gemini = ["google-genai>=1.0,<3"]
 bedrock = ["boto3>=1.34,<2"]
-adapters = ["admina-framework[openai,ollama,anthropic,mistral,gemini,bedrock]"]
+adapters = ["admina[openai,ollama,anthropic,mistral,gemini,bedrock]"]
 # Microsoft Presidio as a selectable PII engine. Presidio does detection only;
 # Admina keeps its own masking, so the output format matches the default
 # spaCy+regex engine. ADMINA_PRESIDIO_NLP_MODELS sets the spaCy pipeline of each
@@ -159,7 +159,7 @@ adapters = ["admina-framework[openai,ollama,anthropic,mistral,gemini,bedrock]"]
 # installed separately, like [nlp]:
 #   python -m spacy download en_core_web_sm
 presidio = ["presidio-analyzer>=2.2,<3"]
-all = ["admina-framework[proxy,nlp,telemetry,adapters,presidio]"]
+all = ["admina[proxy,nlp,telemetry,adapters,presidio]"]
 
 [dependency-groups]
 dev = [

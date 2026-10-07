@@ -270,10 +270,10 @@ Detects and redacts PII in text. Three modes:
   opt-in via `ADMINA_ENGINE=rust`. Categories are individually
   toggleable from `admina.yaml`
   (`admina/domains/data_sovereignty/pii.py:41-108`).
-- **Regex + spaCy NER** (`pip install admina-framework[nlp]`): adds named-entity
+- **Regex + spaCy NER** (`pip install admina[nlp]`): adds named-entity
   detection for `PERSON`, `ORG`, `GPE`, `LOC`. Python only
   (`admina/domains/data_sovereignty/pii.py:60-77`).
-- **Microsoft Presidio** (`pip install admina-framework[presidio]`,
+- **Microsoft Presidio** (`pip install admina[presidio]`,
   selected with `ADMINA_PII_ENGINE=presidio` or `pii_engine: presidio`
   in `admina.yaml`): a third, opt-in detection engine. Presidio does
   **detection only** — Admina keeps its own masking, so the output
@@ -285,7 +285,7 @@ Detects and redacts PII in text. Three modes:
 - **English-trained NER model.** The shipped `en_core_web_sm` is a
   small English model. It under-detects names and organizations in
   Italian, French, German, Spanish, etc. For multilingual deployments,
-  switch to the Presidio engine (`admina-framework[presidio]` +
+  switch to the Presidio engine (`admina[presidio]` +
   `ADMINA_PII_ENGINE=presidio`) and download the per-language spaCy
   models it needs. Note that on Admina's own corpus Presidio measures
   *lower* type-level recall than the default spaCy+regex engine on

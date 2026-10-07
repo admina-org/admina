@@ -344,7 +344,7 @@ def test_rust_engine_alone_is_refused_without_admina_core(monkeypatch):
         redteam.run_suite(engines=["rust"], baseline=redteam.BASELINE_PATH)
     assert str(info.value) == (
         "the selected engines (rust) cannot run the corpora injection, pii, loop: "
-        "admina-core is not installed (install admina-framework[rust])"
+        "admina-core is not installed (install admina[rust])"
     )
 
 

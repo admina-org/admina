@@ -29,7 +29,7 @@
 #     Workflow name:     release-core.yml          (this file)
 #     Environment name:  pypi-core
 #
-# The matching trusted publisher for admina-framework is configured for
+# The matching trusted publisher for admina is configured for
 # release.yml (the other workflow).
 #
 # ── How to cut a release ───────────────────────────────────────────────────

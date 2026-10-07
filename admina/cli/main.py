@@ -300,7 +300,7 @@ def _format_next_steps(project_name: str) -> str:
             [
                 "",
                 "  To run the local proxy + dashboard (admina dev), install the [proxy] extra:",
-                "    pip install 'admina-framework[proxy]' --upgrade",
+                "    pip install 'admina[proxy]' --upgrade",
             ]
         )
     if docker_ok:
@@ -555,11 +555,11 @@ def _require_proxy_extra_for_local_dev() -> None:
     click.echo("  admina dev (local mode) requires the [proxy] extra.", err=True)
     click.echo("  Install one of:", err=True)
     click.echo(
-        "    pip install 'admina-framework[proxy]' --upgrade",
+        "    pip install 'admina[proxy]' --upgrade",
         err=True,
     )
     click.echo(
-        "    pip install 'admina-framework[full]' --upgrade   # adds NLP + telemetry",
+        "    pip install 'admina[full]' --upgrade   # adds NLP + telemetry",
         err=True,
     )
     click.echo("", err=True)
@@ -1226,11 +1226,11 @@ def doctor() -> None:
     if extras_status.get("proxy") != "ok":
         click.echo(
             f"    {warn_mark}  admina dev (local mode) needs the [proxy] extra — "
-            "pip install 'admina-framework[proxy]' --upgrade"
+            "pip install 'admina[proxy]' --upgrade"
         )
         issues.append(
             "admina dev (local mode) requires the [proxy] extra — "
-            "run: pip install 'admina-framework[proxy]' --upgrade"
+            "run: pip install 'admina[proxy]' --upgrade"
         )
 
     # ── spaCy NER model ──────────────────────────────────────

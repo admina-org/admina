@@ -17,7 +17,7 @@
 Wraps the ``mistralai`` Python client (sync) to provide inference through
 the Mistral Chat Completions API.
 
-Requires: ``pip install 'admina-framework[mistral]'``  (optional dependency).
+Requires: ``pip install 'admina[mistral]'``  (optional dependency).
 """
 
 from __future__ import annotations
@@ -70,7 +70,7 @@ class MistralAdapter(BaseModelAdapter):
             except ImportError as exc:
                 raise ImportError(
                     "The 'mistralai' package is required for MistralAdapter. "
-                    "Install it with: pip install 'admina-framework[mistral]'"
+                    "Install it with: pip install 'admina[mistral]'"
                 ) from exc
             kwargs: dict[str, Any] = {}
             if self._api_key:

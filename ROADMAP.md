@@ -6,7 +6,7 @@ not on a calendar. Scope may shift in response to user feedback, security
 findings, or upstream changes in the governance landscape (EU AI Act
 implementing acts, new frameworks, new attack classes).
 
-The current release is **0.13.2**. Admina is pre-1.0: the public API may
+The current release is **0.14.0**. Admina is pre-1.0: the public API may
 still evolve before the 1.0 stability commitment, so a minor release may
 carry a declared breaking change once its replacement is in place. Shipped
 detail lives in [CHANGELOG.md](CHANGELOG.md).
