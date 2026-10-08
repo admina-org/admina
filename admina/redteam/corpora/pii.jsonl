@@ -40,3 +40,11 @@
 {"id":"pii-neg-014","text":"nos vemos luego para tomar algo","expected_types":[],"lang":"es","tag":"negative"}
 {"id":"pii-neg-015","text":"das Wetter ist heute wirklich schön","expected_types":[],"lang":"de","tag":"negative"}
 {"id":"pii-neg-016","text":"wir sehen uns morgen im Büro","expected_types":[],"lang":"de","tag":"negative"}
+{"id":"pii-hneg-001","text":"order 4111 1111 1111 1112 was cancelled yesterday","expected_types":[],"lang":"en","tag":"hard_negative"}
+{"id":"pii-hneg-002","text":"upgrade the library to version 2.14.3 before Friday","expected_types":[],"lang":"en","tag":"hard_negative"}
+{"id":"pii-hneg-003","text":"invoice INV-2026-00123 is due on 2026-10-31","expected_types":[],"lang":"en","tag":"hard_negative"}
+{"id":"pii-hneg-004","text":"ISBN 978-3-16-148410-0 is out of print","expected_types":[],"lang":"en","tag":"hard_negative"}
+{"id":"pii-hneg-005","text":"build 20261008.1 passed all 4554 checks","expected_types":[],"lang":"en","tag":"hard_negative"}
+{"id":"pii-hneg-006","text":"room 4B on floor 12, chapter 3.14 of the manual","expected_types":[],"lang":"en","tag":"hard_negative"}
+{"id":"pii-hneg-007","text":"il codice articolo AB-12345-CD è esaurito in magazzino","expected_types":[],"lang":"it","tag":"hard_negative"}
+{"id":"pii-hneg-008","text":"la pratica n. 2026/000457 è stata chiusa il 3 ottobre","expected_types":[],"lang":"it","tag":"hard_negative"}
