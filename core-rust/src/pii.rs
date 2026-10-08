@@ -38,7 +38,7 @@ fn luhn_valid(_text: &str, caps: &Captures) -> bool {
         .rev()
         .enumerate()
         .map(|(i, &d)| {
-            if !i.is_multiple_of(2) {
+            if i % 2 == 1 {
                 let x = d * 2;
                 if x > 9 {
                     x - 9
@@ -50,7 +50,7 @@ fn luhn_valid(_text: &str, caps: &Captures) -> bool {
             }
         })
         .sum();
-    !digits.is_empty() && sum.is_multiple_of(10)
+    !digits.is_empty() && sum % 10 == 0
 }
 
 fn is_word(c: char) -> bool {
