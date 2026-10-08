@@ -13,7 +13,7 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
-## [0.14.0] — 2026-10-07
+## [0.14.0] — 2026-10-08
 
 Minor release with a declared breaking change: Admina is published on PyPI
 as `admina`. The module (`import admina`), the `admina` command, the extras,
