@@ -13,6 +13,26 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.14.2] — 2026-10-08
+
+Patch release: `admina-core` builds with Rust 1.85 again, and the proxy
+image is published. The code of the framework is unchanged from 0.14.1.
+
+### Fixed
+
+- The Luhn check of the Rust PII scanner (`admina-core`) used
+  `is_multiple_of`, stable since Rust 1.87. The proxy image builds
+  `admina-core` with the rustc of Debian (1.85), so the image of 0.14.1
+  was not built: `ghcr.io/admina-org/admina-proxy` has no 0.14.1 tag, and
+  its `latest` stayed on 0.14.0. The check uses `%` again. The PyPI
+  wheels of 0.14.1, built with a newer Rust, are not affected.
+
+### Changed
+
+- `core-rust/Cargo.toml` declares `rust-version = "1.85"`; clippy, which CI
+  runs with `-D warnings`, reports the standard-library APIs that are
+  newer.
+
 ## [0.14.1] — 2026-10-08
 
 Patch release: fewer PII false positives on numbers, codes and non-English
@@ -2312,7 +2332,8 @@ environment in `docker-compose.benchmark.yml`.
 
 ---
 
-[Unreleased]: https://github.com/admina-org/admina/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/admina-org/admina/compare/v0.14.2...HEAD
+[0.14.2]: https://github.com/admina-org/admina/compare/v0.14.1...v0.14.2
 [0.14.1]: https://github.com/admina-org/admina/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/admina-org/admina/compare/v0.13.2...v0.14.0
 [0.13.2]: https://github.com/admina-org/admina/compare/v0.13.1...v0.13.2
