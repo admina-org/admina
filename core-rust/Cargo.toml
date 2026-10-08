@@ -15,8 +15,11 @@
 
 [package]
 name = "admina_core"
-version = "0.14.1"
+version = "0.14.2"
 edition = "2021"
+# The rustc of Debian, with which the proxy image builds the crate; clippy
+# reports the standard-library APIs that are newer (incompatible_msrv).
+rust-version = "1.85"
 description = "Admina governance engines — Rust core with Python bindings"
 license = "Apache-2.0"
 
