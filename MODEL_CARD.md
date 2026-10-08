@@ -1116,12 +1116,12 @@ mode (the mode pinned in the baseline):
 | Detector  | Python recall | Rust recall | False positives (py · rust) |
 |-----------|:---:|:---:|:---:|
 | injection | 57% (sample-level) | 35% | 0/27 · 0/27 |
-| pii       | 100% (type-level, nlp) | 66% (type-level) | 4/24 · 0/24 |
+| pii       | 100% (type-level, nlp) | 66% (type-level) | 3/24 · 0/24 |
 | loop      | 82% (sample-level) | 91% | 0/11 · 0/11 |
 
 The optional Presidio PII engine is measured as a third row in the same
 baseline (`admina/redteam/baselines/baseline.json`): **59%** type-level
-recall with **8/24** false positives, pinned to mode
+recall with **9/24** false positives, pinned to mode
 `presidio:2.2.363/en+it`. It is an alternative engine, not an
 accelerator, so it is reported separately rather than in the
 Python-vs-Rust matrix above.
@@ -1140,10 +1140,12 @@ version, an invoice number and a date, an ISBN, a build number, room and
 chapter numbers, two Italian reference codes). Since 0.14.1 the Rust scanner
 checks the Luhn sum of card numbers and matches the phone formats of the
 Python redactor, and the three engines mask a `PERSON` entity only when it
-has no digit and a word with a capital initial: the remaining false
-positives are `ORG`/`GPE` on non-English sentences, `PERSON` on German
-sentences (German capitalises nouns), and, for Presidio, `PERSON` on
-"Friday" and `PHONE` on an Italian reference number. These measured gaps
+has no digit, no character of an e-mail address or a path, and no lowercase
+stop word of English, Italian, German, French, Spanish or Portuguese (names
+written in lowercase are masked): the remaining false positives are
+`ORG`/`GPE` on non-English sentences, `PERSON` on a capitalised German noun
+("Büro"), and, for Presidio, `PERSON` on "week" and "Friday" and `PHONE` on
+an Italian reference number. These measured gaps
 are consistent with §1: the two engines are **not** behaviorally
 equivalent — Python is the higher-recall default, Rust the
 narrower-coverage opt-in.

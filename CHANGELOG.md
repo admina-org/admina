@@ -29,12 +29,15 @@ behind each recall. Upgrading is recommended.
   without +39 or 0039, with the same boundaries). It reported an ISBN, a
   build number and other digit runs as `PHONE`.
 - The PII redactor, the `spacy-regex` engine and the Presidio engine mask a
-  `PERSON` entity of the NER model only when it has no digit and a word
-  with a capital initial. The English spaCy model labelled lowercase
-  phrases of other languages as `PERSON` ("il codice articolo", "la
-  pratica n. 2026/000457"). A name written all in lowercase is not masked
-  either. With Presidio, such a span no longer takes over an overlapping
-  entity of another type.
+  `PERSON` entity of the NER model only when it reads as a name: no digit,
+  no character of an e-mail address or a path (`@ / \ _ # : =`), and no
+  lowercase word that is a stop word of English, Italian, German, French,
+  Spanish or Portuguese (spaCy's lists, without the words that are also
+  first names: "will", "may", "sara", "mia", "ali"). The English spaCy
+  model labelled phrases such as "il codice articolo", "ci vediamo
+  domani" or "das Wetter" as `PERSON`. Names written in lowercase ("mario
+  rossi") are still masked. With Presidio, such a span no longer takes
+  over an overlapping entity of another type.
 
 ### Changed
 
@@ -44,7 +47,7 @@ behind each recall. Upgrading is recommended.
   the labels of the corpora are assigned in this repository.
 - The PII corpus has eight hard negatives (`hard_negative`): numbers and
   codes that are not personal data. The baseline is regenerated with the
-  fixes above. PII false positives: Python 4/24, Rust 0/24, Presidio 8/24
+  fixes above. PII false positives: Python 3/24, Rust 0/24, Presidio 9/24
   (6/16, 0/16 and 9/16 in 0.14.0); Presidio type-level recall 59% (52% in
   0.14.0). The remaining false positives are listed in MODEL_CARD §9.
 

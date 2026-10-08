@@ -14,7 +14,7 @@
   "pii": {
     "python": {
       "type_recall": 1.0,
-      "fp": 4,
+      "fp": 3,
       "fp_samples": 24,
       "mode": "nlp:en_core_web_sm@3.8.0"
     },
@@ -25,7 +25,7 @@
     },
     "presidio": {
       "type_recall": 0.5862068965517241,
-      "fp": 8,
+      "fp": 9,
       "fp_samples": 24,
       "mode": "presidio:2.2.363/en+it"
     }
