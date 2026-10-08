@@ -123,13 +123,14 @@ def _blocked(resp: httpx.Response) -> bool:
 
 # How long the slow job (a firewall check, a redaction) sleeps in the thread
 # that runs it, and the largest event loop stall the tests accept. Run on the
-# event loop, the job stalls it for its whole duration; run in a worker
-# thread, the loop only waits for the scheduler. The bound is half the job:
-# well below the stall of a blocked loop, well above the scheduling delays of
-# a loaded CI runner (stalls just over 0.1 s were seen on macOS runners with
-# the loop free).
-SLOW_JOB = 0.6
-MAX_STALL = SLOW_JOB / 2
+# event loop, or awaited there without yielding, the job stalls the loop for
+# at least its whole duration: a stall shorter than the job means the loop
+# was free. The bound is the job itself, so the test fails for a blocked
+# loop whatever the load, and passes with the loop free unless the scheduler
+# holds it for a whole second (stalls of up to 0.51 s were seen on loaded
+# macOS runners with the loop free).
+SLOW_JOB = 1.0
+MAX_STALL = SLOW_JOB
 
 
 async def _largest_gap(stop: asyncio.Event) -> float:
