@@ -14,11 +14,13 @@
 
 
 """A PERSON entity of an NER model is masked only when it reads as a name:
-no digit, and at least one word with a capital initial.
+no digit, and no lowercase word that is a stop word of English, Italian,
+German, French, Spanish or Portuguese.
 
-The English spaCy model labels lowercase Italian phrases as PERSON ("il
-codice articolo", "la pratica n. 2026/000457"); such spans are not masked,
-by the PII redactor, the spaCy + regex engine and the Presidio engine.
+The English spaCy model labels phrases as PERSON ("il codice articolo",
+"ci vediamo domani", "das Wetter", "grab a coffee"); such spans are not
+masked, by the PII redactor, the spaCy + regex engine and the Presidio
+engine. Names written in lowercase are masked.
 """
 
 from __future__ import annotations
@@ -34,7 +36,19 @@ from admina.domains.data_sovereignty.pii import PIIRedactor
 
 @pytest.mark.parametrize(
     "text",
-    ["Mario Rossi", "John Smith", "il signor Rossi", "O'Brien", "JOHN"],
+    [
+        "Mario Rossi",
+        "mario rossi",
+        "john smith",
+        "giovanni esposito",
+        "O'Brien",
+        "JOHN",
+        "Sara Rossi",
+        "sara rossi",  # "sara" is an Italian stop word, kept as a name
+        "Mia",
+        "will smith",  # "will" is an English stop word, kept as a name
+        "Il Signore",  # capitalised words are not checked
+    ],
 )
 def test_names(text):
     assert is_name_like(text)
@@ -42,7 +56,22 @@ def test_names(text):
 
 @pytest.mark.parametrize(
     "text",
-    ["il codice articolo", "la pratica n. 2026/000457", "John 3", "", "  "],
+    [
+        "il codice articolo",
+        "la pratica n. 2026/000457",
+        "ci vediamo domani",
+        "ci vediamo, domani",
+        "(il) progetto",
+        "ho parlato",
+        "das Wetter",
+        "il cliente",
+        "grab a coffee",
+        "email john.doe@example.org",
+        "Mario/Rossi",
+        "John 3",
+        "",
+        "  ",
+    ],
 )
 def test_not_names(text):
     assert not is_name_like(text)
@@ -75,6 +104,13 @@ def test_the_redactor_masks_names_only():
     redactor.nlp = _Nlp("il codice articolo", "Mario Rossi")
     out = redactor.redact("il codice articolo AB-12 è di Mario Rossi")
     assert out["redacted_text"] == "il codice articolo AB-12 è di [PERSON]"
+
+
+def test_the_redactor_masks_lowercase_names():
+    redactor = PIIRedactor()
+    redactor.nlp = _Nlp("il cliente", "giovanni esposito")
+    out = redactor.redact("il cliente è giovanni esposito")
+    assert out["redacted_text"] == "il cliente è [PERSON]"
 
 
 def test_the_spacy_regex_engine_reports_names_only():
