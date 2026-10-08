@@ -215,3 +215,17 @@ def test_text_with_many_dots_is_analyzed_quickly():
     # Every recognizer of Presidio took about a minute on this text; the
     # mapped ones take a fraction of a second.
     assert time.perf_counter() - start < 5.0
+
+
+def test_person_spans_that_are_not_names_are_not_masked(monkeypatch):
+    presidio = _presidio()
+    from presidio_analyzer import RecognizerResult
+
+    engine = presidio.PresidioPIIEngine(nlp_models={"it": "blank"})
+    text = "il codice articolo AB-12 è di Mario Rossi"
+    found = [
+        RecognizerResult("PERSON", 0, 18, 0.85),  # "il codice articolo"
+        RecognizerResult("PERSON", 30, 41, 0.85),  # "Mario Rossi"
+    ]
+    monkeypatch.setattr(engine._analyzer, "analyze", lambda text, language, entities: list(found))
+    assert engine.redact(text)["redacted_text"] == "il codice articolo AB-12 è di [PERSON]"

@@ -41,8 +41,8 @@ All Rust components are pure functions exposed via PyO3. Rust is faster,
 but the two engines are not behaviorally equivalent: on an internal
 14-attack evasion corpus the Python firewall blocks all 14 while the Rust
 firewall blocks 7 (plain-text and single-encoding attacks only). The Rust
-PII engine also lacks EU national-ID patterns, spaCy NER, and Luhn
-validation. Python is the higher-recall engine; Rust is opt-in for
+PII engine also lacks EU national-ID patterns and spaCy NER (it checks the
+Luhn sum of card numbers since 0.14.1). Python is the higher-recall engine; Rust is opt-in for
 latency-sensitive workloads where the narrower coverage is acceptable.
 
 Opt-in means the `[rust]` extra of a `pip install`. The official proxy
@@ -263,7 +263,7 @@ optionally mirrored into the Rust accelerator at
 Detects and redacts PII in text. Three modes:
 
 - **Regex-only** (default, fast): email, phone, SSN, US credit card
-  (Luhn-validated — Python engine only; Rust path does not run Luhn),
+  (Luhn-validated on both engines; the Rust engine since 0.14.1),
   IBAN, IPv4, Italian codice fiscale, Spanish DNI/NIE, and German
   Personalausweis (shipped but **disabled by default** — the format is
   too ambiguous to regex safely). Python engine default; Rust path
@@ -290,10 +290,12 @@ Detects and redacts PII in text. Three modes:
   models it needs. Note that on Admina's own corpus Presidio measures
   *lower* type-level recall than the default spaCy+regex engine on
   EU identifiers — see §9.
-- **Regex precision varies by category.** Phone-number regex has high
-  recall but low precision (matches version strings, IDs). Credit-card
-  regex uses Luhn validation (Python engine) and is reliable. IBAN regex does not
-  validate the country-specific checksum and may match invalid IBANs.
+- **Regex precision varies by category.** Phone numbers are matched in the
+  North American and Italian formats only, so other national formats are
+  missed. Card numbers are reported only when they pass the Luhn check (both
+  engines). The Python engine checks the length and the mod-97 checksum of
+  an IBAN; the Rust engine matches the IBAN shape only and may report an
+  invalid IBAN.
 - **No image or document parsing.** Admina sees text only. PII embedded
   in images, PDFs, or audio passes through unchanged. Pre-process those
   upstream.
@@ -1114,12 +1116,12 @@ mode (the mode pinned in the baseline):
 | Detector  | Python recall | Rust recall | False positives (py · rust) |
 |-----------|:---:|:---:|:---:|
 | injection | 57% (sample-level) | 35% | 0/27 · 0/27 |
-| pii       | 100% (type-level, nlp) | 66% (type-level) | 8/24 · 3/24 |
+| pii       | 100% (type-level, nlp) | 66% (type-level) | 3/24 · 0/24 |
 | loop      | 82% (sample-level) | 91% | 0/11 · 0/11 |
 
 The optional Presidio PII engine is measured as a third row in the same
-baseline (`admina/redteam/baselines/baseline.json`): **52%** type-level
-recall with **12/24** false positives, pinned to mode
+baseline (`admina/redteam/baselines/baseline.json`): **59%** type-level
+recall with **9/24** false positives, pinned to mode
 `presidio:2.2.363/en+it`. It is an alternative engine, not an
 accelerator, so it is reported separately rather than in the
 Python-vs-Rust matrix above.
@@ -1135,11 +1137,18 @@ mis-firing `PERSON`/`ORG` on non-English negative samples — which is also why
 the PII baseline pins the NER mode. The PII negatives include eight hard
 negatives (`hard_negative`: an order number that fails the Luhn check, a
 version, an invoice number and a date, an ISBN, a build number, room and
-chapter numbers, two Italian reference codes): the Rust scanner reports the
-non-Luhn number as `CREDIT_CARD` and the ISBN and the build number as
-`PHONE`; spaCy and Presidio report `PERSON` on the two Italian sentences. These measured gaps are consistent with §1:
-the two engines are **not** behaviorally equivalent — Python is the
-higher-recall default, Rust the narrower-coverage opt-in.
+chapter numbers, two Italian reference codes). Since 0.14.1 the Rust scanner
+checks the Luhn sum of card numbers and matches the phone formats of the
+Python redactor, and the three engines mask a `PERSON` entity only when it
+has no digit, no character of an e-mail address or a path, and no lowercase
+stop word of English, Italian, German, French, Spanish or Portuguese (names
+written in lowercase are masked): the remaining false positives are
+`ORG`/`GPE` on non-English sentences, `PERSON` on a capitalised German noun
+("Büro"), and, for Presidio, `PERSON` on "week" and "Friday" and `PHONE` on
+an Italian reference number. These measured gaps
+are consistent with §1: the two engines are **not** behaviorally
+equivalent — Python is the higher-recall default, Rust the
+narrower-coverage opt-in.
 
 This replaces the previous "no accuracy benchmark suite" gap. Contributions
 extending the corpora (more languages, larger adversarial sets, `garak` /

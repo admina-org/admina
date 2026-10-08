@@ -27,6 +27,7 @@ from typing import Any
 
 from admina.domains.data_sovereignty.email_matching import EMAIL_RX, iter_email_matches
 from admina.domains.data_sovereignty.masking import replace_spans
+from admina.domains.data_sovereignty.names import is_name_like
 from admina.plugins.base import BasePIIEngine
 
 logger = logging.getLogger("admina.plugins.pii.spacy_regex")
@@ -124,6 +125,8 @@ class SpaCyRegexPIIEngine(BasePIIEngine):
                 if ent.label_ not in _NER_LABELS:
                     continue
                 if allowed and ent.label_ not in allowed:
+                    continue
+                if ent.label_ == "PERSON" and not is_name_like(ent.text):
                     continue
                 # Skip if already covered by a regex match (full interval-overlap test)
                 overlap = any(

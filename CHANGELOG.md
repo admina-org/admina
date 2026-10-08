@@ -13,6 +13,32 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.14.1] — 2026-10-08
+
+Patch release: fewer PII false positives on numbers, codes and non-English
+text, on the three PII engines; the redteam scorecard gives the counts
+behind each recall. Upgrading is recommended.
+
+### Fixed
+
+- The Rust PII scanner (`admina-core`) reports a card number only when it
+  passes the Luhn check, as the Python redactor does: a 16-digit order
+  number that fails the check is no longer masked as `CREDIT_CARD`.
+- The Rust PII scanner matches the phone formats of the Python redactor
+  (North American numbers, and Italian mobile and landline numbers with or
+  without +39 or 0039, with the same boundaries). It reported an ISBN, a
+  build number and other digit runs as `PHONE`.
+- The PII redactor, the `spacy-regex` engine and the Presidio engine mask a
+  `PERSON` entity of the NER model only when it reads as a name: no digit,
+  no character of an e-mail address or a path (`@ / \ _ # : =`), and no
+  lowercase word that is a stop word of English, Italian, German, French,
+  Spanish or Portuguese (spaCy's lists, without the words that are also
+  first names: "will", "may", "sara", "mia", "ali"). The English spaCy
+  model labelled phrases such as "il codice articolo", "ci vediamo
+  domani" or "das Wetter" as `PERSON`. Names written in lowercase ("mario
+  rossi") are still masked. With Presidio, such a span no longer takes
+  over an overlapping entity of another type.
+
 ### Changed
 
 - `admina redteam --format md`: each cell gives the recall with the
@@ -20,12 +46,18 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   figures are indicative (a class often has one to three samples) and that
   the labels of the corpora are assigned in this repository.
 - The PII corpus has eight hard negatives (`hard_negative`): numbers and
-  codes that are not personal data. The baseline records the false
-  positives they produce: the Rust scanner reports a number that fails the
-  Luhn check as `CREDIT_CARD` and an ISBN and a build number as `PHONE`;
-  spaCy and Presidio report `PERSON` on two Italian sentences. PII false
-  positives: Python 8/24, Rust 3/24, Presidio 12/24 (6/16, 0/16 and 9/16
-  before).
+  codes that are not personal data. The baseline is regenerated with the
+  fixes above. PII false positives: Python 3/24, Rust 0/24, Presidio 9/24
+  (6/16, 0/16 and 9/16 in 0.14.0); Presidio type-level recall 59% (52% in
+  0.14.0). The remaining false positives are listed in MODEL_CARD §9.
+
+### Notes
+
+- `tests/test_pipeline_executor.py`: the event-loop tests run a 1 s job and
+  accept a stall shorter than the job. A loop blocked by the job stalls for
+  at least its whole duration, so the tests still fail for it, and the
+  scheduling delays of loaded CI runners (up to 0.51 s on macOS) no longer
+  stop the release test gate.
 
 ## [0.14.0] — 2026-10-08
 
@@ -2280,7 +2312,8 @@ environment in `docker-compose.benchmark.yml`.
 
 ---
 
-[Unreleased]: https://github.com/admina-org/admina/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/admina-org/admina/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/admina-org/admina/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/admina-org/admina/compare/v0.13.2...v0.14.0
 [0.13.2]: https://github.com/admina-org/admina/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/admina-org/admina/compare/v0.13.0...v0.13.1

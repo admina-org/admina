@@ -30,6 +30,7 @@ from admina.domains.data_sovereignty.masking import (
     placeholder_spans,
     replace_spans,
 )
+from admina.domains.data_sovereignty.names import is_name_like
 
 # spaCy is part of the [nlp] extra. When absent, PIIRedactor falls back
 # to regex-only mode (still covers EMAIL/PHONE/SSN/IBAN/IP/credit-card/EU IDs).
@@ -300,6 +301,10 @@ class PIIRedactor:
             for ent in ner_entities:
                 cat_config = active_categories.get(ent.label_, {})
                 if not cat_config.get("enabled", False):
+                    continue
+                if ent.label_ == "PERSON" and not is_name_like(
+                    redacted[ent.start_char : ent.end_char]
+                ):
                     continue
                 mask = self._mask(ent.label_, cat_config)
                 parts = outside_placeholders(ent.start_char, ent.end_char, placeholders, redacted)
