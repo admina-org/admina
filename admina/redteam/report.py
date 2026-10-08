@@ -123,8 +123,23 @@ def _pct(x: float | None) -> str:
     return "n/a" if x is None else f"{round(x * 100)}%"
 
 
+def _hits(metric: dict) -> tuple[int, int]:
+    """(detected, expected) behind the recall of *metric*: samples for the
+    binary detectors, PII types for the PII detector."""
+    c = metric["counts"]
+    if "tp" in c:
+        return c["tp"], c["tp"] + c["fn"]
+    return c["intersect_total"], c["expected_total"]
+
+
 def _cell_recall(metric: dict | None) -> str:
-    return _pct(recall_item(metric)[1]) if metric else "-"
+    if not metric:
+        return "-"
+    value = recall_item(metric)[1]
+    if value is None:
+        return _pct(value)
+    detected, expected = _hits(metric)
+    return f"{_pct(value)} ({detected}/{expected})"
 
 
 def to_markdown(scorecard: dict) -> str:
@@ -144,7 +159,12 @@ def to_markdown(scorecard: dict) -> str:
             lines.append(
                 f"| {det} | {tag} | {_cell_recall(py)} | {_cell_recall(rs)} | {_cell_recall(pr)} |"
             )
-    footnotes = []
+    footnotes = [
+        "_Each cell is the recall with the detected and expected counts. A class "
+        "often has one to three samples, so the figures are indicative, not a "
+        "benchmark. The labels of the corpora are assigned in this repository, "
+        "not adjudicated by a third party._"
+    ]
     external = scorecard.get("external_corpora")
     detector_of = external["corpora"] if external else {}
     if any(detector_of.get(name, name) == "pii" for name in scorecard["detectors"]):
