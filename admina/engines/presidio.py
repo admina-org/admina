@@ -55,6 +55,7 @@ from admina.domains.data_sovereignty.masking import (
     placeholder_spans,
     replace_spans,
 )
+from admina.domains.data_sovereignty.names import is_name_like
 from admina.domains.data_sovereignty.pii import PII_CATEGORIES
 
 logger = logging.getLogger("admina.engines.presidio")
@@ -271,6 +272,8 @@ class PresidioPIIEngine:
                 continue
             cfg = PII_CATEGORIES.get(category, {})
             if not cfg.get("enabled", False):
+                continue
+            if category == "PERSON" and not is_name_like(text[r.start : r.end]):
                 continue
             mask = OMISSIS if self.mask_style == "omissis" else cfg.get("mask", f"[{category}]")
             for start, end in outside_placeholders(r.start, r.end, placeholders, text):
