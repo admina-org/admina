@@ -1106,19 +1106,20 @@ silently skipping — so a real regression measured in the wrong mode can never
 pass. A python detector that ran but is absent from the baseline fails too.
 
 **First measured baseline** (Admina's own corpus — **not** a third-party PINT
-score; the corpus is small and EN/EU-focused, intended to grow). Injection/loop
+score; the corpus is small and EN/EU-focused, intended to grow, and its labels
+are assigned in this repository, not adjudicated by a third party). Injection/loop
 are sample-level recall; PII is type-level recall measured in `nlp:en_core_web_sm`
 mode (the mode pinned in the baseline):
 
 | Detector  | Python recall | Rust recall | False positives (py · rust) |
 |-----------|:---:|:---:|:---:|
 | injection | 57% (sample-level) | 35% | 0/27 · 0/27 |
-| pii       | 100% (type-level, nlp) | 66% (type-level) | 6/16 · 0/16 |
+| pii       | 100% (type-level, nlp) | 66% (type-level) | 8/24 · 3/24 |
 | loop      | 82% (sample-level) | 91% | 0/11 · 0/11 |
 
 The optional Presidio PII engine is measured as a third row in the same
 baseline (`admina/redteam/baselines/baseline.json`): **52%** type-level
-recall with **9/16** false positives, pinned to mode
+recall with **12/24** false positives, pinned to mode
 `presidio:2.2.363/en+it`. It is an alternative engine, not an
 accelerator, so it is reported separately rather than in the
 Python-vs-Rust matrix above.
@@ -1131,7 +1132,12 @@ scanner scores **0%** on IBAN / codice-fiscale / DNI (regex-only, fewer patterns
 the Python loop-breaker misses counter-reset loops (last-5 window) that the Rust
 full-window engine catches. The Python PII false positives are spaCy NER
 mis-firing `PERSON`/`ORG` on non-English negative samples — which is also why
-the PII baseline pins the NER mode. These measured gaps are consistent with §1:
+the PII baseline pins the NER mode. The PII negatives include eight hard
+negatives (`hard_negative`: an order number that fails the Luhn check, a
+version, an invoice number and a date, an ISBN, a build number, room and
+chapter numbers, two Italian reference codes): the Rust scanner reports the
+non-Luhn number as `CREDIT_CARD` and the ISBN and the build number as
+`PHONE`; spaCy and Presidio report `PERSON` on the two Italian sentences. These measured gaps are consistent with §1:
 the two engines are **not** behaviorally equivalent — Python is the
 higher-recall default, Rust the narrower-coverage opt-in.
 

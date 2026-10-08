@@ -14,19 +14,19 @@
   "pii": {
     "python": {
       "type_recall": 1.0,
-      "fp": 6,
-      "fp_samples": 16,
+      "fp": 8,
+      "fp_samples": 24,
       "mode": "nlp:en_core_web_sm@3.8.0"
     },
     "rust": {
       "type_recall": 0.6551724137931034,
-      "fp": 0,
-      "fp_samples": 16
+      "fp": 3,
+      "fp_samples": 24
     },
     "presidio": {
       "type_recall": 0.5172413793103449,
-      "fp": 9,
-      "fp_samples": 16,
+      "fp": 12,
+      "fp_samples": 24,
       "mode": "presidio:2.2.363/en+it"
     }
   },

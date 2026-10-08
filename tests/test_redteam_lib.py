@@ -227,6 +227,18 @@ def test_build_scorecard_and_markdown_have_caveat():
     assert "Detector" in md
 
 
+def test_markdown_cells_show_detected_over_expected():
+    results = {
+        "injection": {"python": _fake_eval_binary()},
+        "pii": {"python": _fake_eval_pii()},
+    }
+    md = report.to_markdown(report.build_scorecard(results, rust_version=None))
+    assert "| injection | leetspeak | 0% (0/1) |" in md
+    assert "| pii | email | 100% (4/4) |" in md
+    assert "indicative" in md
+    assert "not adjudicated by a third party" in md
+
+
 def test_make_baseline_shape():
     results = {"injection": {"python": _fake_eval_binary()}}
     card = report.build_scorecard(results, rust_version=None)

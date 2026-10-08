@@ -13,7 +13,21 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
-## [0.14.0] — 2026-10-07
+### Changed
+
+- `admina redteam --format md`: each cell gives the recall with the
+  detected and expected counts (`89% (8/9)`), and a note says that the
+  figures are indicative (a class often has one to three samples) and that
+  the labels of the corpora are assigned in this repository.
+- The PII corpus has eight hard negatives (`hard_negative`): numbers and
+  codes that are not personal data. The baseline records the false
+  positives they produce: the Rust scanner reports a number that fails the
+  Luhn check as `CREDIT_CARD` and an ISBN and a build number as `PHONE`;
+  spaCy and Presidio report `PERSON` on two Italian sentences. PII false
+  positives: Python 8/24, Rust 3/24, Presidio 12/24 (6/16, 0/16 and 9/16
+  before).
+
+## [0.14.0] — 2026-10-08
 
 Minor release with a declared breaking change: Admina is published on PyPI
 as `admina`. The module (`import admina`), the `admina` command, the extras,
