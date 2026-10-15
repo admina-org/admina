@@ -5,13 +5,16 @@ Drop-in governance for any LangChain application. Validates every LLM call, tool
 ## Install
 
 ```bash
-pip install -e ".[proxy,nlp]"   # Admina: loop breaker (numpy, scikit-learn) + NLP (spaCy for PII)
-pip install langchain           # Your LangChain deps
+uv sync --extra proxy --extra nlp   # Admina: loop breaker (numpy, scikit-learn) + NLP (spaCy for PII)
+uv pip install langchain             # Your LangChain deps
+# with pip: pip install -e ".[proxy,nlp]" langchain
 ```
 
-From PyPI: `pip install "admina[proxy,nlp]"`. Loop detection is on
-by default and needs numpy and scikit-learn (`[proxy]`), or the Rust loop
-breaker (`[rust]`); without either, pass `loop_detection=False`.
+From PyPI: `uv add "admina[proxy,nlp]"` (in an existing virtual environment
+`uv pip install "admina[proxy,nlp]"`, with pip `pip install "admina[proxy,nlp]"`).
+Loop detection is on by default and needs numpy and scikit-learn
+(`[proxy]`), or the Rust loop breaker (`[rust]`); without either, pass
+`loop_detection=False`.
 
 ## Quick Start
 

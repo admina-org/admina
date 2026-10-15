@@ -5,7 +5,8 @@ Admina {{ plugin_type.replace('_', ' ') }} plugin.
 ## Installation
 
 ```bash
-pip install {{ plugin_name }}
+uv add {{ plugin_name }}
+# with pip: pip install {{ plugin_name }}
 # or
 admina plugin install {{ plugin_name }}
 ```
@@ -22,6 +23,7 @@ plugins:
 ## Development
 
 ```bash
-pip install -e ".[dev]"
-pytest
+uv sync --extra dev
+uv run pytest
+# with pip: pip install -e ".[dev]" && pytest
 ```

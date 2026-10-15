@@ -7,14 +7,22 @@ git clone https://github.com/admina-org/admina.git
 cd admina
 
 # SDK only (lightweight — 3 dependencies)
-pip install -e .
+uv sync --no-dev
 
 # With proxy infrastructure
-pip install -e ".[proxy]"
+uv sync --extra proxy
 
 # Everything (proxy + NLP + telemetry)
-pip install -e ".[full]"
+uv sync --extra full
 ```
+
+`uv sync` installs into `.venv/`: activate it (`source .venv/bin/activate`)
+or prefix the commands with `uv run`. In an existing virtual environment,
+use `uv pip install -e ".[proxy]"`; with pip, `pip install -e ".[proxy]"`
+(`-e .` for the SDK only, `-e ".[full]"` for everything).
+
+To install the released package from PyPI instead of the source tree, see
+the [install section](../index.md#install).
 
 !!! note "Ollama required for LLM features"
     Install [Ollama](https://ollama.ai) and pull a model: `ollama pull llama3.1:8b`
@@ -70,7 +78,8 @@ docker compose up --build
 ## CLI
 
 ```bash
-pip install -e .
+uv tool install "admina[proxy]"   # the `admina` command on your PATH
+                                  # with pip: pip install "admina[proxy]"
 admina init my-project    # Scaffold a governed AI project
 admina dev                # Start local dev stack
 ```

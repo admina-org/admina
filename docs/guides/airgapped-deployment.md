@@ -63,34 +63,40 @@ If you operate a private registry, `docker tag` + `docker push` to
 
 ### 2. Python wheels
 
-`pip install admina[full]` resolves ~150 wheels from PyPI.
-Pre-download them once on a connected host, then point pip at the
-local directory.
+`admina[full]` resolves ~150 wheels from PyPI.
+Pre-download them once on a connected host, then point the installer at
+the local directory.
+
+uv has no download command: the download step runs `pip download`
+(`uvx pip download` runs it without installing pip).
 
 ```bash
 # On a host with Internet access:
 mkdir -p admina-wheels
-uv pip download \
-    admina[full] \
+uvx pip download \
+    "admina[full]" \
     --dest admina-wheels \
     --python-version 3.11 \
-    --platform-extra manylinux2014_x86_64
+    --platform manylinux2014_x86_64 \
+    --only-binary=:all:
 
 # Transfer admina-wheels/ to the air-gapped host, then:
-uv pip install --no-index --find-links ./admina-wheels admina[full]
+uv pip install --no-index --find-links ./admina-wheels "admina[full]"
+# with pip: pip install --no-index --find-links ./admina-wheels "admina[full]"
 ```
 
-For full reproducibility, pin the lock file: `uv lock --frozen`
-produces `uv.lock` which records exact hashes for every dep.
+For full reproducibility in a uv project, `uv lock` produces `uv.lock`,
+which records exact hashes for every dep.
 
 ### 3. Spacy model (optional, only if you use the `[nlp]` extra)
 
 ```bash
 # On a host with Internet access:
-wget https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl
+wget https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 
 # Transfer the wheel, then on the air-gapped host:
-uv pip install ./en_core_web_sm-3.7.1-py3-none-any.whl
+uv pip install ./en_core_web_sm-3.8.0-py3-none-any.whl
+# with pip: pip install ./en_core_web_sm-3.8.0-py3-none-any.whl
 ```
 
 Without the `[nlp]` extra, the PII scanner falls back to regex-only
