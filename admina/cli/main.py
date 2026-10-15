@@ -39,6 +39,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from admina import __version__
 from admina.cli.forensic import forensic as forensic_commands
 from admina.cli.redteam import redteam as redteam_command
+from admina.core.install_hint import install_hint
 from admina.core.secrets import SecretVault, validate_password
 
 logger = logging.getLogger(__name__)
@@ -300,7 +301,8 @@ def _format_next_steps(project_name: str) -> str:
             [
                 "",
                 "  To run the local proxy + dashboard (admina dev), install the [proxy] extra:",
-                "    pip install 'admina[proxy]' --upgrade",
+                "    uv pip install 'admina[proxy]' --upgrade",
+                "    # or: pip install 'admina[proxy]' --upgrade",
             ]
         )
     if docker_ok:
@@ -554,14 +556,9 @@ def _require_proxy_extra_for_local_dev() -> None:
     click.echo("", err=True)
     click.echo("  admina dev (local mode) requires the [proxy] extra.", err=True)
     click.echo("  Install one of:", err=True)
-    click.echo(
-        "    pip install 'admina[proxy]' --upgrade",
-        err=True,
-    )
-    click.echo(
-        "    pip install 'admina[full]' --upgrade   # adds NLP + telemetry",
-        err=True,
-    )
+    click.echo("    uv pip install 'admina[proxy]' --upgrade", err=True)
+    click.echo("    uv pip install 'admina[full]' --upgrade   # adds NLP + telemetry", err=True)
+    click.echo("    # with pip: pip install 'admina[proxy]' --upgrade", err=True)
     click.echo("", err=True)
     click.echo(
         "  Or run the full Docker stack (no [proxy] extra required):",
@@ -913,13 +910,16 @@ _SCAFFOLD_META: dict[str, tuple[str, str, str]] = {
 }
 
 
-def _pip_install(package: str) -> subprocess.CompletedProcess[str]:
-    """Run ``pip install <package>`` and return the result."""
-    return subprocess.run(
-        [sys.executable, "-m", "pip", "install", package],
-        capture_output=True,
-        text=True,
-    )
+def _install_package(package: str) -> subprocess.CompletedProcess[str]:
+    """Install *package* into the running interpreter's environment: with
+    ``uv pip install --python <interpreter>`` when uv is on PATH (an
+    environment that uv created has no pip), else with ``python -m pip``."""
+    uv = shutil.which("uv")
+    if uv:
+        command = [uv, "pip", "install", "--python", sys.executable, package]
+    else:
+        command = [sys.executable, "-m", "pip", "install", package]
+    return subprocess.run(command, capture_output=True, text=True)
 
 
 def _config_extra_modules() -> list[str]:
@@ -1013,15 +1013,16 @@ def plugin() -> None:
 @plugin.command("install")
 @click.argument("package_name")
 def plugin_install(package_name: str) -> None:
-    """Install an Admina plugin via pip and register it.
+    """Install an Admina plugin and register it.
 
-    PACKAGE_NAME is a pip-installable package (e.g. admina-adapter-bedrock).
+    PACKAGE_NAME is a package on PyPI (e.g. admina-adapter-bedrock),
+    installed with uv when uv is on PATH, else with pip.
     """
     click.echo(f"  Installing {package_name}...")
-    result = _pip_install(package_name)
+    result = _install_package(package_name)
 
     if result.returncode != 0:
-        click.echo(f"  ERROR: pip install failed.\n{result.stderr}", err=True)
+        click.echo(f"  ERROR: installation failed.\n{result.stderr}", err=True)
         raise SystemExit(1)
 
     click.echo(f"  Installed {package_name}")
@@ -1129,7 +1130,7 @@ def plugin_create(plugin_name: str, plugin_type: str) -> None:
   Next steps:
     cd {plugin_name}
     # Edit {created[0]} to implement your plugin
-    pip install -e .
+    uv pip install -e .        # or: pip install -e .
     admina plugin list
 """)
 
@@ -1167,7 +1168,7 @@ def doctor() -> None:
         click.echo(f"  Admina:  {__version__}  {ok_mark}")
     except ImportError:
         click.echo(f"  Admina:  not installed  {fail_mark}")
-        issues.append("Run: pip install -e .")
+        issues.append("Run: uv pip install -e . (or pip install -e .)")
 
     # ── Core deps ────────────────────────────────────────────
     click.echo("\n  Core dependencies:")
@@ -1177,7 +1178,7 @@ def doctor() -> None:
             click.echo(f"    {pkg_name:20s} {ok_mark}")
         except ImportError:
             click.echo(f"    {pkg_name:20s} {fail_mark}")
-            issues.append(f"Missing: pip install {pkg_name}")
+            issues.append(f"Missing: {install_hint(pkg_name)}")
 
     # ── Optional extras ──────────────────────────────────────
     # Each group lists (import_name, pypi_name) tuples. numpy + scikit-learn
@@ -1226,11 +1227,11 @@ def doctor() -> None:
     if extras_status.get("proxy") != "ok":
         click.echo(
             f"    {warn_mark}  admina dev (local mode) needs the [proxy] extra — "
-            "pip install 'admina[proxy]' --upgrade"
+            f"{install_hint('admina[proxy]', upgrade=True)}"
         )
         issues.append(
             "admina dev (local mode) requires the [proxy] extra — "
-            "run: pip install 'admina[proxy]' --upgrade"
+            f"run: {install_hint('admina[proxy]', upgrade=True)}"
         )
 
     # ── spaCy NER model ──────────────────────────────────────

@@ -44,6 +44,7 @@ from admina.core.config import check_config
 from admina.core.event_bus import GovernanceEvent as BusGovernanceEvent
 from admina.core.event_bus import bus as governance_bus
 from admina.core.exception_log import log_frames
+from admina.core.install_hint import install_hint
 from admina.core.offline import apply_offline_environment
 from admina.core.types import EventType, GovernanceAction, RiskLevel
 from admina.domains.agent_security.egress import (
@@ -548,7 +549,7 @@ async def _connect_redis(url: str) -> Any:
     except ImportError:
         logger.warning(
             "REDIS_URL is set but the redis package is not installed "
-            "(pip install 'admina[proxy]') — continuing without rate-limit cache"
+            f"({install_hint('admina[proxy]')}) — continuing without rate-limit cache"
         )
         return None
     try:
@@ -573,7 +574,7 @@ def _connect_clickhouse() -> Any:
     except ImportError:
         logger.warning(
             "CLICKHOUSE_HOST is set but clickhouse-connect is not installed "
-            "(pip install 'admina[proxy]') — analytics disabled"
+            f"({install_hint('admina[proxy]')}) — analytics disabled"
         )
         return None
     try:

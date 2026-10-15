@@ -17,7 +17,7 @@
 Wraps the ``anthropic`` Python client (sync) to provide inference through
 the Anthropic Messages API.
 
-Requires: ``pip install 'admina[anthropic]'``  (optional dependency).
+Requires: ``uv pip install 'admina[anthropic]'`` (or ``pip install 'admina[anthropic]'``)  (optional dependency).
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ import os
 import time
 from typing import Any
 
+from admina.core.install_hint import install_hint
 from admina.plugins.base import BaseModelAdapter
 from admina.plugins.builtin.adapters._streaming import aiter_sync
 
@@ -74,7 +75,7 @@ class AnthropicAdapter(BaseModelAdapter):
             except ImportError as exc:
                 raise ImportError(
                     "The 'anthropic' package is required for AnthropicAdapter. "
-                    "Install it with: pip install 'admina[anthropic]'"
+                    "Install it with: " + install_hint("admina[anthropic]")
                 ) from exc
             kwargs: dict[str, Any] = {}
             if self._api_key:

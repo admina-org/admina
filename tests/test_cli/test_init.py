@@ -393,6 +393,7 @@ class TestFormatNextSteps:
                 # Only --stack is acceptable here, and only if docker is around.
                 assert stripped.startswith("admina dev --stack"), line
         assert "pip install 'admina[proxy]'" in out
+        assert "uv pip install 'admina[proxy]'" in out
 
     def test_next_steps_python_main_always_shown(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from admina.cli import main as cli_main
@@ -420,6 +421,7 @@ class TestDevRequiresProxyExtra:
         combined = captured.out + captured.err
         assert "[proxy]" in combined
         assert "pip install 'admina[proxy]'" in combined
+        assert "uv pip install 'admina[proxy]'" in combined
         assert "Traceback" not in combined
 
     def test_require_proxy_extra_noop_when_installed(self, monkeypatch: pytest.MonkeyPatch) -> None:

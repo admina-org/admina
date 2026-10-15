@@ -16,7 +16,7 @@
 
 Wraps the ``chromadb`` Python client for vector-store operations.
 
-Requires: ``pip install chromadb``  (optional dependency).
+Requires: ``uv pip install chromadb`` (or ``pip install chromadb``)  (optional dependency).
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ import logging
 import os
 from typing import Any
 
+from admina.core.install_hint import install_hint
 from admina.plugins.base import BaseDataConnector
 
 logger = logging.getLogger("admina.plugins.connectors.chromadb")
@@ -66,7 +67,7 @@ class ChromaDBConnector(BaseDataConnector):
             except ImportError as exc:
                 raise ImportError(
                     "The 'chromadb' package is required for ChromaDBConnector. "
-                    "Install it with: pip install chromadb"
+                    "Install it with: " + install_hint("chromadb")
                 ) from exc
         return self._collection
 

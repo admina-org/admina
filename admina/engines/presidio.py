@@ -36,7 +36,7 @@ model that is not installed stops the engine: models are never downloaded.
 E-mail domains are checked against the public suffix list bundled with
 tldextract, with no cache and no download, so the engine makes no network
 access. Presidio is an optional extra:
-    pip install 'admina[presidio]'
+    uv pip install 'admina[presidio]'     # or: pip install 'admina[presidio]'
 """
 
 from __future__ import annotations
@@ -48,6 +48,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from admina.core.install_hint import install_hint
 from admina.domains.data_sovereignty.masking import (
     OMISSIS,
     normalize_mask_style,
@@ -241,7 +242,7 @@ class PresidioPIIEngine:
         except ImportError as exc:
             raise ImportError(
                 "The Presidio PII engine requires the [presidio] extra. Install it with "
-                "`pip install 'admina[presidio]'`."
+                f"`{install_hint('admina[presidio]')}`."
             ) from exc
 
         pipelines = _pipelines(nlp_models)
