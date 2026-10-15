@@ -31,7 +31,7 @@ python:
 # (run 'make python' first for full spaCy support).
 test:
 	@echo "Running test suite..."
-	uv run pytest tests/ -v --tb=short
+	uv run --extra proxy --extra nlp --extra telemetry pytest tests/ -v --tb=short
 
 # Run Rust unit tests
 test-rust:
