@@ -1937,7 +1937,7 @@ production.
 | `CLICKHOUSE_HOST` | `localhost` | Event analytics (empty = no ClickHouse) |
 | `FORENSIC_BACKEND` | `memory` | Forensic store: `memory` \| `filesystem` \| `s3` (else `domains.compliance.forensic.backend` of `admina.yaml`) |
 | `FORENSIC_BASE_DIR` | *(empty)* | Directory of the `filesystem` store (else `domains.compliance.forensic.base_dir`) |
-| `ADMINA_EU_AI_ACT_ASSESSMENTS_PATH` | *(empty)* | JSON file keeping the last 100 EU AI Act assessments across restarts (empty: in memory only) |
+| `ADMINA_EU_AI_ACT_ASSESSMENTS_PATH` | *(empty)* | JSON file keeping the last 100 EU AI Act assessments across restarts (empty: in memory only; the compose files set it on the `compliance-data` volume) |
 | `ADMINA_FORENSIC_FAIL_MODE` | `open` | A forensic record that cannot be written: `open` (logged, request served) \| `closed` (`503`, not forwarded) |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
 | `ADMINA_LOG_FORMAT` | `text` | Log output: `text` \| `json` |

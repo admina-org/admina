@@ -19,7 +19,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "admina"
-version = "0.14.2"
+version = "0.15.0"
 description = "Admina — governed AI development framework"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -133,7 +133,7 @@ rust = [
     # `uv sync --extra rust` (or --all-extras) builds the engine of the same
     # checkout, which needs a Rust toolchain. The range takes the 0.13.x
     # releases of admina-core, the line released with this framework.
-    "admina-core>=0.14.0,<0.15",
+    "admina-core>=0.15.0,<0.16",
 ]
 # NOTE: the [guardrailsai] extra was removed in v0.9.0 because the
 # upstream `guardrails-ai` package is currently in PyPI quarantine
