@@ -185,6 +185,27 @@ class TestScaffoldProject:
         assert "forensic-data:/app/.admina/forensic" in proxy["volumes"]
         assert "forensic-data" in data["volumes"]
 
+    @pytest.mark.parametrize(
+        ("domains", "kept"),
+        [
+            (list(AVAILABLE_DOMAINS), True),
+            (["agent_security", "compliance"], True),
+            (["agent_security"], False),
+        ],
+    )
+    def test_docker_compose_keeps_the_eu_ai_act_assessments_on_a_volume(
+        self, tmp_project: Path, domains: list[str], kept: bool
+    ) -> None:
+        tmp_project.mkdir(parents=True)
+        _scaffold_project(tmp_project, domains, "test-project")
+        data = yaml.safe_load((tmp_project / "docker-compose.yml").read_text())
+        proxy = data["services"]["proxy"]
+        env = dict(item.split("=", 1) for item in proxy["environment"])
+        path = "/app/.admina/compliance/eu_ai_act_assessments.json"
+        assert (env.get("ADMINA_EU_AI_ACT_ASSESSMENTS_PATH") == path) is kept
+        assert ("compliance-data:/app/.admina/compliance" in proxy["volumes"]) is kept
+        assert ("compliance-data" in data["volumes"]) is kept
+
     @pytest.mark.parametrize("domains", [["compliance"], ["data_sovereignty"]])
     def test_docker_compose_without_the_proxy_has_no_forensic_volume(
         self, tmp_project: Path, domains: list[str]

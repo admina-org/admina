@@ -30,6 +30,7 @@ functions, and ISO/IEC 42001 clause 8 (Operations).
 | Loop Breaker | TF-IDF cosine similarity over a sliding window | Rust (`core-rust/src/loop_breaker.rs`) when `admina-core` is installed (`ADMINA_ENGINE=auto`, default) or `ADMINA_ENGINE=rust`, else Python | `admina/domains/agent_security/loop_breaker.py` |
 | Egress Policy | Destination allowlist (exact host / `*.suffix` / CIDR) matched against tool-call arguments | Python only — no Rust variant | `admina/domains/agent_security/egress.py` |
 | Coordination Detector | Fan-in counter over distinct agents, escalating to keyed shingle-sketch echo confirmation | Python only — no Rust variant; requires Redis — no Redis means no detection at all | `admina/domains/agent_security/coordination.py`, `admina/domains/agent_security/fingerprint.py` |
+| Execution Sandbox | Isolated execution of declared tool calls in a fresh container per call (no network, read-only root, unprivileged user, cgroup limits); off by default | Python; the built-in provider drives the `docker` or `podman` CLI, runtime runc or runsc (gVisor) | `admina/domains/agent_security/sandbox.py`, `admina/plugins/builtin/sandboxes/docker.py` |
 | Forensic Hash Chain | SHA-256 chained log | Rust (`core-rust/src/forensic.rs`) + Python fallback | `admina/domains/compliance/forensic.py` |
 | EU AI Act Classifier | Keyword-based risk classifier + Annex III mapping | Python (`admina/domains/compliance/eu_ai_act.py`) | — |
 | NIS2 Self-Assessment | Deterministic checklist (10 areas × 4 controls = 40 checks) + gap analysis | Python (`admina/domains/compliance/nis2.py`) | — |
@@ -857,6 +858,96 @@ does not participate in the Python/Rust recall baseline in §9.
 
 ---
 
+## 5d. Execution Sandbox
+
+### What it does
+
+The other stages decide whether a tool call may proceed; none of them
+contains what the tool does once it runs. The execution sandbox does, for
+the tools an operator declares under `domains.agent_security.sandbox.tools`
+in `admina.yaml` (off by default). On `/mcp`, a `tools/call` of a declared
+tool that the pipeline allows is not forwarded upstream: Admina writes the
+code argument to `/work/main.py` (profile `python`) or `/work/main.sh`
+(profile `shell`) and runs it in a fresh container, which is removed
+afterwards. The result goes back through the response path of an upstream
+response (PII redaction, governance guards' response inspection).
+
+The built-in provider (`DockerSandbox`) creates each container with: a
+read-only root filesystem; a size-limited tmpfs at `/work` and `/tmp`
+(`noexec`); user `65534:65534` whatever the image says; every capability
+dropped and `no-new-privileges`; the engine's default seccomp profile;
+`--network none` (loopback only); memory equal to memory+swap, CPU, process
+and open-file limits; no log driver; no bind mount and no environment
+variable of the host; an image pinned by digest that must already be
+present (nothing is pulled on the request path). The wall-clock timeout is
+enforced by Admina, which kills the container when it expires.
+
+Each execution adds a second forensic record, `<event_id>:sandbox`
+(`event_type: sandbox_execution`), after the request's own record: the
+provider, runtime and image digest, the limits, SHA-256 hashes and sizes of
+the command, of the input files, of stdout/stderr and of the output files,
+the exit code and whether the execution timed out or ran out of memory.
+Never the content of the code, of the files or of the output.
+
+A declared tool is never executed anywhere else. If the sandbox is
+unavailable (engine unreachable, image missing, a runtime not registered,
+no free slot within `queue_timeout_seconds`), the call is refused with a
+JSON-RPC error (`data.reason: sandbox_unavailable`) and recorded as
+`ERROR`; there is no fallback in any fail mode, and `observe`/`dry-run`
+governance modes do not disable the isolation (a call they let through is
+still executed in the sandbox).
+
+### What it does not guarantee
+
+- **The kernel is shared with runc.** A container is not a virtual machine:
+  a bug in the Linux kernel or in runc is an escape (precedents:
+  CVE-2019-5736, the runc binary overwrite; CVE-2024-21626, "Leaky
+  Vessels"). Dropped capabilities, seccomp, `no-new-privileges` and the
+  unprivileged user reduce the attack surface, they do not remove it. For
+  hostile code, `runtime: runsc` (gVisor, Linux only, registered with the
+  engine) is the reasonable minimum: the container's system calls are
+  served by gVisor's user-space kernel. gVisor has bugs of its own and is
+  not a formal guarantee. Against determined adversaries or across tenants,
+  use virtual machines; Admina does not provide them.
+- **Access to the Docker socket is root on the host.** Whoever controls a
+  process that can reach `/var/run/docker.sock` (or a TCP Docker endpoint)
+  can start a privileged container with the host's `/` mounted. Enabling
+  the sandbox gives the Admina process that access, and raises what a
+  compromise of the proxy is worth. A socket proxy that filters API
+  endpoints does not help: `containers/create` alone allows arbitrary bind
+  mounts. Use rootless Docker or rootless Podman (the socket belongs to an
+  unprivileged user) or a dedicated host. The example `docker-compose.yml`
+  does not mount the socket.
+- **No network is not observed.** With `network: none` connection attempts
+  fail inside the container and are not recorded (`network.observed` is
+  false). Network access through an allowlist (`network: egress`) is not
+  supported in this release; the configuration refuses it.
+- **Side channels** (timing, caches, Spectre-class, CPU and memory
+  contention between sandboxes and with the proxy) are not mitigated.
+- **Host resources.** cgroup limits, tmpfs sizes, `--log-driver none` and
+  `max_concurrent` bound one execution; the engine remains a single shared
+  point, and many creations and removals can slow it down.
+- **The output is untrusted text.** It was produced by whoever wrote the
+  code, and it goes back to the model (indirect prompt injection). The
+  response side of `/mcp` runs PII redaction and the governance guards,
+  not the injection firewall.
+- **Arguments are executed as the pipeline left them.** With PII redaction
+  on, personal data in the code argument is replaced with placeholders
+  before execution, as it would have been before forwarding.
+- **The record attests what Admina observed through the engine.** A
+  compromised host can forge it. With `ADMINA_FORENSIC_FAIL_MODE=closed` a
+  `:sandbox` record that cannot be written turns the response into a 503,
+  but the execution has already happened and cannot be undone; the
+  request's record, written before it, documents the intent.
+- **No state between calls**, no packages beyond the image's, and no output
+  file outside the collected directory (`out/`). Output files are returned
+  up to `files_max_bytes`; stdout and stderr up to `output_max_bytes` each.
+- **The SDK** (`admina.sdk.sandbox.sandbox_upstream` with `GovernedAgent`)
+  executes the same way but writes no forensic record, consistent with
+  `GovernedAgent` (§5b).
+
+---
+
 ## 6. Forensic Hash Chain
 
 ### What it does
@@ -945,6 +1036,35 @@ to `minimal`.
   states may enact additional obligations (e.g. on biometric
   identification by law enforcement). Admina does not model these.
 - **ISO/IEC 42001 and SOC 2** are not implemented.
+
+### Gap analysis (Articles 9–15)
+
+`EUAIActCompliance.gap_analysis()` (proxy: `POST
+/api/compliance/gap-analysis`) records an assessment for the risk category
+the operator declares, with an optional `system_name`:
+
+- `high` / `unacceptable`: the 28 checks of Articles 9–15 are scored from
+  the operator's declarations (`COMPLIANT` or `GAPS_FOUND`).
+- `limited` / `minimal`: Articles 9–15 do not apply. The assessment is
+  recorded with status `NOT_APPLICABLE`, no score and no checks; declared
+  checks are ignored unless `voluntary` is set, in which case they are kept
+  as a voluntary self-assessment.
+- An unknown category is rejected.
+
+The last 100 assessments are kept. In the proxy they persist across
+restarts when `ADMINA_EU_AI_ACT_ASSESSMENTS_PATH` names a JSON file
+(written atomically; an unreadable file is logged and ignored); otherwise
+they are kept in memory only. `GET /api/compliance/gap-analysis/latest`
+returns the most recent one.
+
+The Admina Score's "EU AI Act gap coverage" component (25 points) is the
+latest high-risk score × 25. When the latest assessment is
+`NOT_APPLICABLE` (voluntary or not) the component is reported as `null`,
+listed in `not_applicable`, and the score is rescaled to 100 over the
+other components, so a limited- or minimal-risk classification neither
+earns nor loses those points. The declared category is the operator's
+responsibility: the gap analysis does not check it against
+`classify_risk()`.
 
 ---
 

@@ -6,7 +6,7 @@ not on a calendar. Scope may shift in response to user feedback, security
 findings, or upstream changes in the governance landscape (EU AI Act
 implementing acts, new frameworks, new attack classes).
 
-The current release is **0.14.2**. Admina is pre-1.0: the public API may
+The current release is **0.15.0**. Admina is pre-1.0: the public API may
 still evolve before the 1.0 stability commitment, so a minor release may
 carry a declared breaking change once its replacement is in place. Shipped
 detail lives in [CHANGELOG.md](CHANGELOG.md).
@@ -138,6 +138,19 @@ deployment, and a forensic store that can be verified record by record.
   `admina-framework`: the module, the `admina` command and the extras do
   not change. See
   [docs/guides/package-name.md](docs/guides/package-name.md).
+
+---
+
+## 0.15.0 — Execution sandbox and EU AI Act assessments
+
+- An execution sandbox for the tools of `/mcp`: the `execution_sandbox`
+  plugin type and a Docker provider (no network, read-only root, no
+  capabilities, cgroup limits; runtime runc or runsc). See
+  [docs/guides/execution-sandbox.md](docs/guides/execution-sandbox.md).
+- EU AI Act assessments for every risk category, `NOT_APPLICABLE` for
+  `limited` and `minimal` systems, kept across restarts.
+- Routing of `/mcp` calls by tool name from the routing file.
+- uv as the default installer in the docs and in the install hints.
 
 ---
 

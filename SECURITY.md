@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.14.x  | Yes       |
-| < 0.14  | No        |
+| 0.15.x  | Yes       |
+| < 0.15  | No        |
 
 During the pre-1.0 phase only the latest minor line receives security
 fixes. Once 1.0 ships, an LTS window will be defined in

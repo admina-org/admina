@@ -13,25 +13,113 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-10-17
+
+Minor release: an execution sandbox for the tools of `/mcp`; EU AI Act
+assessments for every risk category, kept across restarts; routing of
+`/mcp` calls by tool name; uv as the default installer in the docs and in
+the install hints.
+
+### Added
+
+- **Execution sandbox.** The `execution_sandbox` plugin type
+  (`BaseExecutionSandbox`, with `SandboxRequest` and `SandboxResult` in
+  `admina.core.types`) and `admina plugin create --type execution_sandbox`.
+- **Docker provider.** The built-in `DockerSandbox` drives the `docker` or
+  `podman` command line, with runtime runc or runsc. Each call runs in its
+  own container, with:
+  - no network, a read-only root filesystem, user 65534 and no
+    capabilities;
+  - cgroup limits for time, memory, CPU, processes, disk and output;
+  - the `python:3.12-slim` image pinned by digest;
+  - a reaper that removes orphan containers.
+- **Sandbox on `/mcp`.** `domains.agent_security.sandbox` is off by
+  default. On `/mcp`, the declared tools (`profile: python | shell`) run in
+  the sandbox after an ALLOW verdict instead of being forwarded. Their
+  result goes through PII redaction and the response guards, and
+  `tools/list` includes them.
+  - Each execution is recorded as `<event_id>:sandbox`
+    (`sandbox_execution`, hashes and sizes only), with a bus event, the
+    `admina_sandbox_*` metrics and a `sandbox` field in `/health`.
+  - `admina.sdk.sandbox.sandbox_upstream` runs the declared tools of a
+    `GovernedAgent` in the sandbox.
+  - `docs/guides/execution-sandbox.md` and MODEL_CARD §5d describe what the
+    sandbox does and does not guarantee.
+- **`GET /api/compliance/gap-analysis/latest`** returns the most recent EU
+  AI Act assessment, or 404 when none is recorded.
+- **Assessments across restarts.** `ADMINA_EU_AI_ACT_ASSESSMENTS_PATH`
+  names a JSON file in which the proxy keeps the last 100 EU AI Act
+  assessments. It is written atomically, and an unreadable file is logged
+  and ignored. The compose files set it on a `compliance-data` volume;
+  when it is unset, assessments are kept in memory only.
+- **Gap-analysis fields.** Gap analysis accepts `system_name`. For
+  `limited` and `minimal` systems it also accepts `voluntary: true`, which
+  keeps the Art. 9–15 checks as a voluntary self-assessment that is not
+  counted in the Admina Score. `ComplianceKit.gap_analysis()` accepts
+  `system_name`.
+- `GET /api/dashboard/score` returns `not_applicable`, the components left
+  out of the score.
+
 ### Changed
 
-- Install commands name uv first and pip as the alternative: the README,
-  the docs, the MODEL_CARD, the integration READMEs, the plugin README
-  template, and the hints of error messages and warnings
-  (`uv pip install 'admina[proxy]' (or pip install 'admina[proxy]')`,
-  built by `admina.core.install_hint.install_hint`).
+- **Every risk category is recorded.** `POST /api/compliance/gap-analysis`
+  records an assessment for `limited` and `minimal` systems too, with
+  status `NOT_APPLICABLE`, `compliance_score: null` and `total_checks: 0`;
+  `applicable` and `message` are kept. Every assessment carries
+  `risk_category` and `system_name`, and the engine keeps the last 100.
+- **Admina Score.** When the latest EU AI Act assessment is
+  `NOT_APPLICABLE`, the "EU AI Act gap coverage" component of the Admina
+  Score is `null` and the score is rescaled over the other components.
+- **Dashboard.** The EU AI Act panel shows a `NOT_APPLICABLE` assessment
+  as "Articles 9–15 not required", with the system name, the risk category
+  and the date, and shows the score component as N/A.
+- **uv first.** Install commands name uv first and pip as the
+  alternative. This covers:
+  - the README, the docs and the MODEL_CARD;
+  - the integration READMEs and the plugin README template;
+  - the hints of error messages and warnings
+    (`uv pip install 'admina[proxy]' (or pip install 'admina[proxy]')`,
+    built by `admina.core.install_hint.install_hint`).
 - `admina plugin install` installs with `uv pip install --python
-  <interpreter>` when uv is on PATH, else with `python -m pip`: an
+  <interpreter>` when uv is on PATH, else with `python -m pip`. An
   environment that uv created has no pip.
+- `/health` has a `sandbox` field (null when the sandbox is off).
+- **CI.** The main CI job runs `-m "not benchmark and not docker"`. A
+  `sandbox-integration` job runs the `docker`-marked tests against a real
+  Docker engine, and also gates the releases.
 
 ### Fixed
 
-- `pyproject.toml` no longer sets `[tool.uv] default-extras`, a key that uv
-  does not have: every uv command warned that it could not parse the uv
-  settings. `make test` runs `uv run --extra proxy --extra nlp --extra
-  telemetry pytest`.
-- The air-gapped guide and `Dockerfile.benchmark` install the spaCy model
-  `en_core_web_sm` 3.8.0, which matches `spacy>=3.8`; they named 3.7.1.
+- **Routing by tool name on `/mcp`.** Each route of the routing file
+  (`ROUTING_CONFIG_PATH`) lists its tools in `routes.<name>.tools`, and a
+  `tools/call` for a listed tool goes to that route. Before, only
+  `/mcp/route/<name>` selected a route.
+  - A `tools` value that is not a list of tool names, or a tool listed by
+    two routes, stops the proxy at startup.
+  - A routing file that ends in `.yaml` or `.yml` is read as YAML, as
+    `.env.example` shows.
+  - A routed call counts one request on its route.
+  - A `prompts/get` named like a listed tool is not routed by tool name.
+  - A route without `upstream_url` uses `UPSTREAM_MCP_URL/mcp`.
+- **Gap-analysis input.** `POST /api/compliance/gap-analysis` answers 400
+  for an unknown risk category or a malformed body, instead of recording or
+  ignoring it. The Markdown compliance report no longer prints `None%` for
+  a not-applicable assessment.
+- **uv settings.** `pyproject.toml` no longer sets
+  `[tool.uv] default-extras`, a key that uv does not have: every uv command
+  warned that it could not parse the uv settings. `make test` runs
+  `uv run --extra proxy --extra nlp --extra telemetry pytest`.
+- **spaCy model version.** The air-gapped guide and `Dockerfile.benchmark`
+  install the spaCy model `en_core_web_sm` 3.8.0, which matches
+  `spacy>=3.8`; they named 3.7.1.
+- **Benchmark data.** The PII benchmark of `tests/test_benchmark_14us.py`
+  uses card numbers that pass the Luhn check.
+
+### Security
+
+- A sandboxed tool is never executed outside the sandbox. When the sandbox
+  is unavailable or busy, the call is refused with `sandbox_unavailable`,
+  in every fail mode and governance mode, and recorded.
 
 ## [0.14.2] — 2026-10-08
 
@@ -2352,7 +2440,8 @@ environment in `docker-compose.benchmark.yml`.
 
 ---
 
-[Unreleased]: https://github.com/admina-org/admina/compare/v0.14.2...HEAD
+[Unreleased]: https://github.com/admina-org/admina/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/admina-org/admina/compare/v0.14.2...v0.15.0
 [0.14.2]: https://github.com/admina-org/admina/compare/v0.14.1...v0.14.2
 [0.14.1]: https://github.com/admina-org/admina/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/admina-org/admina/compare/v0.13.2...v0.14.0

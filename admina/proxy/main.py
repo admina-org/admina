@@ -52,6 +52,7 @@ from admina.domains.agent_security.egress import (
     payload_fields,
     resolve_egress_mode,
 )
+from admina.domains.agent_security.sandbox import call_tool_result
 from admina.domains.compliance.forensic import ForensicWriteError
 from admina.domains.compliance.otel import OTELGovernanceExporter
 from admina.domains.governance import (
@@ -87,6 +88,15 @@ from admina.proxy.log_format import configure_logging
 from admina.proxy.multi_upstream import MultiUpstreamRouter
 from admina.proxy.pipeline_executor import PipelineExecutor
 from admina.proxy.request_metrics import RequestMetrics
+from admina.proxy.sandbox_bridge import (
+    build_sandbox_executor,
+    bus_metadata,
+    health_field,
+    sandbox_error_response,
+    sandbox_forensic_record,
+    sandbox_tool_name,
+    with_sandbox_tools,
+)
 from admina.proxy.state import ProxyState
 from admina.proxy.surfaces import parse_surfaces, surface_of
 
@@ -245,6 +255,11 @@ def build_coordination_detector(redis: Any, egress_cfg: Any, quarantine: Any) ->
     )
 
 
+# How often the execution sandbox's orphans are removed and its health is
+# checked (the /health field reads the last check).
+_SANDBOX_MAINTENANCE_INTERVAL_S = 30.0
+
+
 # ── Startup / Shutdown ───────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
@@ -309,6 +324,34 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             "Auth providers loaded: %s",
             [p.provider_name for p in state.auth_providers],
         )
+
+    # ── Execution sandbox of /mcp (off unless enabled in admina.yaml) ──
+    # Invalid settings or an unknown provider stop the proxy; a provider
+    # that is not ready (engine unreachable, image missing) does not: /health
+    # reports degraded and the sandboxed tools are refused, never forwarded.
+    if "mcp" in surfaces:
+        state.sandbox = build_sandbox_executor(
+            state.registry,
+            _admina_config.agent_security.sandbox if _admina_config else None,
+            _plugin_cfg,
+        )
+    if state.sandbox is not None:
+        await state.sandbox.reap()
+        sandbox_health = await state.sandbox.check_health()
+        if not sandbox_health["ready"]:
+            logger.error(
+                "Execution sandbox %r not ready: %s; its tools are refused until it is",
+                state.sandbox.provider,
+                sandbox_health.get("detail", ""),
+            )
+
+        async def _sandbox_maintenance() -> None:
+            while True:
+                await asyncio.sleep(_SANDBOX_MAINTENANCE_INTERVAL_S)
+                await state.sandbox.reap()
+                await state.sandbox.check_health()
+
+        state.sandbox_maintenance = _spawn(_sandbox_maintenance())
 
     # ── OTEL exporter — subscribe to event bus ────────────────
     # OTEL_ENABLED=false or ADMINA_OFFLINE (checked at the start of the
@@ -452,6 +495,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     )
     if state.router.is_multi_upstream:
         logger.info("  OpenClaw mode: routing %d MCP servers", len(state.router.routes))
+    if state.sandbox is not None:
+        logger.info(
+            "  Execution sandbox: %s (%s), tools: %s",
+            state.sandbox.provider,
+            state.sandbox.health.get("runtime") or "?",
+            ", ".join(sorted(state.sandbox.tools)) or "none",
+        )
     logger.info(engine_lines[1])
     logger.info("=" * 60)
 
@@ -463,6 +513,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         state.quarantine_refresh.cancel()
         with suppress(asyncio.CancelledError):
             await state.quarantine_refresh
+    if state.sandbox_maintenance is not None:
+        state.sandbox_maintenance.cancel()
+        with suppress(asyncio.CancelledError):
+            await state.sandbox_maintenance
+    if state.sandbox is not None:
+        await state.sandbox.sandbox.aclose()
     if state.redis:
         await state.redis.close()
     if state.http_client:
@@ -1164,11 +1220,19 @@ async def health(request: Request) -> dict[str, Any]:
     ``forensic_chain``: ``ok``, ``rebuilt`` (the chain state was rebuilt
     from verified records at startup) or ``invalid`` (nothing is recorded
     until an operator acts; status ``degraded``); ``null`` without a stored
-    chain.
+    chain. ``sandbox``: ``null`` when the execution sandbox is off; else its
+    provider, ``ready`` (from its last check, at startup and every 30 s;
+    status ``degraded`` while false), ``runtime``, ``detail``, the
+    executions in flight and the sandboxed tools.
     """
     state = getattr(request.app.state, "proxy", None)
     forensic_writable = await _forensic_writable(state)
-    degraded = forensic_writable is False or not _forensic_accepting(state)
+    sandbox = health_field(getattr(state, "sandbox", None))
+    degraded = (
+        forensic_writable is False
+        or not _forensic_accepting(state)
+        or (sandbox is not None and sandbox["ready"] is False)
+    )
     return {
         "status": "degraded" if degraded else "healthy",
         "service": "admina-proxy",
@@ -1179,6 +1243,7 @@ async def health(request: Request) -> dict[str, Any]:
         "forensic_writable": forensic_writable,
         "forensic_chain": getattr(getattr(state, "forensic_box", None), "chain_status", None),
         "engine": _engine_status(state),
+        "sandbox": sandbox,
         "timestamp": datetime.now(UTC).isoformat(),
     }
 
@@ -1323,6 +1388,9 @@ async def prometheus_metrics(request: Request) -> Response:
             "gauge",
         )
 
+    if state.sandbox is not None:
+        lines.extend(state.sandbox_metrics.exposition(state.sandbox))
+
     lines.extend(state.loop_lag.exposition())
 
     # The engines the proxy runs, as a labelled gauge with constant value 1.
@@ -1402,18 +1470,74 @@ async def classify_risk(request: Request, body: dict) -> dict[str, Any]:
     return result
 
 
+def _gap_analysis_args(body: dict) -> dict[str, Any]:
+    """Validate the body of a gap analysis: ``risk_category`` (default
+    ``high``), ``current_compliance`` (an object), ``system_name`` (a string)
+    and ``voluntary`` (a boolean). 400 on a value of the wrong type."""
+    current_compliance = body.get("current_compliance") or {}
+    if not isinstance(current_compliance, dict):
+        raise HTTPException(status_code=400, detail="current_compliance must be an object")
+    system_name = body.get("system_name")
+    if system_name is not None and not isinstance(system_name, str):
+        raise HTTPException(status_code=400, detail="system_name must be a string")
+    voluntary = body.get("voluntary", False)
+    if not isinstance(voluntary, bool):
+        raise HTTPException(status_code=400, detail="voluntary must be a boolean")
+    return {
+        "risk_category": body.get("risk_category", "high"),
+        "current_compliance": current_compliance,
+        "system_name": system_name,
+        "voluntary": voluntary,
+    }
+
+
 @_compliance_router.post(
     "/api/compliance/gap-analysis",
     tags=["compliance"],
-    summary="Compute the compliance gap report for a risk category",
+    summary="Record an EU AI Act assessment (Art. 9-15 gap analysis) for a risk category",
+    description=(
+        "Body: `risk_category` (`unacceptable`, `high`, `limited`, `minimal`; "
+        "default `high`), `current_compliance` (`{requirement: [bool, ...]}`), "
+        "optional `system_name`, optional `voluntary`.\n\n"
+        "`high` / `unacceptable`: gap analysis of Articles 9-15, `applicable` "
+        "true, status `COMPLIANT` or `GAPS_FOUND`.\n\n"
+        "`limited` / `minimal`: Articles 9-15 do not apply; the assessment is "
+        "recorded with `applicable` false, status `NOT_APPLICABLE`, "
+        "`compliance_score` null and `total_checks` 0, and `current_compliance` "
+        "is ignored. With `voluntary: true` the checks of `current_compliance` "
+        "are kept as a voluntary self-assessment, not counted in the Admina "
+        "Score.\n\n"
+        "Every assessment carries `risk_category` and `system_name`. The proxy "
+        "keeps the last 100, in the file named by "
+        "`ADMINA_EU_AI_ACT_ASSESSMENTS_PATH` when set. An unknown category or "
+        "a value of the wrong type answers 400."
+    ),
 )
 async def gap_analysis(request: Request, body: dict) -> dict[str, Any]:
     state = _get_state(request)
-    result = state.compliance.gap_analysis(
-        risk_category=body.get("risk_category", "high"),
-        current_compliance=body.get("current_compliance", {}),
-    )
-    return result
+    args = _gap_analysis_args(body)
+    try:
+        return state.compliance.gap_analysis(**args)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@_compliance_router.get(
+    "/api/compliance/gap-analysis/latest",
+    tags=["compliance"],
+    summary="The most recent EU AI Act assessment",
+    description=(
+        "The last assessment recorded by `POST /api/compliance/gap-analysis` "
+        "or `POST /api/compliance/report`, as that route returned it; 404 "
+        "when none is recorded."
+    ),
+)
+async def gap_analysis_latest(request: Request) -> dict[str, Any]:
+    state = _get_state(request)
+    latest = state.compliance.latest()
+    if latest is None:
+        raise HTTPException(status_code=404, detail="no assessment recorded")
+    return latest
 
 
 @_compliance_router.post(
@@ -1423,6 +1547,7 @@ async def gap_analysis(request: Request, body: dict) -> dict[str, Any]:
 )
 async def generate_compliance_report(request: Request, body: dict) -> dict[str, Any]:
     state = _get_state(request)
+    args = _gap_analysis_args(body)
     classification = state.compliance.classify_risk(
         body.get("description", ""),
         body.get("use_case", ""),
@@ -1430,7 +1555,8 @@ async def generate_compliance_report(request: Request, body: dict) -> dict[str, 
     )
     gap_result = state.compliance.gap_analysis(
         classification["risk_category"],
-        body.get("current_compliance", {}),
+        args["current_compliance"],
+        system_name=args["system_name"],
     )
     report = state.compliance.generate_report(
         body.get("system_name", "Unknown System"),
@@ -1558,7 +1684,7 @@ async def consolidated_compliance_report(
     state = _get_state(request)
 
     # Latest snapshots — defensive: each module may not have any data yet
-    eu_latest = state.compliance.assessments[-1] if state.compliance.assessments else None
+    eu_latest = state.compliance.latest()
     nis2_latest = state.nis2.assessments[-1] if state.nis2.assessments else None
 
     snapshot: dict[str, Any] = {
@@ -1632,7 +1758,12 @@ async def consolidated_compliance_report(
         ]
         eu_stats = snapshot["eu_ai_act"]["stats"]
         lines.append(f"- Assessments performed: {eu_stats.get('total_assessments', 0)}")
-        if eu_latest:
+        if eu_latest and not eu_latest.get("applicable", True):
+            lines.append(
+                f"- Latest assessment: not applicable "
+                f"({eu_latest.get('risk_category')}-risk system, Art. 9-15 not required)"
+            )
+        elif eu_latest:
             lines.append(f"- Latest score: **{eu_latest.get('compliance_score', 0)}%**")
             lines.append(f"- Open gaps: {len(eu_latest.get('gaps', []))}")
         lines += ["", "## NIS2"]
@@ -2091,23 +2222,51 @@ async def _mcp_exchange(request: Request, path: str, outcome: _McpOutcome) -> JS
             content=mcp_transport.format_circuit_break_response(gov_response, body),
         )
 
+    # ─── Execution sandbox (tools Admina runs itself) ─────────
+    # A sandboxed tool is never forwarded upstream, in any governance mode:
+    # observe and dry-run change the verdict, not the isolation.
+    sandboxed_tool = sandbox_tool_name(state.sandbox, method, params)
+    if sandboxed_tool is not None:
+        try:
+            return await _mcp_sandbox_call(
+                state,
+                sandboxed_tool,
+                body=body,
+                redacted_body=redacted_body,
+                gov_response=gov_response,
+                outcome=outcome,
+                event_id=event_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                method=method,
+                risk_level=risk_level,
+                forensic_record=forensic_record,
+            )
+        except Exception as e:  # noqa: BLE001 — answered 500, logged by its class
+            logger.error("Sandboxed call failed for event %s: %s", event_id, type(e).__name__)
+            log_frames(logger, "MCP sandboxed call", e)
+            return _internal_error_mcp(body, event_id)
+
     # ─── Forward to upstream MCP server ───────────────────────
     try:
         server_name = None
         if path.startswith("route/"):
             server_name = path.removeprefix("route/").split("/")[0]
 
-        # Tool-based routing: resolve server by tool name if in multi-upstream mode
-        if not server_name and state.router.is_multi_upstream:
+        # Tool-based routing: a tools/call goes to the server that lists the tool
+        if not server_name and state.router.is_multi_upstream and method == "tools/call":
             tool_name = params.get("name", "") if isinstance(params, dict) else ""
             if tool_name:
                 tool_route = state.router.resolve_by_tool(tool_name)
                 if tool_route:
                     server_name = tool_route.name
 
-        if server_name and state.router.is_multi_upstream:
-            upstream_url = state.router.get_upstream_url(server_name)
-            extra_headers = state.router.get_upstream_headers(server_name)
+        route = state.router.resolve(server_name) if server_name else None
+        if route is not None and state.router.is_multi_upstream:
+            # One request counted per call; a route without its own URL uses
+            # the MCP endpoint of UPSTREAM_MCP_URL, as an unrouted call does.
+            upstream_url = route.upstream_url or f"{settings.UPSTREAM_MCP_URL}/mcp"
+            extra_headers = route.headers
             logger.debug("Routing to server '%s' -> %s", server_name, upstream_url)
         else:
             upstream_url = f"{settings.UPSTREAM_MCP_URL}/mcp"
@@ -2115,104 +2274,44 @@ async def _mcp_exchange(request: Request, path: str, outcome: _McpOutcome) -> JS
                 upstream_url = f"{settings.UPSTREAM_MCP_URL}/mcp/{path}"
             extra_headers = {}
 
-        upstream_response = await state.http_client.post(
-            upstream_url,
-            json=redacted_body,
-            headers={
-                "X-Session-Id": session_id,
-                "X-Agent-Id": agent_id,
-                "X-Admina-Event-Id": event_id,
-                **extra_headers,
-            },
+        sandbox_tools = (
+            state.sandbox.tool_definitions()
+            if state.sandbox is not None and method == "tools/list"
+            else []
         )
-
-        response_data = upstream_response.json()
-
-        # Redact PII from response too (bidirectional — dict-shaped results included)
-        if settings.PII_REDACTION_ENABLED and "result" in response_data:
-            response_data["result"], _resp_pii_count = redact_response_result(
-                response_data["result"], state.pii_redactor
+        try:
+            upstream_response = await state.http_client.post(
+                upstream_url,
+                json=redacted_body,
+                headers={
+                    "X-Session-Id": session_id,
+                    "X-Agent-Id": agent_id,
+                    "X-Admina-Event-Id": event_id,
+                    **extra_headers,
+                },
             )
+            response_data = upstream_response.json()
+        except httpx.ConnectError:
+            if not sandbox_tools:
+                raise
+            # No upstream to list tools from: the sandboxed tools alone.
+            response_data = {"jsonrpc": "2.0", "id": body.get("id"), "result": {"tools": []}}
+        # tools/list: the sandboxed tools join the upstream's.
+        response_data = with_sandbox_tools(response_data, sandbox_tools)
 
-        # ─── Governance Guards: inspect response ──────────────
-        if state.governance_guards:
-            resp_payload = {"content": json.dumps(response_data, default=str)}
-            for guard in state.governance_guards:
-                try:
-                    guard_result = await guard.inspect_response(resp_payload)
-                    if guard_result.get("action") in ("BLOCK", "REDACT"):
-                        outcome.block_response(_guard_risk(guard_result))
-                        logger.warning(
-                            "Guard %r blocked response for event %s",
-                            guard.name,
-                            event_id,
-                        )
-                        return JSONResponse(
-                            status_code=403,
-                            content=mcp_transport.format_block_response(
-                                gov_response,
-                                body,
-                                reason="response_blocked",
-                            ),
-                        )
-                except (ValueError, RuntimeError, OSError, TypeError) as exc:
-                    logger.error(
-                        "Guard %r failed its contract on response inspection and was skipped: %s",
-                        guard.name,
-                        type(exc).__name__,
-                    )
-                    log_frames(logger, f"Guard {guard.name!r} on response inspection", exc)
-                    # Response guard errors are not collected into pipeline_result.checks
-                    # (that result is already built before this path runs); the ERROR log
-                    # is the audit trail for response-side contract failures.
-                    if settings.GUARD_FAIL_MODE == "closed":
-                        # Fail-closed: a crashing response guard blocks the response.
-                        # The request-side forensic record was written before the
-                        # upstream call, so it cannot carry this response-side error —
-                        # write an explicit ERROR record here for the audit trail.
-                        outcome.block_response("HIGH")
-                        if state.forensic_box:
-                            error_record = {
-                                "event_id": event_id,
-                                "event_type": EventType.MCP_RESPONSE,
-                                "agent_id": agent_id,
-                                "session_id": session_id,
-                                "method": method,
-                                "action": GovernanceAction.BLOCK,
-                                "risk_level": risk_level,
-                                "checks": {
-                                    f"guard_{guard.name}": {
-                                        "action": "ERROR",
-                                        "error": type(exc).__name__,
-                                    }
-                                },
-                            }
-                            _loop = asyncio.get_running_loop()
-                            try:
-                                await _loop.run_in_executor(
-                                    None, state.forensic_box.record, error_record
-                                )
-                            except ForensicWriteError:
-                                return _forensic_unavailable_mcp(body, event_id)
-                        logger.warning(
-                            "Guard %r response error blocked response for event %s (fail-closed)",
-                            guard.name,
-                            event_id,
-                        )
-                        return JSONResponse(
-                            status_code=403,
-                            content=mcp_transport.format_block_response(
-                                gov_response, body, reason="response_blocked"
-                            ),
-                        )
-
-        record_hash = (forensic_record or {}).get("record_hash")
-        headers = mcp_transport.format_allow_headers(
-            gov_response,
-            forensic_hash=record_hash[:16] if record_hash else None,
+        return await _govern_mcp_response(
+            state,
+            response_data,
+            body=body,
+            gov_response=gov_response,
+            outcome=outcome,
+            event_id=event_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            method=method,
+            risk_level=risk_level,
+            forensic_record=forensic_record,
         )
-
-        return JSONResponse(content=response_data, headers=headers)
 
     except httpx.ConnectError:
         logger.error("Upstream MCP server unreachable: %s", settings.UPSTREAM_MCP_URL)
@@ -2235,6 +2334,193 @@ async def _mcp_exchange(request: Request, path: str, outcome: _McpOutcome) -> JS
         logger.error("Proxy error for event %s: %s", event_id, type(e).__name__)
         log_frames(logger, "MCP proxy", e)
         return _internal_error_mcp(body, event_id)
+
+
+async def _mcp_sandbox_call(
+    state: ProxyState,
+    tool: str,
+    *,
+    body: dict,
+    redacted_body: Any,
+    gov_response: Any,
+    outcome: _McpOutcome,
+    event_id: str,
+    agent_id: str,
+    session_id: str,
+    method: str,
+    risk_level: Any,
+    forensic_record: dict | None,
+) -> JSONResponse:
+    """Execute the allowed call of the sandboxed *tool* in the execution
+    sandbox, with the arguments the pipeline produced (PII redacted, as
+    they would have been forwarded).
+
+    A second forensic record, ``<event_id>:sandbox``, holds what was
+    executed and how it ended (hashes and sizes only), and a
+    ``sandbox_execution`` event goes on the bus. A call that did not run
+    (invalid arguments, sandbox unavailable or busy) is answered with a
+    JSON-RPC error; one that ran goes through the response path of an
+    upstream response (PII redaction, response guards).
+    """
+    redacted_params = redacted_body.get("params") if isinstance(redacted_body, dict) else None
+    arguments = redacted_params.get("arguments") if isinstance(redacted_params, dict) else None
+    run = await state.sandbox.run(tool, arguments, request_id=event_id)
+    state.sandbox_metrics.observe(run)
+
+    # The execution has already happened: with ADMINA_FORENSIC_FAIL_MODE=
+    # closed a record that is not written turns its result into a 503.
+    if state.forensic_box:
+        record = sandbox_forensic_record(
+            run, event_id=event_id, agent_id=agent_id, session_id=session_id, risk_level=risk_level
+        )
+        _loop = asyncio.get_running_loop()
+        try:
+            await _loop.run_in_executor(None, state.forensic_box.record, record)
+        except ForensicWriteError:
+            return _forensic_unavailable_mcp(body, event_id)
+    _spawn(
+        governance_bus.emit(
+            BusGovernanceEvent(
+                event_type=EventType.SANDBOX_EXECUTION,
+                session_id=session_id,
+                action="ALLOW" if run.ok else "ERROR",
+                risk_level=str(safe_serialize(risk_level)),
+                domain="agent_security",
+                metadata=bus_metadata(run),
+            )
+        )
+    )
+
+    if not run.ok:
+        logger.warning(
+            "Sandboxed tool %r not executed for event %s (%s)", tool, event_id, run.error
+        )
+        status, content = sandbox_error_response(body, event_id, run)
+        return JSONResponse(status_code=status, content=content)
+
+    response_data = {
+        "jsonrpc": "2.0",
+        "id": body.get("id"),
+        "result": call_tool_result(run.request, run.result),
+    }
+    return await _govern_mcp_response(
+        state,
+        response_data,
+        body=body,
+        gov_response=gov_response,
+        outcome=outcome,
+        event_id=event_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        method=method,
+        risk_level=risk_level,
+        forensic_record=forensic_record,
+    )
+
+
+async def _govern_mcp_response(
+    state: ProxyState,
+    response_data: Any,
+    *,
+    body: dict,
+    gov_response: Any,
+    outcome: _McpOutcome,
+    event_id: str,
+    agent_id: str,
+    session_id: str,
+    method: str,
+    risk_level: Any,
+    forensic_record: dict | None,
+) -> JSONResponse:
+    """The response path of an allowed /mcp call, for an upstream response
+    and for a sandboxed execution alike: PII redaction of the result, the
+    governance guards' response inspection, then the response with the
+    governance headers. Exceptions are the caller's to answer."""
+    # Redact PII from response too (bidirectional — dict-shaped results included)
+    if settings.PII_REDACTION_ENABLED and "result" in response_data:
+        response_data["result"], _resp_pii_count = redact_response_result(
+            response_data["result"], state.pii_redactor
+        )
+
+    # ─── Governance Guards: inspect response ──────────────
+    if state.governance_guards:
+        resp_payload = {"content": json.dumps(response_data, default=str)}
+        for guard in state.governance_guards:
+            try:
+                guard_result = await guard.inspect_response(resp_payload)
+                if guard_result.get("action") in ("BLOCK", "REDACT"):
+                    outcome.block_response(_guard_risk(guard_result))
+                    logger.warning(
+                        "Guard %r blocked response for event %s",
+                        guard.name,
+                        event_id,
+                    )
+                    return JSONResponse(
+                        status_code=403,
+                        content=mcp_transport.format_block_response(
+                            gov_response,
+                            body,
+                            reason="response_blocked",
+                        ),
+                    )
+            except (ValueError, RuntimeError, OSError, TypeError) as exc:
+                logger.error(
+                    "Guard %r failed its contract on response inspection and was skipped: %s",
+                    guard.name,
+                    type(exc).__name__,
+                )
+                log_frames(logger, f"Guard {guard.name!r} on response inspection", exc)
+                # Response guard errors are not collected into pipeline_result.checks
+                # (that result is already built before this path runs); the ERROR log
+                # is the audit trail for response-side contract failures.
+                if settings.GUARD_FAIL_MODE == "closed":
+                    # Fail-closed: a crashing response guard blocks the response.
+                    # The request-side forensic record was written before the
+                    # upstream call, so it cannot carry this response-side error —
+                    # write an explicit ERROR record here for the audit trail.
+                    outcome.block_response("HIGH")
+                    if state.forensic_box:
+                        error_record = {
+                            "event_id": event_id,
+                            "event_type": EventType.MCP_RESPONSE,
+                            "agent_id": agent_id,
+                            "session_id": session_id,
+                            "method": method,
+                            "action": GovernanceAction.BLOCK,
+                            "risk_level": risk_level,
+                            "checks": {
+                                f"guard_{guard.name}": {
+                                    "action": "ERROR",
+                                    "error": type(exc).__name__,
+                                }
+                            },
+                        }
+                        _loop = asyncio.get_running_loop()
+                        try:
+                            await _loop.run_in_executor(
+                                None, state.forensic_box.record, error_record
+                            )
+                        except ForensicWriteError:
+                            return _forensic_unavailable_mcp(body, event_id)
+                    logger.warning(
+                        "Guard %r response error blocked response for event %s (fail-closed)",
+                        guard.name,
+                        event_id,
+                    )
+                    return JSONResponse(
+                        status_code=403,
+                        content=mcp_transport.format_block_response(
+                            gov_response, body, reason="response_blocked"
+                        ),
+                    )
+
+    record_hash = (forensic_record or {}).get("record_hash")
+    headers = mcp_transport.format_allow_headers(
+        gov_response,
+        forensic_hash=record_hash[:16] if record_hash else None,
+    )
+
+    return JSONResponse(content=response_data, headers=headers)
 
 
 def _internal_error_mcp(body: Any, event_id: str) -> JSONResponse:

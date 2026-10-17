@@ -31,6 +31,8 @@ services:
       - FORENSIC_BACKEND=filesystem
       - FORENSIC_BASE_DIR=/app/.admina/forensic
 {% if domains.compliance %}
+      # The last EU AI Act assessments, kept on the compliance-data volume.
+      - ADMINA_EU_AI_ACT_ASSESSMENTS_PATH=/app/.admina/compliance/eu_ai_act_assessments.json
       - OTEL_ENDPOINT=http://otel-collector:4317
 {% else %}
       - OTEL_ENABLED=false
@@ -47,6 +49,10 @@ services:
       # Forensic records and chain state (FORENSIC_BASE_DIR), kept when the
       # container is re-created.
       - forensic-data:/app/.admina/forensic
+{% if domains.compliance %}
+      # EU AI Act assessments (ADMINA_EU_AI_ACT_ASSESSMENTS_PATH).
+      - compliance-data:/app/.admina/compliance
+{% endif %}
     depends_on:
       redis:
         condition: service_healthy
@@ -250,6 +256,9 @@ services:
 volumes:
 {% if domains.agent_security %}
   forensic-data:
+{% endif %}
+{% if domains.agent_security and domains.compliance %}
+  compliance-data:
 {% endif %}
 {% if domains.ai_infra and ai_infra_llm_enabled | default(true) %}
   ollama-data:

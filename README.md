@@ -280,7 +280,7 @@ from admina import GovernedModel, GovernedData, GovernedAgent, ComplianceKit
 
 ## Plugin System
 
-9 plugin interfaces, auto-discovered from `plugins/builtin/` or installed via CLI:
+10 plugin interfaces, auto-discovered from `plugins/builtin/` or installed via CLI:
 
 | Interface | Builtin implementations |
 |-----------|------------------------|
@@ -293,6 +293,7 @@ from admina import GovernedModel, GovernedData, GovernedAgent, ComplianceKit
 | Auth Provider | API Key |
 | PII Engine | spaCy + Regex (default), Microsoft Presidio (`uv add "admina[presidio]"` or `pip install "admina[presidio]"`, `ADMINA_PII_ENGINE=presidio`); engines of other packages through the `admina.pii_engines` entry-point group (see [PII engines](#pii-engines)) |
 | Alert Channel | Log, Webhook |
+| Execution Sandbox | Docker / Podman (runc or runsc), see [Execution sandbox](#execution-sandbox) |
 
 Model adapters lazy-import their provider SDK, so install the ones you
 use: `uv add "admina[adapters]"` (with pip: `pip install "admina[adapters]"`) for all of them, or a
@@ -394,9 +395,9 @@ stops when they are not set.
 
 Real-time governance dashboard on port 3000:
 
-- **Governance Score** — 0-100 composite metric (data residency, audit coverage, attack rate, forensic integrity, EU AI Act compliance)
+- **Governance Score** — 0-100 composite metric (data residency, audit coverage, attack rate, forensic integrity, EU AI Act compliance). When the latest EU AI Act assessment is `NOT_APPLICABLE` (a limited- or minimal-risk system), that component is `null` in `GET /api/dashboard/score`, listed in `not_applicable`, and the score is rescaled over the other components
 - **Live Feed** — streaming governance events via WebSocket
-- **Compliance Gaps** — EU AI Act gap analysis with article-level detail
+- **Compliance Gaps** — EU AI Act gap analysis with article-level detail; a limited- or minimal-risk system is shown as "Articles 9–15 not required"
 - **Infrastructure Health** — proxy, Redis, forensic store, ClickHouse, OTEL status
 
 API backend: `GET /api/dashboard/score`, `/feed`, `/compliance`, `/sovereignty`, `/infra`, `/models`
@@ -727,6 +728,36 @@ scanned text. `ADMINA_GATEWAY_MAX_PROMPT_CHARS` (default `0`, no limit) caps
 the message text of `POST /v1/chat/completions`, in characters (the text of
 every message, as scanned); longer requests get 413 (`invalid_request_error`,
 code `prompt_too_long`) before any governance check.
+
+### MCP routing to several servers
+
+`/mcp` forwards to `UPSTREAM_MCP_URL`. To put several MCP servers behind
+one proxy, set `ROUTING_CONFIG_PATH` to a routing file (JSON, or YAML with a
+`.yaml`/`.yml` suffix):
+
+```yaml
+default_upstream: http://localhost:9000
+routes:
+  github:
+    upstream_url: http://github-mcp:8000/mcp
+    headers: { Authorization: "Bearer <token>" }
+    tools: [create_issue, git_push]
+  files:
+    upstream_url: http://files-mcp:8000/mcp
+    tools: [read_file, write_file]
+```
+
+A request picks a route in one of two ways:
+
+- **By path**: `POST /mcp/route/<name>` goes to that route's `upstream_url`.
+- **By tool name**: a call on `/mcp` whose `params.name` is listed in a
+  route's `tools` goes to that route (`tools/call` for `git_push` above goes
+  to `github`). A tool not listed by any route goes to `UPSTREAM_MCP_URL`.
+
+`tools` is a list of tool names; anything else, or a tool listed by two
+routes, stops the proxy at startup. The tools are declared, not discovered:
+list each tool a server provides that should be routed to it. `GET /api/stats`
+reports the routes and the number of mapped tools under `routing`.
 
 ### PII engines
 
@@ -1139,6 +1170,53 @@ connection is made for telemetry.
 **Container entrypoint.** `admina/proxy/docker-entrypoint.sh` accepts
 `ADMINA_API_KEY` or `ADMINA_API_KEY_FILE` and prints only whether the key
 is set, never any part of it.
+
+### Execution sandbox
+
+Admina can execute the tool calls it allows instead of forwarding them:
+a tool declared under `domains.agent_security.sandbox.tools` (for example
+a `python_exec` code interpreter) runs in a fresh container per call, with
+no network, a read-only root filesystem, an unprivileged user, no
+capabilities and memory, CPU, process and disk limits; the container is
+removed afterwards. Off by default.
+
+```yaml
+domains:
+  agent_security:
+    sandbox:
+      enabled: true
+      provider: docker          # the built-in provider; binary: podman in plugin_config.docker
+      runtime: runc             # runsc: gVisor, registered with the engine (Linux)
+      tools:
+        python_exec:
+          profile: python       # code → /work/main.py, run with python -I
+          timeout_seconds: 10
+          memory_mb: 256
+```
+
+```bash
+docker pull python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+```
+
+On `/mcp`, a `tools/call` of `python_exec` that the pipeline allows is
+executed in the sandbox and never forwarded upstream; the result (stdout,
+stderr, files written to `out/`) goes through PII redaction and the
+response guards like an upstream response, and `tools/list` lists the
+sandboxed tools next to the upstream's. Each execution adds a forensic
+record `<event_id>:sandbox` with hashes and sizes only, a
+`sandbox_execution` bus event, `admina_sandbox_*` metrics and a `sandbox`
+field in `/health`. If the sandbox is unavailable the call is refused with
+`data.reason: sandbox_unavailable`: it is never executed outside it, in any
+fail mode or governance mode. The SDK helper
+`admina.sdk.sandbox.sandbox_upstream` gives `GovernedAgent` the same
+execution.
+
+The sandbox needs a Docker or Podman engine the proxy can reach. Access to
+the Docker socket is equivalent to root on the host: use rootless Docker or
+rootless Podman, or a dedicated host. The example `docker-compose.yml` does
+not mount the socket. `network: egress` is not supported yet. See the
+[execution sandbox guide](docs/guides/execution-sandbox.md) and what it does
+not guarantee in [MODEL_CARD.md §5d](MODEL_CARD.md#5d-execution-sandbox).
 
 ### OpenAI-compatible gateway
 
@@ -1854,10 +1932,12 @@ production.
 | `ADMINA_CONFIG` | *(empty)* | `admina.yaml` to load (empty: current directory, then package directory) |
 | `ADMINA_ENABLED_SURFACES` | *(empty = all)* | Surfaces served: `gateway`, `mcp`, `integration`, `compliance`, `dashboard` |
 | `UPSTREAM_MCP_URL` | `http://localhost:9000` | Default upstream MCP server |
+| `ROUTING_CONFIG_PATH` | *(empty)* | Routing file for several MCP servers (see [MCP routing to several servers](#mcp-routing-to-several-servers)) |
 | `REDIS_URL` | `redis://localhost:6379/0` | Session state + rate limiting (empty = no Redis) |
 | `CLICKHOUSE_HOST` | `localhost` | Event analytics (empty = no ClickHouse) |
 | `FORENSIC_BACKEND` | `memory` | Forensic store: `memory` \| `filesystem` \| `s3` (else `domains.compliance.forensic.backend` of `admina.yaml`) |
 | `FORENSIC_BASE_DIR` | *(empty)* | Directory of the `filesystem` store (else `domains.compliance.forensic.base_dir`) |
+| `ADMINA_EU_AI_ACT_ASSESSMENTS_PATH` | *(empty)* | JSON file keeping the last 100 EU AI Act assessments across restarts (empty: in memory only; the compose files set it on the `compliance-data` volume) |
 | `ADMINA_FORENSIC_FAIL_MODE` | `open` | A forensic record that cannot be written: `open` (logged, request served) \| `closed` (`503`, not forwarded) |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
 | `ADMINA_LOG_FORMAT` | `text` | Log output: `text` \| `json` |
@@ -1934,6 +2014,14 @@ curl -X POST http://localhost:8080/api/v1/audit \
 curl -X POST http://localhost:8080/api/compliance/classify \
   -H "Content-Type: application/json" \
   -d '{"description":"AI credit scoring","use_case":"lending","data_types":["financial"]}'
+
+# EU AI Act assessment of a limited-risk system (recorded as NOT_APPLICABLE)
+curl -X POST http://localhost:8080/api/compliance/gap-analysis \
+  -H "Content-Type: application/json" \
+  -d '{"risk_category":"limited","system_name":"Helpdesk bot"}'
+
+# The most recent EU AI Act assessment (404 without one)
+curl http://localhost:8080/api/compliance/gap-analysis/latest
 
 # Dashboard governance score
 curl http://localhost:8080/api/dashboard/score

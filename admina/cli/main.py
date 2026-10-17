@@ -894,6 +894,7 @@ PLUGIN_TYPE_CHOICES: list[str] = [
     "auth_provider",
     "pii_engine",
     "alert_channel",
+    "execution_sandbox",
 ]
 
 # Maps type key → (base class name, name property, category dir)
@@ -907,6 +908,7 @@ _SCAFFOLD_META: dict[str, tuple[str, str, str]] = {
     "auth_provider": ("BaseAuthProvider", "provider_name", "auth"),
     "pii_engine": ("BasePIIEngine", "supported_languages", "pii"),
     "alert_channel": ("BaseAlertChannel", "channel_name", "alerts"),
+    "execution_sandbox": ("BaseExecutionSandbox", "sandbox_name", "sandboxes"),
 }
 
 

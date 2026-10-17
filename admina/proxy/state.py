@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -23,7 +24,8 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from admina.domains.compliance.eu_ai_act import EUAIActCompliance
+from admina.domains.agent_security.sandbox import SandboxExecutor
+from admina.domains.compliance.eu_ai_act import ASSESSMENTS_PATH_ENV, EUAIActCompliance
 from admina.domains.compliance.forensic import ForensicBlackBox
 from admina.domains.compliance.gdpr import ProcessingActivitiesRegistry
 from admina.domains.compliance.nis2 import NIS2Compliance
@@ -37,10 +39,18 @@ from admina.proxy.loop_lag import EventLoopLagMonitor
 from admina.proxy.multi_upstream import MultiUpstreamRouter
 from admina.proxy.pipeline_executor import PipelineExecutor
 from admina.proxy.request_metrics import RequestMetrics
+from admina.proxy.sandbox_bridge import SandboxMetrics
 
 if TYPE_CHECKING:
     # Only for the annotation: redis is imported when REDIS_URL is set.
     import redis.asyncio as aioredis
+
+
+def _eu_ai_act_compliance() -> EUAIActCompliance:
+    """The EU AI Act engine of the proxy: its assessments persist in the
+    file named by ADMINA_EU_AI_ACT_ASSESSMENTS_PATH, in memory only when it
+    is not set."""
+    return EUAIActCompliance(storage_path=os.environ.get(ASSESSMENTS_PATH_ENV) or None)
 
 
 @dataclass
@@ -72,7 +82,7 @@ class ProxyState:
     # forensic_writable of /health: the store's write check, at most once
     # per interval, off the event loop (admina.proxy.forensic_probe).
     forensic_probe: ForensicWriteProbe = field(default_factory=ForensicWriteProbe)
-    compliance: EUAIActCompliance = field(default_factory=EUAIActCompliance)
+    compliance: EUAIActCompliance = field(default_factory=_eu_ai_act_compliance)
     nis2: NIS2Compliance = field(default_factory=NIS2Compliance)
     gdpr: ProcessingActivitiesRegistry = field(default_factory=ProcessingActivitiesRegistry)
     router: MultiUpstreamRouter | None = None
@@ -92,6 +102,12 @@ class ProxyState:
     governance_guards: list = field(default_factory=list)
     alert_channels: list = field(default_factory=list)
     auth_providers: list = field(default_factory=list)
+
+    # Execution sandbox of /mcp (admina.proxy.sandbox_bridge): None when off.
+    sandbox: SandboxExecutor | None = None
+    sandbox_metrics: SandboxMetrics = field(default_factory=SandboxMetrics)
+    # Periodic orphan removal and health check of the sandbox.
+    sandbox_maintenance: Any = None
 
     # OTEL
     otel_exporter: OTELGovernanceExporter | None = None
