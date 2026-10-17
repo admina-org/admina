@@ -47,6 +47,7 @@ FIELDS = {
     "forensic_writable",
     "forensic_chain",
     "engine",
+    "sandbox",
     "timestamp",
 }
 
@@ -87,6 +88,7 @@ def test_fields(monkeypatch):
     assert body["version"] == __version__
     assert body["mode"] == "enforce"
     assert body["surfaces"] == list(SURFACES)
+    assert body["sandbox"] is None
 
 
 def test_engine_fields_are_unchanged(monkeypatch):
