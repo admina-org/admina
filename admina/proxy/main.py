@@ -1402,18 +1402,74 @@ async def classify_risk(request: Request, body: dict) -> dict[str, Any]:
     return result
 
 
+def _gap_analysis_args(body: dict) -> dict[str, Any]:
+    """Validate the body of a gap analysis: ``risk_category`` (default
+    ``high``), ``current_compliance`` (an object), ``system_name`` (a string)
+    and ``voluntary`` (a boolean). 400 on a value of the wrong type."""
+    current_compliance = body.get("current_compliance") or {}
+    if not isinstance(current_compliance, dict):
+        raise HTTPException(status_code=400, detail="current_compliance must be an object")
+    system_name = body.get("system_name")
+    if system_name is not None and not isinstance(system_name, str):
+        raise HTTPException(status_code=400, detail="system_name must be a string")
+    voluntary = body.get("voluntary", False)
+    if not isinstance(voluntary, bool):
+        raise HTTPException(status_code=400, detail="voluntary must be a boolean")
+    return {
+        "risk_category": body.get("risk_category", "high"),
+        "current_compliance": current_compliance,
+        "system_name": system_name,
+        "voluntary": voluntary,
+    }
+
+
 @_compliance_router.post(
     "/api/compliance/gap-analysis",
     tags=["compliance"],
-    summary="Compute the compliance gap report for a risk category",
+    summary="Record an EU AI Act assessment (Art. 9-15 gap analysis) for a risk category",
+    description=(
+        "Body: `risk_category` (`unacceptable`, `high`, `limited`, `minimal`; "
+        "default `high`), `current_compliance` (`{requirement: [bool, ...]}`), "
+        "optional `system_name`, optional `voluntary`.\n\n"
+        "`high` / `unacceptable`: gap analysis of Articles 9-15, `applicable` "
+        "true, status `COMPLIANT` or `GAPS_FOUND`.\n\n"
+        "`limited` / `minimal`: Articles 9-15 do not apply; the assessment is "
+        "recorded with `applicable` false, status `NOT_APPLICABLE`, "
+        "`compliance_score` null and `total_checks` 0, and `current_compliance` "
+        "is ignored. With `voluntary: true` the checks of `current_compliance` "
+        "are kept as a voluntary self-assessment, not counted in the Admina "
+        "Score.\n\n"
+        "Every assessment carries `risk_category` and `system_name`. The proxy "
+        "keeps the last 100, in the file named by "
+        "`ADMINA_EU_AI_ACT_ASSESSMENTS_PATH` when set. An unknown category or "
+        "a value of the wrong type answers 400."
+    ),
 )
 async def gap_analysis(request: Request, body: dict) -> dict[str, Any]:
     state = _get_state(request)
-    result = state.compliance.gap_analysis(
-        risk_category=body.get("risk_category", "high"),
-        current_compliance=body.get("current_compliance", {}),
-    )
-    return result
+    args = _gap_analysis_args(body)
+    try:
+        return state.compliance.gap_analysis(**args)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@_compliance_router.get(
+    "/api/compliance/gap-analysis/latest",
+    tags=["compliance"],
+    summary="The most recent EU AI Act assessment",
+    description=(
+        "The last assessment recorded by `POST /api/compliance/gap-analysis` "
+        "or `POST /api/compliance/report`, as that route returned it; 404 "
+        "when none is recorded."
+    ),
+)
+async def gap_analysis_latest(request: Request) -> dict[str, Any]:
+    state = _get_state(request)
+    latest = state.compliance.latest()
+    if latest is None:
+        raise HTTPException(status_code=404, detail="no assessment recorded")
+    return latest
 
 
 @_compliance_router.post(
@@ -1423,6 +1479,7 @@ async def gap_analysis(request: Request, body: dict) -> dict[str, Any]:
 )
 async def generate_compliance_report(request: Request, body: dict) -> dict[str, Any]:
     state = _get_state(request)
+    args = _gap_analysis_args(body)
     classification = state.compliance.classify_risk(
         body.get("description", ""),
         body.get("use_case", ""),
@@ -1430,7 +1487,8 @@ async def generate_compliance_report(request: Request, body: dict) -> dict[str, 
     )
     gap_result = state.compliance.gap_analysis(
         classification["risk_category"],
-        body.get("current_compliance", {}),
+        args["current_compliance"],
+        system_name=args["system_name"],
     )
     report = state.compliance.generate_report(
         body.get("system_name", "Unknown System"),
@@ -1558,7 +1616,7 @@ async def consolidated_compliance_report(
     state = _get_state(request)
 
     # Latest snapshots — defensive: each module may not have any data yet
-    eu_latest = state.compliance.assessments[-1] if state.compliance.assessments else None
+    eu_latest = state.compliance.latest()
     nis2_latest = state.nis2.assessments[-1] if state.nis2.assessments else None
 
     snapshot: dict[str, Any] = {
@@ -1632,7 +1690,12 @@ async def consolidated_compliance_report(
         ]
         eu_stats = snapshot["eu_ai_act"]["stats"]
         lines.append(f"- Assessments performed: {eu_stats.get('total_assessments', 0)}")
-        if eu_latest:
+        if eu_latest and not eu_latest.get("applicable", True):
+            lines.append(
+                f"- Latest assessment: not applicable "
+                f"({eu_latest.get('risk_category')}-risk system, Art. 9-15 not required)"
+            )
+        elif eu_latest:
             lines.append(f"- Latest score: **{eu_latest.get('compliance_score', 0)}%**")
             lines.append(f"- Open gaps: {len(eu_latest.get('gaps', []))}")
         lines += ["", "## NIS2"]
