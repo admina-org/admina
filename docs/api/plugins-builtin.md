@@ -70,3 +70,8 @@ same headers (`X-API-Key`, `Authorization: Bearer`).
 ## Webhook Alert Channel
 
 ::: plugins.builtin.alerts.webhook
+
+
+## Docker Execution Sandbox
+
+::: plugins.builtin.sandboxes.docker
