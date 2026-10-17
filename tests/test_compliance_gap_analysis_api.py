@@ -92,10 +92,24 @@ def test_missing_category_defaults_to_high(proxy):
         {"risk_category": "medium"},
         {"risk_category": 3},
         {"risk_category": "high", "current_compliance": [True]},
+        {"risk_category": "high", "current_compliance": []},
+        {"risk_category": "high", "current_compliance": ""},
+        {"risk_category": "high", "current_compliance": 0},
+        {"risk_category": "high", "current_compliance": False},
         {"risk_category": "limited", "system_name": 7},
         {"risk_category": "limited", "voluntary": "yes"},
     ],
-    ids=["unknown", "not_a_string", "compliance_not_object", "name_not_string", "voluntary"],
+    ids=[
+        "unknown",
+        "not_a_string",
+        "compliance_not_object",
+        "compliance_empty_list",
+        "compliance_empty_string",
+        "compliance_zero",
+        "compliance_false",
+        "name_not_string",
+        "voluntary",
+    ],
 )
 def test_invalid_bodies_answer_400_and_record_nothing(proxy, body):
     responses, state = serve([_post(body), _latest()])

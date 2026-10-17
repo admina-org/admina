@@ -1474,8 +1474,10 @@ def _gap_analysis_args(body: dict) -> dict[str, Any]:
     """Validate the body of a gap analysis: ``risk_category`` (default
     ``high``), ``current_compliance`` (an object), ``system_name`` (a string)
     and ``voluntary`` (a boolean). 400 on a value of the wrong type."""
-    current_compliance = body.get("current_compliance") or {}
-    if not isinstance(current_compliance, dict):
+    current_compliance = body.get("current_compliance")
+    if current_compliance is None:
+        current_compliance = {}
+    elif not isinstance(current_compliance, dict):
         raise HTTPException(status_code=400, detail="current_compliance must be an object")
     system_name = body.get("system_name")
     if system_name is not None and not isinstance(system_name, str):
