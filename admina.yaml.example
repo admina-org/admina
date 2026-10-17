@@ -214,6 +214,45 @@ domains:
       # No Redis configured means no detection at all: the verdict is
       # `degraded`, not `none`. The egress allowlist above is unaffected —
       # it is evaluated in-process regardless of Redis.
+    # Execution sandbox: Admina EXECUTES the tools listed here instead of
+    # forwarding them upstream, each call in a fresh container (no network,
+    # read-only root filesystem, user 65534, no capabilities, cgroup limits),
+    # removed afterwards. A call the pipeline allows is executed; a blocked
+    # call never is. If the sandbox is unavailable the call is refused
+    # (data.reason sandbox_unavailable): never executed outside it, whatever
+    # ADMINA_GOVERNANCE_MODE or a fail mode says.
+    #
+    # It needs a Docker or Podman engine the proxy can reach. Access to the
+    # Docker socket is root on the host: prefer rootless Docker or Podman.
+    # Pull the image first (nothing is pulled at request time):
+    #   docker pull python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+    # See docs/guides/execution-sandbox.md and MODEL_CARD.md §5d.
+    sandbox:
+      enabled: false
+      provider: docker          # execution_sandbox plugin (plugin_config.docker below)
+      runtime: runc             # runc (engine default) | runsc (gVisor, Linux)
+      max_concurrent: 4         # executions at once
+      queue_timeout_seconds: 5  # wait for a free slot, then refuse
+      defaults:
+        # image: "python:3.12-slim@sha256:..."   # default: the pinned python:3.12-slim
+        timeout_seconds: 30
+        memory_mb: 256
+        cpus: 1.0
+        pids: 128
+        disk_mb: 64               # size of /work
+        output_max_bytes: 65536   # kept of stdout, and of stderr
+        files_max_bytes: 8388608  # input files, and output files (out/)
+        network: none             # the only value supported (egress: not yet)
+      tools: {}
+      # tools:
+      #   python_exec:
+      #     profile: python       # code -> /work/main.py, run with python -I
+      #     code_argument: code
+      #     files_argument: files # optional: [{path, content | content_b64}]
+      #     timeout_seconds: 10
+      #     description: Run Python code without network access
+      #   run_shell:
+      #     profile: shell        # code -> /work/main.sh, run with sh
     # GuardrailsAI content validation (optional plugin)
     domains:
       guardrailsai:
@@ -339,6 +378,11 @@ plugins: []
 plugin_config: {}
 #   my-guard:
 #     threshold: 0.8
+#   docker:                     # the execution sandbox's provider
+#     binary: docker            # docker | podman | a path to either
+#     host: ""                  # engine address (DOCKER_HOST / CONTAINER_HOST); "" = CLI default
+#     orphan_age_seconds: 900   # sandbox containers older than this are removed
+#     cli_timeout_seconds: 60   # budget of each CLI call other than the command
 
 # ── Integrations ────────────────────────────────────────────
 # External framework integrations. Each integration connects

@@ -111,15 +111,19 @@ def mcp_upstream(request: httpx.Request) -> httpx.Response:
 
 async def drain(state: Any) -> None:
     """Wait for the proxy's fire-and-forget tasks (bus events, analytics
-    rows) to finish; the quarantine refresh loop, which never does, is
-    left out."""
+    rows) to finish; the quarantine refresh and sandbox maintenance loops,
+    which never do, are left out."""
     from admina.proxy import main as proxy_main
 
+    loops = (
+        getattr(state, "quarantine_refresh", None),
+        getattr(state, "sandbox_maintenance", None),
+    )
     for _ in range(100):
         pending = [
             task
             for task in proxy_main._background_tasks
-            if not task.done() and task is not getattr(state, "quarantine_refresh", None)
+            if not task.done() and not any(task is loop for loop in loops)
         ]
         if not pending:
             return

@@ -31,11 +31,11 @@ from __future__ import annotations
 import logging
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from admina.core.config_schema import find_problems
+from admina.core.config_schema import find_problems, positive_finite_number
 
 logger = logging.getLogger("admina.config")
 
@@ -52,6 +52,8 @@ __all__ = [
     "CONFIG_ENV",
     "GATEWAY_STREAM_MODES",
     "PRESCAN_TAG_NAME",
+    "SANDBOX_DEFAULT_IMAGE",
+    "SANDBOX_PROFILES",
     "AdminaConfig",
     "ConfigCheck",
     "ConfigFileError",
@@ -59,6 +61,7 @@ __all__ = [
     "check_config",
     "config_path",
     "load_config",
+    "parse_sandbox_config",
 ]
 
 #: Environment variable naming the admina.yaml to load (see :func:`load_config`).
@@ -102,6 +105,22 @@ GATEWAY_STREAM_MODES = ("passthrough", "governed")
 # (``gateway.prescan_tags``, ``X-Admina-Scan-Policy``).
 PRESCAN_TAG_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]*")
 _HEX64 = re.compile(r"[0-9a-fA-F]{64}")
+
+#: The image of the execution sandbox when admina.yaml names none:
+#: python:3.12-slim, pinned by the digest of its multi-platform index
+#: (linux/amd64 and linux/arm64 among others). Pull it once before enabling
+#: the sandbox: nothing is pulled on the request path.
+SANDBOX_DEFAULT_IMAGE = (
+    "python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1"
+)
+
+#: How a sandboxed tool's arguments become a command
+#: (admina.domains.agent_security.sandbox): python runs main.py with
+#: ``python -I``, shell runs main.sh with ``sh``.
+SANDBOX_PROFILES = ("python", "shell")
+
+# Container runtimes of domains.agent_security.sandbox.runtime.
+_SANDBOX_RUNTIMES = ("runc", "runsc")
 
 # ── Section dataclasses ──────────────────────────────────────
 
@@ -257,6 +276,57 @@ class EgressConfig:
     quarantine_ttl_seconds: int = 86400
 
 
+@dataclass(frozen=True)
+class SandboxLimitsConfig:
+    """Image, limits and network of a sandboxed tool
+    (``domains.agent_security.sandbox.defaults``, overridden per tool)."""
+
+    image: str = SANDBOX_DEFAULT_IMAGE
+    timeout_seconds: float = 30.0
+    memory_mb: int = 256
+    cpus: float = 1.0
+    pids: int = 128
+    disk_mb: int = 64
+    output_max_bytes: int = 65_536
+    files_max_bytes: int = 8 << 20
+    # Only "none" in this release.
+    network: str = "none"
+
+
+@dataclass(frozen=True)
+class SandboxToolConfig:
+    """A tool that Admina executes in the sandbox instead of forwarding it
+    (``domains.agent_security.sandbox.tools.<name>``)."""
+
+    profile: str = "python"
+    # The argument holding the code (written to main.py / main.sh).
+    code_argument: str = "code"
+    # The argument holding extra input files ([{path, content} or
+    # {path, content_b64}]); empty: none accepted.
+    files_argument: str = ""
+    # For tools/list.
+    description: str = ""
+    input_schema: dict[str, Any] | None = None
+    # The defaults with this tool's own values over them.
+    limits: SandboxLimitsConfig = field(default_factory=SandboxLimitsConfig)
+
+
+@dataclass
+class SandboxConfig:
+    """Execution sandbox (``domains.agent_security.sandbox``). Off unless
+    ``enabled`` is true; *errors* lists the invalid values, which stop the
+    proxy at startup."""
+
+    enabled: bool = False
+    provider: str = "docker"
+    runtime: str = "runc"
+    max_concurrent: int = 4
+    queue_timeout_seconds: float = 5.0
+    defaults: SandboxLimitsConfig = field(default_factory=SandboxLimitsConfig)
+    tools: dict[str, SandboxToolConfig] = field(default_factory=dict)
+    errors: list[str] = field(default_factory=list)
+
+
 @dataclass
 class AgentSecurityConfig:
     """Agent-security domain."""
@@ -266,6 +336,7 @@ class AgentSecurityConfig:
     firewall: FirewallConfig = field(default_factory=FirewallConfig)
     loop_breaker: LoopBreakerConfig = field(default_factory=LoopBreakerConfig)
     egress: EgressConfig = field(default_factory=EgressConfig)
+    sandbox: SandboxConfig = field(default_factory=SandboxConfig)
 
 
 @dataclass
@@ -484,6 +555,131 @@ def _string_list(
     return list(values)
 
 
+_SANDBOX = "domains.agent_security.sandbox"
+# The integer and the number limits of a sandboxed tool.
+_SANDBOX_INT_LIMITS = ("memory_mb", "pids", "disk_mb", "output_max_bytes", "files_max_bytes")
+_SANDBOX_NUMBER_LIMITS = ("timeout_seconds", "cpus")
+
+
+def _sandbox_limits(
+    raw: dict, base: SandboxLimitsConfig, where: str, errors: list[str]
+) -> SandboxLimitsConfig:
+    """*base* with the values of *raw* over it; invalid values go to
+    *errors* and are left at *base*."""
+    values: dict[str, Any] = {}
+    image = raw.get("image")
+    if image is not None:
+        if isinstance(image, str) and image.strip():
+            values["image"] = image.strip()
+        else:
+            errors.append(f"{where}.image must be an image reference")
+    for key in _SANDBOX_INT_LIMITS:
+        value = raw.get(key)
+        if value is None:
+            continue
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            values[key] = value
+        else:
+            errors.append(f"{where}.{key} must be an integer greater than 0")
+    for key in _SANDBOX_NUMBER_LIMITS:
+        value = raw.get(key)
+        if value is None:
+            continue
+        if positive_finite_number(value):
+            values[key] = float(value)
+        else:
+            errors.append(f"{where}.{key} must be a number greater than 0")
+    network = raw.get("network")
+    if network is not None:
+        network = str(network).strip().lower()
+        if network == "egress":
+            errors.append(
+                f"{where}.network: egress is not supported yet; the only network of this "
+                "release is none (no network)"
+            )
+        elif network != "none":
+            errors.append(f"{where}.network must be none")
+    return replace(base, **values)
+
+
+def parse_sandbox_config(raw: Any) -> SandboxConfig:
+    """Parse the mapping of ``domains.agent_security.sandbox`` (also used
+    by :func:`admina.sdk.sandbox.sandbox_upstream`); invalid values go to
+    ``errors``."""
+    if raw is None:
+        return SandboxConfig()
+    if not isinstance(raw, dict):
+        return SandboxConfig(errors=[f"{_SANDBOX} must be a mapping"])
+    errors: list[str] = []
+    enabled = raw.get("enabled", False)
+    provider = str(raw.get("provider") or "docker").strip()
+    runtime = str(raw.get("runtime") or "runc").strip().lower()
+    if runtime not in _SANDBOX_RUNTIMES:
+        errors.append(f"{_SANDBOX}.runtime must be one of: " + " | ".join(_SANDBOX_RUNTIMES))
+        runtime = "runc"
+    max_concurrent = raw.get("max_concurrent", 4)
+    if not (isinstance(max_concurrent, int) and not isinstance(max_concurrent, bool)) or (
+        max_concurrent < 1
+    ):
+        errors.append(f"{_SANDBOX}.max_concurrent must be an integer greater than 0")
+        max_concurrent = 4
+    queue_timeout = raw.get("queue_timeout_seconds", 5.0)
+    if not positive_finite_number(queue_timeout):
+        errors.append(f"{_SANDBOX}.queue_timeout_seconds must be a number greater than 0")
+        queue_timeout = 5.0
+    defaults_raw = raw.get("defaults") or {}
+    defaults = (
+        _sandbox_limits(defaults_raw, SandboxLimitsConfig(), f"{_SANDBOX}.defaults", errors)
+        if isinstance(defaults_raw, dict)
+        else SandboxLimitsConfig()
+    )
+    tools: dict[str, SandboxToolConfig] = {}
+    tools_raw = raw.get("tools") or {}
+    if not isinstance(tools_raw, dict):
+        errors.append(f"{_SANDBOX}.tools must be a mapping of tool names")
+        tools_raw = {}
+    for name, entry in tools_raw.items():
+        where = f"{_SANDBOX}.tools.{name}"
+        entry = entry or {}
+        if not isinstance(entry, dict):
+            errors.append(f"{where} must be a mapping")
+            continue
+        profile = str(entry.get("profile") or "python").strip().lower()
+        if profile not in SANDBOX_PROFILES:
+            errors.append(f"{where}.profile must be one of: " + " | ".join(SANDBOX_PROFILES))
+            continue
+        code_argument = entry.get("code_argument", "code")
+        files_argument = entry.get("files_argument") or ""
+        if not isinstance(code_argument, str) or not code_argument:
+            errors.append(f"{where}.code_argument must be an argument name")
+            continue
+        if not isinstance(files_argument, str):
+            errors.append(f"{where}.files_argument must be an argument name")
+            continue
+        schema = entry.get("input_schema")
+        if schema is not None and not isinstance(schema, dict):
+            errors.append(f"{where}.input_schema must be a JSON Schema mapping")
+            schema = None
+        tools[str(name)] = SandboxToolConfig(
+            profile=profile,
+            code_argument=code_argument,
+            files_argument=files_argument,
+            description=str(entry.get("description") or ""),
+            input_schema=schema,
+            limits=_sandbox_limits(entry, defaults, where, errors),
+        )
+    return SandboxConfig(
+        enabled=enabled is True,
+        provider=provider,
+        runtime=runtime,
+        max_concurrent=max_concurrent,
+        queue_timeout_seconds=float(queue_timeout),
+        defaults=defaults,
+        tools=tools,
+        errors=errors,
+    )
+
+
 def _firewall_strings(raw: dict, key: str) -> list[str]:
     """``agent_security.firewall.<key>``: a list of strings (missing or
     empty: ``[]``).
@@ -620,6 +816,7 @@ def _build_from_yaml(data: dict[str, Any]) -> AdminaConfig:
             fanin_min_agents=int(eg_fanin.get("min_agents", 5)),
             quarantine_ttl_seconds=int(eg_raw.get("quarantine_ttl_seconds", 86400)),
         ),
+        sandbox=parse_sandbox_config(as_raw.get("sandbox")),
     )
 
     # compliance

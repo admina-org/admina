@@ -14,7 +14,7 @@
 
 """Admina plugin system.
 
-Provides abstract base classes for all 9 plugin interfaces.
+Provides abstract base classes for all 10 plugin interfaces.
 Community developers extend these to add new model adapters,
 data connectors, governance guards, and more.
 """
@@ -26,6 +26,7 @@ from admina.plugins.base import (
     BaseAuthProvider,
     BaseComplianceTemplate,
     BaseDataConnector,
+    BaseExecutionSandbox,
     BaseForensicStore,
     BaseGovernanceGuard,
     BaseModelAdapter,
@@ -44,6 +45,7 @@ __all__ = [
     "BaseAuthProvider",
     "BasePIIEngine",
     "BaseAlertChannel",
+    "BaseExecutionSandbox",
     "PluginRegistry",
     "PLUGIN_TYPES",
 ]

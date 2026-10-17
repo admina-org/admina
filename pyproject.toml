@@ -210,6 +210,7 @@ testpaths = ["tests"]
 addopts = "--cov=admina --cov-report=term-missing --cov-report=xml --cov-fail-under=78"
 markers = [
     "benchmark: micro-benchmarks with absolute latency thresholds; flaky on shared CI runners. Run with `-m benchmark` on dedicated hardware; CI runs `-m 'not benchmark'`.",
+    "docker: needs a reachable Docker engine and the pinned sandbox image (skipped otherwise). CI runs them in the sandbox-integration job (`-m docker`).",
 ]
 filterwarnings = [
     # Third-party deprecations we cannot fix from here; silence to keep the

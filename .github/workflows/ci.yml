@@ -144,7 +144,48 @@ jobs:
         # is required. `-m "not benchmark"` excludes the micro-benchmarks,
         # whose absolute latency thresholds are non-deterministic on shared
         # runners (Rust correctness is covered by `cargo test --lib`).
-        run: uv run --python ${{ matrix.python-version }} pytest tests/ -m "not benchmark" -v --tb=short
+        # `not docker`: the execution-sandbox tests that need a Docker engine
+        # run in the sandbox-integration job below (macOS runners have none).
+        run: uv run --python ${{ matrix.python-version }} pytest tests/ -m "not benchmark and not docker" -v --tb=short
+
+  # ── Python: execution sandbox against a real Docker engine ──
+  sandbox-integration:
+    name: Sandbox Integration (ubuntu-latest, Docker)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          version: "latest"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Set up Rust toolchain
+        # Same environment as python-tests: --all-extras builds [rust].
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f  # stable
+        with:
+          toolchain: stable
+
+      - name: Install dependencies
+        run: uv sync --group dev --all-extras --python 3.12
+
+      - name: Download spaCy model
+        run: uv pip install --python 3.12 "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+
+      - name: Pull the sandbox image
+        # The pinned default image (SANDBOX_DEFAULT_IMAGE): the sandbox never
+        # pulls on the request path, so the tests need it present.
+        run: |
+          image=$(uv run --python 3.12 python -c "from admina.core.config import SANDBOX_DEFAULT_IMAGE as i; print(i)")
+          docker pull "$image"
+
+      - name: Run the docker-marked tests
+        # No coverage gate: this job runs a small subset of the suite.
+        run: uv run --python 3.12 pytest tests/ -m docker -v --tb=short --no-cov
 
   # ── Rust: tests + clippy (Linux + macOS) ───────────────────
   rust-tests:

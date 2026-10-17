@@ -38,6 +38,7 @@ ASYNC_METHODS = {
     "auth_provider": ["authenticate", "authorize"],
     "pii_engine": ["detect", "redact"],
     "alert_channel": ["send_alert"],
+    "execution_sandbox": ["run"],
 }
 
 
@@ -95,3 +96,12 @@ def test_scaffolded_guard_states_the_concurrency_contract(tmp_path):
     assert "several worker threads at once" in source
     assert "thread-safe" in source
     assert "event loop" in source
+
+
+def test_scaffolded_sandbox_states_the_contract(tmp_path):
+    _scaffold_plugin("my-sandbox", "execution_sandbox", tmp_path / "my-sandbox")
+    source = (tmp_path / "my-sandbox" / "my_sandbox.py").read_text()
+    assert 'sandbox_name = "my-sandbox"' in source
+    assert "from admina.core.types import SandboxRequest, SandboxResult" in source
+    assert "def capabilities(self) -> frozenset[str]:" in source
+    assert "SandboxRequestInvalid" in source

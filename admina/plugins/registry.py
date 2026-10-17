@@ -21,7 +21,7 @@ The registry scans three locations for plugins:
 3. ``admina.yaml`` ``plugins:`` list — explicit module paths.
 
 Each discovered module is imported, its classes are validated against the
-9 base classes, and matching plugins are registered for runtime lookup.
+10 base classes, and matching plugins are registered for runtime lookup.
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ from admina.plugins.base import (
     BaseAuthProvider,
     BaseComplianceTemplate,
     BaseDataConnector,
+    BaseExecutionSandbox,
     BaseForensicStore,
     BaseGovernanceGuard,
     BaseModelAdapter,
@@ -58,6 +59,7 @@ PLUGIN_TYPES: dict[str, type] = {
     "auth_provider": BaseAuthProvider,
     "pii_engine": BasePIIEngine,
     "alert_channel": BaseAlertChannel,
+    "execution_sandbox": BaseExecutionSandbox,
 }
 
 # Reverse lookup: ABC → type key.
@@ -92,7 +94,7 @@ class PluginRegistry:
         """Register a single plugin class.
 
         Args:
-            cls: A concrete subclass of one of the 9 base classes.
+            cls: A concrete subclass of one of the 10 base classes.
 
         Raises:
             TypeError: If *cls* is not a concrete subclass of a known base.
@@ -353,6 +355,7 @@ class PluginRegistry:
             "forensic_store": "store_name",
             "auth_provider": "provider_name",
             "alert_channel": "channel_name",
+            "execution_sandbox": "sandbox_name",
         }
 
         # 1. Unified identity: class-level plain-string `name`

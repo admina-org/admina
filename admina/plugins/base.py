@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Admina — 9 plugin abstract base classes.
+"""Admina — 10 plugin abstract base classes.
 
 Every extensible capability in Admina is defined as a plugin interface.
 Community developers subclass these ABCs to add support for new models,
@@ -35,7 +35,12 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
-    from admina.core.types import GovernanceRequest, GovernanceResponse
+    from admina.core.types import (
+        GovernanceRequest,
+        GovernanceResponse,
+        SandboxRequest,
+        SandboxResult,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -709,3 +714,103 @@ class BaseAlertChannel(ABC):
     @abstractmethod
     def channel_name(self) -> str:
         """Unique short name for this channel (e.g. ``"slack"``)."""
+
+
+# ---------------------------------------------------------------------------
+# 10. BaseExecutionSandbox
+# ---------------------------------------------------------------------------
+
+
+class BaseExecutionSandbox(ABC):
+    """Interface for the isolated execution of tool calls already allowed
+    by the governance pipeline.
+
+    A sandbox runs one :class:`~admina.core.types.SandboxRequest` in a
+    fresh environment, enforces its limits, tears the environment down and
+    returns a :class:`~admina.core.types.SandboxResult`. It does not decide
+    anything: the request has already been allowed, and a sandbox never
+    changes the verdict. The provider is selected by name
+    (``domains.agent_security.sandbox.provider`` in admina.yaml); if its
+    ``__init__`` accepts a ``config`` parameter it receives its
+    ``plugin_config:`` block.
+
+    Contract:
+
+    * a timeout, a non-zero exit code or an out-of-memory kill are a
+      result; only a failure of the environment raises
+      :class:`~admina.core.types.SandboxError`, and a request refused before
+      anything ran raises :class:`~admina.core.types.SandboxRequestInvalid`;
+    * the environment receives only what the request names (command, stdin,
+      files, environment variables): never the environment of the process
+      that hosts Admina, never a mount of the host;
+    * a request that needs a capability the provider lacks is refused, not
+      run with weaker isolation.
+
+    Concurrency: one instance serves every request, from ``/mcp`` and from
+    the SDK, each on its own event loop (same rules as
+    :class:`BaseGovernanceGuard`: no object bound to an event loop kept
+    across calls; shared state behind a :class:`threading.Lock`). The
+    caller bounds concurrency; the provider must still be safe under it.
+
+    Default implementations:
+        * ``DockerSandbox`` — a container per call through the ``docker``
+          or ``podman`` CLI, runtime runc or runsc (gVisor) (built-in).
+
+    Example usage::
+
+        class MySandbox(BaseExecutionSandbox):
+            name = "my-sandbox"
+            sandbox_name = "my-sandbox"
+
+            @property
+            def capabilities(self):
+                return frozenset({"network_none", "files"})
+
+            async def run(self, request):
+                ...  # create, execute, collect, remove
+                return SandboxResult(...)
+    """
+
+    @abstractmethod
+    async def run(self, request: SandboxRequest) -> SandboxResult:
+        """Execute *request* in a fresh isolated environment and remove it.
+
+        Args:
+            request: The execution, its limits and its network.
+
+        Returns:
+            What the execution produced; a timeout and an out-of-memory
+            kill are reported in it.
+
+        Raises:
+            SandboxRequestInvalid: the request was refused before anything
+                was executed.
+            SandboxError: the environment could not be created or observed.
+        """
+
+    @property
+    @abstractmethod
+    def capabilities(self) -> frozenset[str]:
+        """What the provider supports, among ``network_none``,
+        ``network_egress``, ``files``, ``network_observed`` and
+        ``runtime_runsc``. The caller refuses a request that needs a
+        capability not listed here."""
+
+    async def health(self) -> dict:
+        """``{"ready": bool, "detail": str}``: whether a request can be
+        executed now. Called at startup and periodically by the proxy."""
+        return {"ready": True, "detail": ""}
+
+    async def reap(self) -> int:
+        """Remove what earlier executions left behind (environments
+        orphaned by a crash); return how many were removed. Called at
+        startup and periodically by the proxy."""
+        return 0
+
+    async def aclose(self) -> None:
+        """Remove the environments still running and release resources."""
+
+    @property
+    @abstractmethod
+    def sandbox_name(self) -> str:
+        """Unique short name for this sandbox (e.g. ``"docker"``)."""

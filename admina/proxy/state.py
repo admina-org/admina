@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from admina.domains.agent_security.sandbox import SandboxExecutor
 from admina.domains.compliance.eu_ai_act import ASSESSMENTS_PATH_ENV, EUAIActCompliance
 from admina.domains.compliance.forensic import ForensicBlackBox
 from admina.domains.compliance.gdpr import ProcessingActivitiesRegistry
@@ -38,6 +39,7 @@ from admina.proxy.loop_lag import EventLoopLagMonitor
 from admina.proxy.multi_upstream import MultiUpstreamRouter
 from admina.proxy.pipeline_executor import PipelineExecutor
 from admina.proxy.request_metrics import RequestMetrics
+from admina.proxy.sandbox_bridge import SandboxMetrics
 
 if TYPE_CHECKING:
     # Only for the annotation: redis is imported when REDIS_URL is set.
@@ -100,6 +102,12 @@ class ProxyState:
     governance_guards: list = field(default_factory=list)
     alert_channels: list = field(default_factory=list)
     auth_providers: list = field(default_factory=list)
+
+    # Execution sandbox of /mcp (admina.proxy.sandbox_bridge): None when off.
+    sandbox: SandboxExecutor | None = None
+    sandbox_metrics: SandboxMetrics = field(default_factory=SandboxMetrics)
+    # Periodic orphan removal and health check of the sandbox.
+    sandbox_maintenance: Any = None
 
     # OTEL
     otel_exporter: OTELGovernanceExporter | None = None

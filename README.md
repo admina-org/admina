@@ -280,7 +280,7 @@ from admina import GovernedModel, GovernedData, GovernedAgent, ComplianceKit
 
 ## Plugin System
 
-9 plugin interfaces, auto-discovered from `plugins/builtin/` or installed via CLI:
+10 plugin interfaces, auto-discovered from `plugins/builtin/` or installed via CLI:
 
 | Interface | Builtin implementations |
 |-----------|------------------------|
@@ -293,6 +293,7 @@ from admina import GovernedModel, GovernedData, GovernedAgent, ComplianceKit
 | Auth Provider | API Key |
 | PII Engine | spaCy + Regex (default), Microsoft Presidio (`uv add "admina[presidio]"` or `pip install "admina[presidio]"`, `ADMINA_PII_ENGINE=presidio`); engines of other packages through the `admina.pii_engines` entry-point group (see [PII engines](#pii-engines)) |
 | Alert Channel | Log, Webhook |
+| Execution Sandbox | Docker / Podman (runc or runsc), see [Execution sandbox](#execution-sandbox) |
 
 Model adapters lazy-import their provider SDK, so install the ones you
 use: `uv add "admina[adapters]"` (with pip: `pip install "admina[adapters]"`) for all of them, or a
@@ -1169,6 +1170,53 @@ connection is made for telemetry.
 **Container entrypoint.** `admina/proxy/docker-entrypoint.sh` accepts
 `ADMINA_API_KEY` or `ADMINA_API_KEY_FILE` and prints only whether the key
 is set, never any part of it.
+
+### Execution sandbox
+
+Admina can execute the tool calls it allows instead of forwarding them:
+a tool declared under `domains.agent_security.sandbox.tools` (for example
+a `python_exec` code interpreter) runs in a fresh container per call, with
+no network, a read-only root filesystem, an unprivileged user, no
+capabilities and memory, CPU, process and disk limits; the container is
+removed afterwards. Off by default.
+
+```yaml
+domains:
+  agent_security:
+    sandbox:
+      enabled: true
+      provider: docker          # the built-in provider; binary: podman in plugin_config.docker
+      runtime: runc             # runsc: gVisor, registered with the engine (Linux)
+      tools:
+        python_exec:
+          profile: python       # code → /work/main.py, run with python -I
+          timeout_seconds: 10
+          memory_mb: 256
+```
+
+```bash
+docker pull python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+```
+
+On `/mcp`, a `tools/call` of `python_exec` that the pipeline allows is
+executed in the sandbox and never forwarded upstream; the result (stdout,
+stderr, files written to `out/`) goes through PII redaction and the
+response guards like an upstream response, and `tools/list` lists the
+sandboxed tools next to the upstream's. Each execution adds a forensic
+record `<event_id>:sandbox` with hashes and sizes only, a
+`sandbox_execution` bus event, `admina_sandbox_*` metrics and a `sandbox`
+field in `/health`. If the sandbox is unavailable the call is refused with
+`data.reason: sandbox_unavailable`: it is never executed outside it, in any
+fail mode or governance mode. The SDK helper
+`admina.sdk.sandbox.sandbox_upstream` gives `GovernedAgent` the same
+execution.
+
+The sandbox needs a Docker or Podman engine the proxy can reach. Access to
+the Docker socket is equivalent to root on the host: use rootless Docker or
+rootless Podman, or a dedicated host. The example `docker-compose.yml` does
+not mount the socket. `network: egress` is not supported yet. See the
+[execution sandbox guide](docs/guides/execution-sandbox.md) and what it does
+not guarantee in [MODEL_CARD.md §5d](MODEL_CARD.md#5d-execution-sandbox).
 
 ### OpenAI-compatible gateway
 

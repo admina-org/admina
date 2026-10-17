@@ -50,6 +50,7 @@ nav:
       - Architecture: guides/architecture.md
       - Integrations: guides/integrations.md
       - Air-gapped deployment: guides/airgapped-deployment.md
+      - Execution sandbox: guides/execution-sandbox.md
       - Upgrading to 0.13: guides/upgrade-0.13.md
       - The admina package name: guides/package-name.md
   - SDK Reference:
