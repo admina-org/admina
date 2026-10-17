@@ -137,6 +137,19 @@ STR = _Scalar("str")
 STRINGS = _List(STR)
 ANY = _Any()
 
+# The image, limits and network of a sandboxed tool (defaults, or per tool).
+_SANDBOX_LIMITS = {
+    "image": STR,
+    "timeout_seconds": POSITIVE,
+    "memory_mb": INT,
+    "cpus": POSITIVE,
+    "pids": INT,
+    "disk_mb": INT,
+    "output_max_bytes": INT,
+    "files_max_bytes": INT,
+    "network": STR,
+}
+
 
 #: The keys of admina.yaml. Keep in step with ``admina.core.config`` (the
 #: readers of the file), ``admina.yaml.example`` and the ``admina init``
@@ -227,6 +240,29 @@ SCHEMA = _Section(
                                 "coordination_declared": STRINGS,
                                 "fanin": _Section({"window_seconds": INT, "min_agents": INT}),
                                 "quarantine_ttl_seconds": INT,
+                            }
+                        ),
+                        "sandbox": _Section(
+                            {
+                                "enabled": BOOL,
+                                "provider": STR,
+                                "runtime": STR,
+                                "max_concurrent": INT,
+                                "queue_timeout_seconds": POSITIVE,
+                                "defaults": _Section(_SANDBOX_LIMITS),
+                                "tools": _MapOf(
+                                    _Section(
+                                        {
+                                            "profile": STR,
+                                            "code_argument": STR,
+                                            "files_argument": STR,
+                                            "description": STR,
+                                            # A JSON Schema, for tools/list.
+                                            "input_schema": ANY,
+                                            **_SANDBOX_LIMITS,
+                                        }
+                                    )
+                                ),
                             }
                         ),
                         # Blocks of optional plugins (e.g. guardrailsai).
