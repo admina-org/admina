@@ -95,7 +95,7 @@ def test_runs_python_and_returns_output_files():
     assert result.stdout == b"HELLO\n"
     assert result.files == (SandboxFile("out/result.txt", b"done"),)
     assert result.image_digest.startswith("sha256:")
-    assert result.runtime == "docker/runc"
+    assert result.runtime == "docker/default"
 
 
 def test_shell_profile():
@@ -295,4 +295,4 @@ def test_mcp_tool_call_end_to_end(monkeypatch, tmp_path):
     assert response.json()["result"]["content"][0]["text"] == "42\n"
     assert forwarded == []
     assert health.json()["sandbox"]["ready"] is True
-    assert health.json()["sandbox"]["runtime"] == "docker/runc"
+    assert health.json()["sandbox"]["runtime"] == "docker/default"

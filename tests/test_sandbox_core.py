@@ -24,6 +24,7 @@ import base64
 import hashlib
 import inspect
 import json
+from dataclasses import replace
 
 import pytest
 from _sandbox import FakeSandbox
@@ -447,3 +448,21 @@ def test_executor_health_is_cached_and_failures_are_not_ready():
     raising = _executor(_Raising())
     assert asyncio.run(raising.check_health())["ready"] is False
     assert asyncio.run(raising.reap()) == 0
+
+
+def test_executor_health_checks_the_images_of_the_tools():
+    sandbox = FakeSandbox()
+    tools = {
+        "python_exec": PYTHON,
+        "custom": replace(PYTHON, limits=replace(PYTHON.limits, image="registry/own:1")),
+    }
+    asyncio.run(SandboxExecutor(sandbox, tools).check_health())
+    assert sandbox.health_images == sorted({PYTHON.limits.image, "registry/own:1"})
+
+
+def test_executor_health_of_a_provider_without_images():
+    class _OldHealth(FakeSandbox):
+        async def health(self):  # the signature of 0.15.0
+            return {"ready": True, "detail": ""}
+
+    assert asyncio.run(_executor(_OldHealth()).check_health())["ready"] is True

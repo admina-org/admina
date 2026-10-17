@@ -29,7 +29,7 @@ it in ``admina.yaml`` under the ``plugins:`` section.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -796,9 +796,11 @@ class BaseExecutionSandbox(ABC):
         ``runtime_runsc``. The caller refuses a request that needs a
         capability not listed here."""
 
-    async def health(self) -> dict:
+    async def health(self, images: Sequence[str] = ()) -> dict:
         """``{"ready": bool, "detail": str}``: whether a request can be
-        executed now. Called at startup and periodically by the proxy."""
+        executed now, with each of *images* (the images of the configured
+        tools; empty: the provider's own default). Called at startup and
+        periodically by the proxy."""
         return {"ready": True, "detail": ""}
 
     async def reap(self) -> int:

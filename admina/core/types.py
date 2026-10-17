@@ -274,7 +274,8 @@ class SandboxResult:
     duration_ms: float
     timed_out: bool
     oom_killed: bool
-    #: e.g. ``docker/runc``, ``docker/runsc``.
+    #: ``<engine>/default`` (the engine's default runtime) or
+    #: ``<engine>/runsc``, e.g. ``docker/default``.
     runtime: str
     image_digest: str
 

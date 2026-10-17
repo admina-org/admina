@@ -524,8 +524,13 @@ class SandboxExecutor:
     async def check_health(self, timeout_s: float = 15.0) -> dict[str, Any]:
         """Ask the provider whether it is ready; the answer is kept in
         :attr:`health` (``/health`` reads it, without calling the provider)."""
+        images = tuple(sorted({tool.limits.image for tool in self.tools.values()}))
         try:
-            status = dict(await asyncio.wait_for(self.sandbox.health(), timeout_s))
+            try:
+                check = self.sandbox.health(images=images)
+            except TypeError:  # a provider whose health() takes no images
+                check = self.sandbox.health()
+            status = dict(await asyncio.wait_for(check, timeout_s))
         except Exception as exc:  # noqa: BLE001 — a failing check is "not ready"
             status = {"ready": False, "detail": f"health check failed ({type(exc).__name__})"}
         status["ready"] = bool(status.get("ready"))

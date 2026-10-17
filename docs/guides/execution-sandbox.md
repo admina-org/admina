@@ -176,10 +176,15 @@ plugin_config:
 Invalid values stop the proxy at startup with the key named, and so does
 `network: egress`: network access through an allowlist is not supported
 yet. An unknown provider and an unknown key of `plugin_config.docker` stop
-it too. A provider that is not ready (engine unreachable, image missing,
-`runsc` not registered) does not: the proxy starts, `/health` reports
-`degraded`, and the sandboxed tools are refused until it is ready. The
-other tools are not affected.
+it too. A provider that is not ready (engine unreachable, an image of the
+configured tools missing, `runsc` not registered) does not: the proxy
+starts and `/health` reports `degraded`. The check runs at startup and
+every 30 seconds, on the images of the configured tools (`defaults.image`
+and the images that tools set); it does not hold calls back. A call that
+cannot run is refused with `sandbox_unavailable` and never forwarded; the
+other tools are not affected. `/health` reports the runtime as
+`<engine>/default` for `runtime: runc` (no `--runtime` is passed, so the
+engine's default runtime runs) and `<engine>/runsc` for gVisor.
 
 `runtime` is set in the sandbox section, not in `plugin_config.docker`.
 
