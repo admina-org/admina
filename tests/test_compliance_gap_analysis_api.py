@@ -21,8 +21,7 @@ from __future__ import annotations
 import json
 
 import pytest
-
-from tests._proxy_app import API_KEY, isolate, serve, with_key
+from _proxy_app import API_KEY, isolate, serve, with_key
 
 POST = "/api/compliance/gap-analysis"
 LATEST = "/api/compliance/gap-analysis/latest"
