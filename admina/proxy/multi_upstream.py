@@ -22,6 +22,8 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import yaml
+
 logger = logging.getLogger("admina.router")
 
 
@@ -46,11 +48,11 @@ class MultiUpstreamRouter:
 
     Loading:
       router = MultiUpstreamRouter()
-      router.load_config("/app/routing.json")
+      router.load_config("/app/routing.json")   # or routing.yaml
 
     Routing:
       route = router.resolve("github")          # by server name
-      route = router.resolve_by_tool("git_push") # by tool name (after discovery)
+      route = router.resolve_by_tool("git_push") # by tool name (routes.<name>.tools)
     """
 
     def __init__(self, default_upstream: str = "http://localhost:9000"):
@@ -61,14 +63,22 @@ class MultiUpstreamRouter:
         self._loaded = False
 
     def load_config(self, config_path: str | Path) -> None:
-        """Load routing configuration from JSON file."""
+        """Load routing configuration from a JSON or YAML (.yaml/.yml) file.
+
+        ``routes.<name>.tools`` lists the tools that server provides: a
+        ``tools/call`` on ``/mcp`` for one of them goes to that route. A tool
+        listed by two routes raises ValueError.
+        """
         path = Path(config_path)
         if not path.exists():
             logger.warning("Routing config not found: %s, using default upstream", path)
             return
 
         with open(path) as f:
-            config = json.load(f)
+            if path.suffix.lower() in (".yaml", ".yml"):
+                config = yaml.safe_load(f) or {}
+            else:
+                config = json.load(f)
 
         self.default_upstream = config.get("default_upstream", self.default_upstream)
         self.governance_config = config.get("governance", {})
@@ -81,6 +91,13 @@ class MultiUpstreamRouter:
                 proxy_mode=route_def.get("proxy_mode", "transparent"),
                 headers=route_def.get("headers", {}),
             )
+            tools = route_def.get("tools", [])
+            if not isinstance(tools, list) or not all(isinstance(t, str) and t for t in tools):
+                raise ValueError(
+                    f"Routing config {path}: routes.{name}.tools must be a list of tool names"
+                )
+            if tools:
+                self.register_tool_mapping(name, tools)
 
         self._loaded = True
         logger.info("Loaded %d upstream routes from %s", len(self.routes), path)
@@ -100,7 +117,16 @@ class MultiUpstreamRouter:
         return None
 
     def register_tool_mapping(self, server_name: str, tool_names: list[str]) -> None:
-        """After tool discovery, map tool names to their server."""
+        """Map tool names to the server that provides them.
+
+        A tool already mapped to another server raises ValueError.
+        """
+        for tool in tool_names:
+            owner = self.tool_to_server.get(tool)
+            if owner is not None and owner != server_name:
+                raise ValueError(
+                    f"Tool '{tool}' is mapped to server '{owner}' and to server '{server_name}'"
+                )
         for tool in tool_names:
             self.tool_to_server[tool] = server_name
         route = self.routes.get(server_name)

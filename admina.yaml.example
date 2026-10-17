@@ -50,6 +50,8 @@ domains:
     proxy:
       port: 8080
       upstream: "http://localhost:9000"
+      # Several MCP servers, routed by path or by tool name: routing file
+      # of ROUTING_CONFIG_PATH (README, "MCP routing to several servers").
     firewall:
       enabled: true
       # The firewall is a heuristic signal, not a guarantee. custom_patterns,
