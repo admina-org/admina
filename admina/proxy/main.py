@@ -1894,6 +1894,15 @@ class _McpOutcome:
                 self.decision, action="BLOCK", risk_level=risk_level, domain="response_guard"
             )
 
+    def sandbox_refused(self, invalid: bool) -> None:
+        """The allowed call of a sandboxed tool did not run: the decision
+        becomes a ``BLOCK`` (invalid arguments) or an ``ERROR`` (sandbox
+        unavailable or busy) of the ``sandbox`` domain."""
+        if self.decision is not None:
+            self.decision = replace(
+                self.decision, action="BLOCK" if invalid else "ERROR", domain="sandbox"
+            )
+
     def record(self, state: ProxyState, duration_s: float) -> None:
         """Record the request, answered after *duration_s* seconds."""
         if self.decision is not None:
@@ -2395,6 +2404,7 @@ async def _mcp_sandbox_call(
         logger.warning(
             "Sandboxed tool %r not executed for event %s (%s)", tool, event_id, run.error
         )
+        outcome.sandbox_refused(invalid=run.error == "invalid")
         status, content = sandbox_error_response(body, event_id, run)
         return JSONResponse(status_code=status, content=content)
 

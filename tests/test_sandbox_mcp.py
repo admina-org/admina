@@ -230,17 +230,26 @@ def test_unavailable_sandbox_refuses_and_records(proxy):
     assert record["action"] == "ERROR"
     assert record["checks"]["sandbox"]["error"] == "unavailable"
     assert 'admina_sandbox_errors_total{reason="unavailable"} 1' in metrics.text
+    # The request is counted as an error, not as allowed.
+    assert 'admina_requests_total{surface="mcp",action="ERROR"} 1' in metrics.text
+    assert 'admina_requests_total{surface="mcp",action="ALLOW"} 0' in metrics.text
 
 
 def test_invalid_arguments_are_refused(proxy):
     proxy()
     upstream = _Upstream()
-    (response,), state = serve([_call(arguments={"source": "x"})], mcp=upstream)
+    metrics_request = with_key({"method": "GET", "url": "/metrics"})
+    (response, metrics), state = serve(
+        [_call(arguments={"source": "x"}), metrics_request], mcp=upstream
+    )
     assert response.status_code == 400
     error = response.json()["error"]
     assert error["code"] == -32602 and error["data"]["reason"] == "sandbox_request_invalid"
     assert "'code'" in error["message"]
     assert upstream.calls == [] and state.sandbox.sandbox.requests == []
+    # The request is counted as blocked, not as allowed.
+    assert 'admina_requests_total{surface="mcp",action="BLOCK"} 1' in metrics.text
+    assert 'admina_requests_total{surface="mcp",action="ALLOW"} 0' in metrics.text
 
 
 def test_blocked_request_is_never_executed(proxy):
