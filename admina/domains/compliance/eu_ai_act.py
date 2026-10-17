@@ -15,14 +15,23 @@
 """
 Admina — EU AI Act Compliance Engine — Compliance domain
 Automated risk classification, gap analysis, and compliance reporting.
+
+Assessments: :meth:`EUAIActCompliance.gap_analysis` records one assessment
+for every risk category. The last :data:`MAX_ASSESSMENTS` are kept in
+memory and, when the engine has a ``storage_path``, in a JSON file written
+atomically and read back at startup (in the proxy:
+:data:`ASSESSMENTS_PATH_ENV`).
 """
 
+import json
 import logging
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from admina.domains.compliance.ai_act_terms import RISK_ORDER, TERM_LANGUAGES, TERMS, find_terms
+from admina.domains.compliance.forensic_files import atomic_write, ensure_directory
 
 logger = logging.getLogger("admina.eu_ai_act")
 
@@ -174,6 +183,20 @@ RISK_CATEGORIES = {
     },
 }
 
+# Risk categories whose obligations include Articles 9–15: the gap analysis
+# applies to them only.
+GAP_ANALYSIS_CATEGORIES = ("high", "unacceptable")
+
+# Message of an assessment of a category outside GAP_ANALYSIS_CATEGORIES.
+NOT_APPLICABLE_MESSAGE = "Articles 9–15 apply to high-risk systems only"
+
+# Assessments kept in memory and in the storage file (the most recent ones).
+MAX_ASSESSMENTS = 100
+
+# Environment variable of the proxy naming the JSON file of the assessments;
+# unset, the proxy keeps them in memory only.
+ASSESSMENTS_PATH_ENV = "ADMINA_EU_AI_ACT_ASSESSMENTS_PATH"
+
 # Compliance requirements for high-risk systems
 HIGH_RISK_REQUIREMENTS = {
     "risk_management": {
@@ -259,6 +282,7 @@ class EUAIActCompliance:
         *,
         term_languages: Iterable[str] | None = None,
         extra_terms: Mapping[str, Mapping[str, Iterable[str]]] | None = None,
+        storage_path: str | Path | None = None,
     ):
         """
         Args:
@@ -269,11 +293,16 @@ class EUAIActCompliance:
                 ...]}}`` with the risk classes ``unacceptable``, ``high``
                 and ``limited``, matched as the terms of a language
                 (reported with ``lang`` ``"custom"``).
+            storage_path: JSON file of the assessments, read here and
+                rewritten atomically after each one; ``None`` = in memory
+                only. A missing file starts empty; an unreadable or
+                malformed one is logged and starts empty too.
 
         Raises:
             ValueError: An unknown language or risk class.
         """
-        self.assessments: list[dict] = []
+        self.storage_path = Path(storage_path) if storage_path else None
+        self.assessments: list[dict] = self._load()
         languages = list(TERM_LANGUAGES if term_languages is None else term_languages)
         unknown = [lang for lang in languages if lang not in TERMS]
         if unknown:
@@ -353,17 +382,50 @@ class EUAIActCompliance:
 
         return result("minimal")
 
-    def gap_analysis(self, risk_category: str, current_compliance: dict[str, list[bool]]) -> dict:
-        """
-        Perform gap analysis for a high-risk AI system.
-        current_compliance: {requirement_key: [True/False for each check]}
-        """
-        if risk_category not in ("high", "unacceptable"):
-            return {
-                "applicable": False,
-                "message": f"Full gap analysis not required for {risk_category}-risk systems",
-            }
+    # ── persistence ──────────────────────────────────────────────
+    def _load(self) -> list[dict]:
+        if self.storage_path is None or not self.storage_path.exists():
+            return []
+        try:
+            data = json.loads(self.storage_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "Failed to load EU AI Act assessments from %s: %s", self.storage_path, exc
+            )
+            return []
+        if not isinstance(data, list) or not all(isinstance(a, dict) for a in data):
+            logger.warning(
+                "Ignoring EU AI Act assessments in %s: not a list of objects", self.storage_path
+            )
+            return []
+        return data[-MAX_ASSESSMENTS:]
 
+    def _save(self) -> None:
+        if self.storage_path is None:
+            return  # in-memory mode
+        try:
+            ensure_directory(self.storage_path.parent)
+            data = json.dumps(self.assessments, indent=2, ensure_ascii=False)
+            atomic_write(self.storage_path, data.encode("utf-8"))
+        except OSError as exc:
+            logger.warning(
+                "Failed to persist EU AI Act assessments to %s: %s", self.storage_path, exc
+            )
+
+    def _record(self, result: dict) -> None:
+        self.assessments.append(result)
+        if len(self.assessments) > MAX_ASSESSMENTS:
+            self.assessments = self.assessments[-MAX_ASSESSMENTS:]
+        self._save()
+
+    def latest(self) -> dict | None:
+        """The most recent assessment, or None without any."""
+        return self.assessments[-1] if self.assessments else None
+
+    # ── gap analysis ─────────────────────────────────────────────
+    @staticmethod
+    def _check_requirements(current_compliance: Mapping[str, Any]) -> dict:
+        """Score the Art. 9–15 checks of *current_compliance*."""
         gaps = []
         total_checks = 0
         passed_checks = 0
@@ -371,7 +433,7 @@ class EUAIActCompliance:
         for req_key, req_info in HIGH_RISK_REQUIREMENTS.items():
             n = len(req_info["checks"])
             declared = _coerce_checks(current_compliance.get(req_key), n)
-            for i, (check_desc, is_met) in enumerate(zip(req_info["checks"], declared)):
+            for check_desc, is_met in zip(req_info["checks"], declared):
                 total_checks += 1
                 if is_met:
                     passed_checks += 1
@@ -385,21 +447,81 @@ class EUAIActCompliance:
                         }
                     )
 
-        compliance_score = round(passed_checks / max(total_checks, 1) * 100, 1)
-
-        result = {
-            "applicable": True,
-            "compliance_score": compliance_score,
+        return {
+            "compliance_score": round(passed_checks / max(total_checks, 1) * 100, 1),
             "total_checks": total_checks,
             "passed_checks": passed_checks,
             "gaps": gaps,
             "gap_count": len(gaps),
-            "status": "COMPLIANT" if compliance_score == 100 else "GAPS_FOUND",
+        }
+
+    def gap_analysis(
+        self,
+        risk_category: str,
+        current_compliance: Mapping[str, Any] | None = None,
+        system_name: str | None = None,
+        *,
+        voluntary: bool = False,
+    ) -> dict:
+        """Record an assessment of an AI system of *risk_category*.
+
+        ``high`` / ``unacceptable``: gap analysis of Articles 9–15 from
+        *current_compliance* (``{requirement_key: [True/False for each
+        check]}``), ``applicable`` True and ``status`` ``COMPLIANT`` or
+        ``GAPS_FOUND``.
+
+        ``limited`` / ``minimal``: Articles 9–15 do not apply. The
+        assessment has ``applicable`` False, ``status`` ``NOT_APPLICABLE``,
+        ``compliance_score`` None and ``total_checks`` 0;
+        *current_compliance* is ignored. With *voluntary* the checks of
+        *current_compliance* are scored as for a high-risk system and kept
+        with ``voluntary`` True, as a best-practice self-assessment; the
+        status stays ``NOT_APPLICABLE``.
+
+        Every assessment carries ``risk_category``, ``system_name``,
+        ``assessed_at`` and ``enforcement_deadline``, and is recorded
+        (:attr:`assessments`, at most :data:`MAX_ASSESSMENTS`).
+
+        Raises:
+            ValueError: *risk_category* is not one of ``RISK_CATEGORIES``.
+        """
+        if not isinstance(risk_category, str) or risk_category not in RISK_CATEGORIES:
+            raise ValueError(
+                f"Unknown risk category {risk_category!r}; "
+                f"expected one of {', '.join(RISK_CATEGORIES)}"
+            )
+        current_compliance = current_compliance or {}
+
+        if risk_category not in GAP_ANALYSIS_CATEGORIES:
+            result: dict[str, Any] = {
+                "applicable": False,
+                "status": "NOT_APPLICABLE",
+                "risk_category": risk_category,
+                "system_name": system_name,
+                "message": NOT_APPLICABLE_MESSAGE,
+                "compliance_score": None,
+                "total_checks": 0,
+            }
+            if voluntary:
+                result.update(self._check_requirements(current_compliance))
+                result["voluntary"] = True
+            result["enforcement_deadline"] = EU_AI_ACT_ENFORCEMENT_DEADLINE
+            result["assessed_at"] = datetime.now(UTC).isoformat()
+            self._record(result)
+            return result
+
+        checks = self._check_requirements(current_compliance)
+        result = {
+            "applicable": True,
+            **checks,
+            "status": "COMPLIANT" if checks["compliance_score"] == 100 else "GAPS_FOUND",
+            "risk_category": risk_category,
+            "system_name": system_name,
             "enforcement_deadline": EU_AI_ACT_ENFORCEMENT_DEADLINE,
             "assessed_at": datetime.now(UTC).isoformat(),
         }
 
-        self.assessments.append(result)
+        self._record(result)
         return result
 
     def generate_report(self, system_name: str, classification: dict, gap_result: dict) -> dict:
@@ -446,4 +568,6 @@ class EUAIActCompliance:
         return {
             "total_assessments": len(self.assessments),
             "enforcement_deadline": EU_AI_ACT_ENFORCEMENT_DEADLINE,
+            "storage_path": str(self.storage_path) if self.storage_path else None,
+            "persistence": "filesystem" if self.storage_path else "in-memory",
         }

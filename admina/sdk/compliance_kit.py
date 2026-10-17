@@ -57,17 +57,18 @@ class GapReport:
 
     Attributes:
         applicable: Whether gap analysis applies to this risk level.
-        compliance_score: Percentage of checks passed (0-100).
+        compliance_score: Percentage of checks passed (0-100); None for
+            a risk category the gap analysis does not apply to.
         total_checks: Total number of checks evaluated.
         passed_checks: Number of checks passed.
         gaps: List of unmet requirements.
-        status: COMPLIANT or GAPS_FOUND.
+        status: COMPLIANT, GAPS_FOUND or NOT_APPLICABLE.
         framework: The compliance framework used.
         message: Optional message (e.g. for non-applicable cases).
     """
 
     applicable: bool = False
-    compliance_score: float = 0.0
+    compliance_score: float | None = 0.0
     total_checks: int = 0
     passed_checks: int = 0
     gaps: list[dict[str, Any]] = field(default_factory=list)
@@ -216,21 +217,27 @@ class ComplianceKit:
         framework: str = "eu_ai_act",
         risk_category: str = "high",
         current_compliance: dict[str, list[bool] | bool] | None = None,
+        system_name: str | None = None,
     ) -> GapReport:
         """Perform a compliance gap analysis.
 
         Args:
             framework: Compliance framework to evaluate.
-            risk_category: The risk category to analyze gaps for.
+            risk_category: The risk category to analyze gaps for. For
+                ``limited`` and ``minimal`` the result is ``applicable``
+                False with status ``NOT_APPLICABLE`` and no score.
             current_compliance: Dict mapping requirement keys to either
                 a list of booleans (one per check) or a single boolean
                 (treated as a single check that is fully met or unmet).
+            system_name: Name of the assessed system, kept with the
+                assessment.
 
         Returns:
             GapReport with score, gaps, and status.
 
         Raises:
-            ValueError: If a value is not a bool or list of bools.
+            ValueError: If a value is not a bool or list of bools, or the
+                risk category is unknown.
         """
         engine = self._get_engine(framework)
         normalised: dict[str, list[bool]] = {}
@@ -244,7 +251,7 @@ class ComplianceKit:
                     f"current_compliance[{key!r}] must be bool or list[bool], "
                     f"got {type(value).__name__}"
                 )
-        result = engine.gap_analysis(risk_category, normalised)
+        result = engine.gap_analysis(risk_category, normalised, system_name=system_name)
 
         report = GapReport(
             applicable=result.get("applicable", False),
@@ -309,6 +316,7 @@ class ComplianceKit:
         gap_result = engine.gap_analysis(
             classification["risk_category"],
             current_compliance or {},
+            system_name=system_name,
         )
         report_data = engine.generate_report(
             system_name,

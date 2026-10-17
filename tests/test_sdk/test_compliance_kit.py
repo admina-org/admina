@@ -191,6 +191,25 @@ class TestGapAnalysis:
 
         assert result.applicable is False
 
+    def test_not_applicable_is_recorded_without_a_score(self) -> None:
+        """A limited-risk assessment is recorded as NOT_APPLICABLE, no score."""
+        kit = ComplianceKit(audit=False)
+        result = kit.gap_analysis(risk_category="limited", system_name="Helpdesk bot")
+
+        assert result.status == "NOT_APPLICABLE"
+        assert result.compliance_score is None
+        latest = kit._get_engine("eu_ai_act").latest()
+        assert latest["system_name"] == "Helpdesk bot"
+        assert latest["risk_category"] == "limited"
+
+    def test_unknown_risk_category_raises(self) -> None:
+        """An unknown risk category is rejected."""
+        import pytest
+
+        kit = ComplianceKit(audit=False)
+        with pytest.raises(ValueError, match="risk category"):
+            kit.gap_analysis(risk_category="medium")
+
     def test_accepts_single_bool_per_requirement(self) -> None:
         """A single bool is normalised to a one-element list."""
         kit = ComplianceKit(audit=False)
