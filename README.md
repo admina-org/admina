@@ -342,8 +342,10 @@ result (`valid`, `records`, `reason`, `sequence_number`, `checkpoint`,
 the records after it.
 
 `admina redteam` measures the injection firewall, the PII redactor and the
-loop breaker on the corpora of the package (`admina/redteam/corpora/`), on
-every available engine (`--engine both|python|rust`), then prints the
+loop breaker on the corpora of the package (`admina/redteam/corpora/`:
+`injection`, `pii` and `loop`; `coordination.jsonl` there is the corpus of
+the coordination detector, which `tests/test_coordination_corpus.py` replays
+and `admina redteam` does not score), on every available engine (`--engine both|python|rust`), then prints the
 Markdown scorecard and writes the JSON one to `--out` (`--format
 md|json|both`; `--corpus NAME` runs one corpus). `scripts/redteam.py` runs
 the same command.
