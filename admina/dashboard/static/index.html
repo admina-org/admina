@@ -440,16 +440,18 @@
             <div>
               <div class="score-row">
                 <span class="name" x-text="item.label"></span>
-                <span class="pts" :style="{ color: item.value > 0 ? 'var(--green)' : 'var(--dim)' }">
-                  +<span x-text="item.value"></span>/<span x-text="item.max"></span>
-                </span>
+                <span class="pts" :style="{ color: item.value > 0 ? 'var(--green)' : 'var(--dim)' }"
+                  x-text="item.na ? 'N/A' : '+' + item.value + '/' + item.max"></span>
               </div>
               <div class="score-bar">
-                <div class="fill" :style="{ width: (item.value / item.max * 100) + '%', background: item.value > 0 ? 'var(--teal)' : 'var(--border2)' }"></div>
+                <div class="fill" :style="{ width: (item.na ? 0 : item.value / item.max * 100) + '%', background: item.value > 0 ? 'var(--teal)' : 'var(--border2)' }"></div>
               </div>
               <div x-show="item.hint" :title="item.hint"
                 style="font-size: 10px; color: var(--amber); margin-top: 2px; font-style: italic;"
                 x-text="'\u26A0  ' + (item.hint || '')"></div>
+              <div x-show="item.note" :title="item.note"
+                style="font-size: 10px; color: var(--dim); margin-top: 2px; font-style: italic;"
+                x-text="item.note || ''"></div>
             </div>
           </template>
         </div>
@@ -508,6 +510,26 @@
           </button>
         </div>
 
+        <!-- Not applicable: Articles 9–15 are not required for the recorded category -->
+        <div x-show="complianceNotApplicable"
+             style="margin-bottom: 14px; padding: 10px 12px; background: rgba(34,197,94,.06);
+                    border: 1px solid rgba(34,197,94,.3); border-radius: 6px; font-size: 12px;">
+          <div style="color: var(--green); font-weight: 600;">
+            Articles 9–15 are not required for
+            <span x-text="complianceData?.latest?.risk_category"></span>-risk systems
+          </div>
+          <div style="color: var(--muted); margin-top: 4px;">
+            <span x-show="complianceData?.latest?.system_name">
+              System: <strong x-text="complianceData?.latest?.system_name"></strong> ·
+            </span>
+            Risk category: <strong x-text="complianceData?.latest?.risk_category"></strong> ·
+            Assessed <span x-text="complianceData?.latest?.assessed_at?.slice(0, 10) || ''"></span>
+          </div>
+          <div style="color: var(--dim); margin-top: 4px;">
+            The EU AI Act gap coverage is left out of the Admina Score.
+          </div>
+        </div>
+
         <!-- Countdown -->
         <div class="countdown-box">
           <div>
@@ -517,6 +539,12 @@
             <div class="label">days until enforcement</div>
             <div class="sublabel" x-text="'Deadline: ' + enforcementDeadlineLabel"></div>
           </div>
+        </div>
+
+        <!-- Voluntary self-assessment of a limited- or minimal-risk system -->
+        <div x-show="complianceVoluntary"
+             style="margin-bottom: 8px; font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: .04em;">
+          Voluntary self-assessment — best practice, not counted in the Admina Score
         </div>
 
         <!-- Article checklist -->
@@ -541,13 +569,19 @@
         </div>
 
         <div style="margin-top: 12px; font-size: 12px; color: var(--dim);">
-          <template x-if="hasAssessment">
+          <template x-if="hasAssessment && !complianceNotApplicable">
             <span>
               Overall: <span style="font-weight: 600;" :style="{ color: complianceScore === 100 ? 'var(--green)' : 'var(--amber)' }"
                 x-text="complianceScore + '%'"></span> compliant
               <span x-show="complianceGapCount > 0" style="margin-left: 8px;">
                 (<span x-text="complianceGapCount"></span> gaps to address)
               </span>
+            </span>
+          </template>
+          <template x-if="complianceVoluntary">
+            <span>
+              Voluntary: <span style="font-weight: 600;" x-text="complianceScore + '%'"></span>
+              of the Art. 9–15 checks met
             </span>
           </template>
           <template x-if="!hasAssessment">
@@ -734,7 +768,7 @@
             "data bias examination performed").
           </p>
           <p>
-            Until you submit a real assessment, the dashboard renders all articles at 0% with a default
+            Until you submit an assessment, the dashboard renders all articles at 0% with a default
             placeholder. To record your real coverage, send your declared evidence with a
             <strong>POST</strong> request to <code class="inline">/api/compliance/gap-analysis</code>
             on this host (the route accepts POST only: opening it in the browser answers
@@ -744,7 +778,7 @@
           <button class="modal-copy-btn" @click="copyAssessmentCmd($event)">Copy command</button>
           <pre class="modal-pre" id="assessment-cmd">curl -X POST <span x-text="apiBase"></span>/api/compliance/gap-analysis \
   -H "X-API-Key: $ADMINA_API_KEY" -H "Content-Type: application/json" \
-  -d '{"risk_category": "high",
+  -d '{"risk_category": "high", "system_name": "Credit scoring",
        "current_compliance": {
          "risk_management":         [true, true, false, true],
          "data_governance":         [true, false, true, true],
@@ -758,6 +792,21 @@
             Each list has 4 booleans, one per check defined for that article. Replace the placeholder
             values with your real evidence. After submitting, refresh the dashboard to see the article
             grid and Admina Score reflect your actual coverage.
+          </p>
+          <p>
+            Articles 9–15 apply to <strong>high-risk</strong> systems only. For a
+            <strong>limited</strong>- or <strong>minimal</strong>-risk system, record the category instead,
+            e.g. <code class="inline">{"risk_category": "limited", "system_name": "Helpdesk bot"}</code>:
+            the panel then shows the articles as not required and the EU AI Act gap coverage is left out
+            of the Admina Score. Adding <code class="inline">"voluntary": true</code> with
+            <code class="inline">current_compliance</code> keeps the checks as a voluntary self-assessment,
+            also left out of the score.
+          </p>
+          <p style="font-size: 12px;">
+            <code class="inline">GET /api/compliance/gap-analysis/latest</code> returns the assessment
+            recorded last (404 without one), to compare before sending it again. The proxy keeps the
+            assessments across restarts when <code class="inline">ADMINA_EU_AI_ACT_ASSESSMENTS_PATH</code>
+            names a file it can write; otherwise they are kept in memory only.
           </p>
         </div>
       </div>
@@ -911,6 +960,10 @@ function dashboard() {
     get scoreItems() {
       const bd = this.score.breakdown || {};
       const noAssessment = this.complianceData && this.complianceData.has_assessment === false;
+      // null: the latest assessment is NOT_APPLICABLE and the component is
+      // left out of the score (rescaled over the other components).
+      const euNa = bd.eu_ai_act_coverage === null;
+      const euCategory = this.complianceData?.latest?.risk_category;
       return [
         { key: 'data_residency',       label: 'Data residency enforced',     value: bd.data_residency ?? 0,       max: 25 },
         { key: 'interactions_audited',  label: 'All interactions audited',    value: bd.interactions_audited ?? 0,  max: 25 },
@@ -919,7 +972,12 @@ function dashboard() {
           label: 'EU AI Act gap coverage',
           value: bd.eu_ai_act_coverage ?? 0,
           max: 25,
+          na: euNa,
           hint: noAssessment ? 'No gap analysis run yet — see EU AI Act card' : null,
+          note: euNa
+            ? 'Not applicable' + (euCategory ? ' to a ' + euCategory + '-risk system' : '') +
+              ' — left out of the score'
+            : null,
         },
         { key: 'no_recent_attacks',     label: 'No blocked requests (since start)', value: bd.no_recent_attacks ?? 0,     max: 15 },
         { key: 'forensic_chain_valid',  label: 'Forensic chain valid',        value: bd.forensic_chain_valid ?? 0,  max: 10 },
@@ -928,6 +986,15 @@ function dashboard() {
 
     get hasAssessment() {
       return !!(this.complianceData && this.complianceData.has_assessment);
+    },
+
+    get complianceNotApplicable() {
+      const latest = this.complianceData?.latest;
+      return this.hasAssessment && !!latest && latest.status === 'NOT_APPLICABLE';
+    },
+
+    get complianceVoluntary() {
+      return this.complianceNotApplicable && !!this.complianceData.latest.voluntary;
     },
 
     get enforcementDeadline() {
@@ -956,7 +1023,7 @@ function dashboard() {
     get complianceArticles() {
       if (!this.complianceData || !this.complianceData.latest) return [];
       const latest = this.complianceData.latest;
-      if (!latest.applicable) return [];
+      if (!latest.applicable && !latest.voluntary) return [];
 
       // Build per-article breakdown from gaps
       const articles = [

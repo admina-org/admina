@@ -493,6 +493,10 @@ def create_dashboard_endpoints(
         ``latest`` whose ``gaps`` list covers every Art. 9-15 check, so
         the UI renders the same article grid (all at 0%) it would render
         for a real assessment with no evidence declared.
+
+        Any recorded assessment sets ``has_assessment``, a ``NOT_APPLICABLE``
+        one (limited- or minimal-risk system) included; ``latest`` is the
+        most recent one as recorded.
         """
         comp = get_compliance()
         from admina.domains.compliance.eu_ai_act import (
