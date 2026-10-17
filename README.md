@@ -1722,7 +1722,11 @@ ML-based content validation (toxic language, jailbreak, bias, PII via Presidio) 
 uv pip install <your-guardrails-ai-wheel>   # with pip: pip install <your-guardrails-ai-wheel>
 ```
 
-Enable in `admina.yaml` under `agent_security.domains.guardrailsai`. All inference runs locally by default — no data leaves the deployment perimeter.
+The guard runs on every governed request once `guardrails-ai` is installed;
+its settings are read from `plugin_config.guardrailsai` in `admina.yaml`
+(`inference_mode: local`, the only mode accepted, and `validators`, see
+`admina.yaml.example`). Inference runs locally: no data leaves the deployment
+perimeter.
 
 </details>
 

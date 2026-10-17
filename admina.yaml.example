@@ -253,20 +253,7 @@ domains:
       #     description: Run Python code without network access
       #   run_shell:
       #     profile: shell        # code -> /work/main.sh, run with sh
-    # GuardrailsAI content validation (optional plugin)
-    domains:
-      guardrailsai:
-        enabled: false            # opt-in: install guardrails-ai yourself
-                                  # (no [guardrailsai] extra — upstream is in
-                                  # PyPI quarantine; see README)
-        inference_mode: local     # local | remote
-        validators:
-          - name: toxic_language
-            threshold: 0.5
-          - name: detect_pii
-            entities: ["EMAIL_ADDRESS", "PHONE_NUMBER", "IBAN"]
-          - name: detect_jailbreak
-            threshold: 0.8
+    # GuardrailsAI content validation: see plugin_config.guardrailsai below.
 
   compliance:
     enabled: true
@@ -376,6 +363,19 @@ alert_channels:
 # __init__ accepts a `config` parameter (keyed by plugin name).
 plugins: []
 plugin_config: {}
+# The settings of a plugin, keyed by its name. The GuardrailsAI guard runs
+# once guardrails-ai is installed (no [guardrailsai] extra: upstream is in
+# PyPI quarantine; see README) and reads:
+# plugin_config:
+#   guardrailsai:
+#     inference_mode: local       # the only mode accepted
+#     validators:
+#       - name: toxic_language
+#         threshold: 0.5
+#       - name: detect_pii
+#         entities: ["EMAIL_ADDRESS", "PHONE_NUMBER", "IBAN"]
+#       - name: detect_jailbreak
+#         threshold: 0.8
 #   my-guard:
 #     threshold: 0.8
 #   docker:                     # the execution sandbox's provider
