@@ -3,6 +3,7 @@ from __future__ import annotations
 
 {% if needs_any %}from typing import Any
 
+{% endif %}{% if plugin_type == "execution_sandbox" %}from admina.core.types import SandboxRequest, SandboxResult
 {% endif %}from admina.plugins.base import {{ base_class }}
 
 
@@ -23,6 +24,8 @@ class {{ class_name }}({{ base_class }}):
     provider_name = "{{ plugin_name }}"
 {%- elif name_property == "channel_name" %}
     channel_name = "{{ plugin_name }}"
+{%- elif name_property == "sandbox_name" %}
+    sandbox_name = "{{ plugin_name }}"
 {%- elif name_property == "supported_languages" %}
     supported_languages = ["en"]
 {%- endif %}
@@ -119,4 +122,22 @@ class {{ class_name }}({{ base_class }}):
     async def send_alert(self, alert: dict) -> bool:
         """Send a governance alert through this channel."""
         raise NotImplementedError("TODO: implement send_alert()")
+{%- elif plugin_type == "execution_sandbox" %}
+    # Concurrency: one instance serves every request, from /mcp and from the
+    # SDK, each on an event loop of its own. Keep shared state thread-safe
+    # (threading.Lock), and create objects bound to an event loop per call,
+    # not in __init__.
+    @property
+    def capabilities(self) -> frozenset[str]:
+        """What this sandbox supports: network_none, network_egress, files,
+        network_observed, runtime_runsc. List only what run() enforces; the
+        proxy refuses a provider without network_none and files."""
+        return frozenset({"network_none", "files"})
+
+    async def run(self, request: SandboxRequest) -> SandboxResult:
+        """Execute *request* in a fresh isolated environment, enforce
+        request.limits, remove the environment and return the result.
+        Raise SandboxRequestInvalid before executing anything that is not
+        acceptable, and SandboxError when the environment fails."""
+        raise NotImplementedError("TODO: implement run()")
 {%- endif %}

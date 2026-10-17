@@ -41,6 +41,7 @@ class TestEventType:
             "POLICY_VIOLATION",
             "CIRCUIT_BREAK",
             "CHAIN_STATE_REBUILT",
+            "SANDBOX_EXECUTION",
             # SDK / framework events
             "MODEL_CALL",
             "MODEL_RESPONSE",

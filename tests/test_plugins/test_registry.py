@@ -462,8 +462,8 @@ class TestDiscover:
 
 
 class TestPluginTypes:
-    def test_nine_types_defined(self):
-        assert len(PLUGIN_TYPES) == 9
+    def test_ten_types_defined(self):
+        assert len(PLUGIN_TYPES) == 10
 
     def test_all_keys_present(self):
         expected = {
@@ -476,6 +476,7 @@ class TestPluginTypes:
             "auth_provider",
             "pii_engine",
             "alert_channel",
+            "execution_sandbox",
         }
         assert set(PLUGIN_TYPES.keys()) == expected
 
