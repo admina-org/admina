@@ -2253,17 +2253,20 @@ async def _mcp_exchange(request: Request, path: str, outcome: _McpOutcome) -> JS
         if path.startswith("route/"):
             server_name = path.removeprefix("route/").split("/")[0]
 
-        # Tool-based routing: resolve server by tool name if in multi-upstream mode
-        if not server_name and state.router.is_multi_upstream:
+        # Tool-based routing: a tools/call goes to the server that lists the tool
+        if not server_name and state.router.is_multi_upstream and method == "tools/call":
             tool_name = params.get("name", "") if isinstance(params, dict) else ""
             if tool_name:
                 tool_route = state.router.resolve_by_tool(tool_name)
                 if tool_route:
                     server_name = tool_route.name
 
-        if server_name and state.router.is_multi_upstream:
-            upstream_url = state.router.get_upstream_url(server_name)
-            extra_headers = state.router.get_upstream_headers(server_name)
+        route = state.router.resolve(server_name) if server_name else None
+        if route is not None and state.router.is_multi_upstream:
+            # One request counted per call; a route without its own URL uses
+            # the MCP endpoint of UPSTREAM_MCP_URL, as an unrouted call does.
+            upstream_url = route.upstream_url or f"{settings.UPSTREAM_MCP_URL}/mcp"
+            extra_headers = route.headers
             logger.debug("Routing to server '%s' -> %s", server_name, upstream_url)
         else:
             upstream_url = f"{settings.UPSTREAM_MCP_URL}/mcp"

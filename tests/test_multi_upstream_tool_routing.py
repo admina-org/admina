@@ -143,8 +143,11 @@ class _FakeLoopBreaker:
         return {"is_loop": False, "similarity": 0.0}
 
 
-def _post_tools_call(monkeypatch, router: MultiUpstreamRouter, tool: str) -> str:
-    """POST a tools/call for *tool* to /mcp; return the URL the proxy forwarded to."""
+def _post_tools_call(
+    monkeypatch, router: MultiUpstreamRouter, tool: str, method: str = "tools/call"
+) -> str:
+    """POST a *method* request (``tools/call`` by default) naming *tool* to /mcp;
+    return the URL the proxy forwarded to."""
     pytest.importorskip("fastapi")
     from admina.proxy import main as proxy_main
     from admina.proxy.state import ProxyState
@@ -179,7 +182,7 @@ def _post_tools_call(monkeypatch, router: MultiUpstreamRouter, tool: str) -> str
     body = {
         "jsonrpc": "2.0",
         "id": 1,
-        "method": "tools/call",
+        "method": method,
         "params": {"name": tool, "arguments": {}},
     }
 
@@ -211,7 +214,17 @@ class TestMcpRoutesByToolName:
 
     def test_declared_tool_goes_to_its_route(self, monkeypatch, router):
         assert _post_tools_call(monkeypatch, router, "git_push") == "http://github-mcp/mcp"
-        assert router.routes["github"].request_count > 0
+        assert router.routes["github"].request_count == 1
+
+    def test_only_tools_call_is_routed_by_tool_name(self, monkeypatch, router):
+        # A prompt named like a listed tool is not a call of that tool.
+        url = _post_tools_call(monkeypatch, router, "git_push", method="prompts/get")
+        assert url == "http://default-upstream/mcp"
+        assert router.routes["github"].request_count == 0
+
+    def test_a_route_without_url_uses_the_default_mcp_endpoint(self, monkeypatch, router):
+        router.routes["github"].upstream_url = ""
+        assert _post_tools_call(monkeypatch, router, "git_push") == "http://default-upstream/mcp"
 
     def test_other_route_tool_goes_to_its_route(self, monkeypatch, router):
         assert _post_tools_call(monkeypatch, router, "read_file") == "http://files-mcp/mcp"

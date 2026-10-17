@@ -110,11 +110,10 @@ class MultiUpstreamRouter:
         return route
 
     def resolve_by_tool(self, tool_name: str) -> ServerRoute | None:
-        """Resolve which server provides a given tool."""
+        """The route of the server that provides *tool_name*, without counting
+        a request (:meth:`resolve` counts it)."""
         server_name = self.tool_to_server.get(tool_name)
-        if server_name:
-            return self.resolve(server_name)
-        return None
+        return self.routes.get(server_name) if server_name else None
 
     def register_tool_mapping(self, server_name: str, tool_names: list[str]) -> None:
         """Map tool names to the server that provides them.
@@ -135,20 +134,16 @@ class MultiUpstreamRouter:
         logger.info("Registered %d tools for server '%s'", len(tool_names), server_name)
 
     def get_upstream_url(self, server_name: str | None = None) -> str:
-        """Get the upstream URL for a given server, or default."""
-        if server_name:
-            route = self.resolve(server_name)
-            if route and route.upstream_url:
-                return route.upstream_url
+        """The upstream URL of *server_name*, or the default; counts no request."""
+        route = self.routes.get(server_name) if server_name else None
+        if route and route.upstream_url:
+            return route.upstream_url
         return self.default_upstream
 
     def get_upstream_headers(self, server_name: str | None = None) -> dict:
-        """Get any extra headers for the upstream server."""
-        if server_name:
-            route = self.resolve(server_name)
-            if route:
-                return route.headers
-        return {}
+        """The extra headers of *server_name*; counts no request."""
+        route = self.routes.get(server_name) if server_name else None
+        return route.headers if route else {}
 
     def record_block(self, server_name: str) -> None:
         """Record that a request to this server was blocked."""
