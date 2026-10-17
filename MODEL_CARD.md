@@ -1052,8 +1052,10 @@ the operator declares, with an optional `system_name`:
 - An unknown category is rejected.
 
 The last 100 assessments are kept. In the proxy they persist across
-restarts when `ADMINA_EU_AI_ACT_ASSESSMENTS_PATH` names a JSON file
-(written atomically; an unreadable file is logged and ignored); otherwise
+restarts when `ADMINA_EU_AI_ACT_ASSESSMENTS_PATH` names a JSON file,
+written atomically. A malformed file is renamed to
+`<name>.corrupt-<UTC time>`; one that cannot be read is not overwritten,
+and the assessments are then kept in memory only. Without the variable
 they are kept in memory only. `GET /api/compliance/gap-analysis/latest`
 returns the most recent one.
 
