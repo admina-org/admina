@@ -53,6 +53,9 @@ services:
       # container.
       - FORENSIC_BACKEND=filesystem
       - FORENSIC_BASE_DIR=/app/.admina/forensic
+      # The last EU AI Act assessments, kept across restarts on the
+      # compliance-data volume (below).
+      - ADMINA_EU_AI_ACT_ASSESSMENTS_PATH=/app/.admina/compliance/eu_ai_act_assessments.json
       - OTEL_ENDPOINT=http://otel-collector:4317
       - UPSTREAM_MCP_URL=http://mock-mcp-server:9000
       - LOG_LEVEL=INFO
@@ -62,6 +65,8 @@ services:
       # creates the directory owned by the proxy user, so a new volume
       # starts writable by it.
       - forensic-data:/app/.admina/forensic
+      # EU AI Act assessments (ADMINA_EU_AI_ACT_ASSESSMENTS_PATH).
+      - compliance-data:/app/.admina/compliance
     depends_on:
       redis:
         condition: service_healthy
@@ -227,6 +232,7 @@ volumes:
   clickhouse-data:
   grafana-data:
   forensic-data:
+  compliance-data:
 
 networks:
   admina:

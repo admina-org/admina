@@ -64,9 +64,11 @@ RUN chmod +x /docker-entrypoint.sh
 
 # Run as a non-root, non-login system user. At runtime the proxy writes
 # only to the directory of the filesystem forensic store
-# (FORENSIC_BACKEND=filesystem). Each image creates /app/.admina/forensic,
-# the FORENSIC_BASE_DIR of the compose files, before /app is given to this
-# user, so a volume mounted there starts owned by the same user.
+# (FORENSIC_BACKEND=filesystem) and to the file of the EU AI Act
+# assessments (ADMINA_EU_AI_ACT_ASSESSMENTS_PATH). Each image creates
+# /app/.admina/forensic and /app/.admina/compliance, the directories of the
+# compose files, before /app is given to this user, so a volume mounted
+# there starts owned by the same user.
 RUN groupadd --system --gid 10001 admina && \
     useradd --system --uid 10001 --gid admina --no-create-home --shell /sbin/nologin admina
 
@@ -88,7 +90,7 @@ RUN uv pip install /tmp/wheels/*.whl && rm -rf /tmp/wheels
 
 COPY --from=slim-sources /src/admina/ ./admina/
 
-RUN mkdir -p /app/.admina/forensic && chown -R admina:admina /app
+RUN mkdir -p /app/.admina/forensic /app/.admina/compliance && chown -R admina:admina /app
 USER admina
 
 # Full image (default target)
@@ -101,5 +103,5 @@ RUN uv pip install /tmp/wheels/*.whl && rm -rf /tmp/wheels
 
 COPY admina/ ./admina/
 
-RUN mkdir -p /app/.admina/forensic && chown -R admina:admina /app
+RUN mkdir -p /app/.admina/forensic /app/.admina/compliance && chown -R admina:admina /app
 USER admina
