@@ -973,7 +973,8 @@ admits API-key requests, stamped `user:api_key_user`; `api_key` is the stamp
 when the key comes only from `ADMINA_API_KEY_FILE` or `.env`. An
 `event_type` of the records the proxy writes itself (`mcp_request`,
 `mcp_response`, `gateway_request`, `gateway_response`, `gateway_response_scan`,
-`policy_violation`, `chain_state_rebuilt`) is refused with `400`.
+`policy_violation`, `chain_state_rebuilt`, `sandbox_execution`) is refused with
+`400`.
 `ADMINA_AUDIT_APPEND_KEY` (or `ADMINA_AUDIT_APPEND_KEY_FILE`) is a key that
 this route accepts besides the API key and every other route refuses; unset
 (the default), the route needs the API key.
