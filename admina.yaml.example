@@ -247,6 +247,11 @@ domains:
       # A record that cannot be written: ADMINA_FORENSIC_FAIL_MODE=open
       # (default: logged, request served) or closed (503, not forwarded).
     eu_ai_act:
+      # Risk classification + Art. 9-15 gap analysis.
+      # Endpoints: POST /api/compliance/classify, POST /api/compliance/gap-analysis,
+      # GET /api/compliance/gap-analysis/latest. The proxy keeps the last 100
+      # assessments in memory; set ADMINA_EU_AI_ACT_ASSESSMENTS_PATH (env) to a
+      # JSON file to keep them across restarts.
       enabled: true
     nis2:
       # Self-assessment of the 10 Art. 21(2) measure areas.

@@ -194,6 +194,16 @@ def _trend_from_rows(
 
 
 # ── Governance score ─────────────────────────────────────────
+# Points of each component of the governance score (they add up to 100).
+_SCORE_COMPONENTS: dict[str, int] = {
+    "data_residency": 25,
+    "interactions_audited": 25,
+    "eu_ai_act_coverage": 25,
+    "no_recent_attacks": 15,
+    "forensic_chain_valid": 10,
+}
+
+
 def _compute_governance_score(
     *,
     metrics: dict[str, Any],
@@ -212,8 +222,16 @@ def _compute_governance_score(
     A forensic store whose ``chain_status`` is ``invalid`` writes no record
     and its chain does not verify, so it earns neither the audit nor the
     chain points.
+
+    A component that does not apply is ``None`` in ``breakdown``, listed in
+    ``not_applicable``, and left out of the score, which is rescaled to 100
+    over the points of the components that apply (as the OISG evidence
+    score treats ``not_applicable`` criteria). The EU AI Act component does
+    not apply when the latest assessment is ``NOT_APPLICABLE`` (a limited-
+    or minimal-risk system, a voluntary self-assessment included). Without
+    any assessment it applies and scores 0.
     """
-    breakdown: dict[str, int] = {}
+    breakdown: dict[str, int | None] = {}
 
     # Data residency — enforced if proxy is running (always true in proxy mode)
     breakdown["data_residency"] = 25
@@ -225,12 +243,15 @@ def _compute_governance_score(
     breakdown["interactions_audited"] = 25 if audited else 0
 
     # EU AI Act gap coverage — use last assessment if available
-    gap_score = 0
+    gap_score: int | None = 0
     assessments = getattr(compliance_engine, "assessments", [])
     if assessments:
         latest = assessments[-1]
-        coverage_pct = latest.get("compliance_score", 0) / 100
-        gap_score = round(coverage_pct * 25)
+        if latest.get("applicable", True):
+            coverage_pct = (latest.get("compliance_score") or 0) / 100
+            gap_score = round(coverage_pct * 25)
+        else:
+            gap_score = None
     breakdown["eu_ai_act_coverage"] = gap_score
 
     # No request blocked: requests_blocked counts from the start of the
@@ -244,11 +265,17 @@ def _compute_governance_score(
     )
     breakdown["forensic_chain_valid"] = 10 if chain_valid else 0
 
-    total = sum(breakdown.values())
+    not_applicable = [key for key, value in breakdown.items() if value is None]
+    earned = sum(value for value in breakdown.values() if value is not None)
+    applicable_max = sum(
+        points for key, points in _SCORE_COMPONENTS.items() if key not in not_applicable
+    )
+    total = earned if not not_applicable else round(earned * 100 / applicable_max)
     return {
         "score": total,
         "max_score": 100,
         "breakdown": breakdown,
+        "not_applicable": not_applicable,
         "computed_at": datetime.now(UTC).isoformat(),
     }
 
@@ -466,6 +493,10 @@ def create_dashboard_endpoints(
         ``latest`` whose ``gaps`` list covers every Art. 9-15 check, so
         the UI renders the same article grid (all at 0%) it would render
         for a real assessment with no evidence declared.
+
+        Any recorded assessment sets ``has_assessment``, a ``NOT_APPLICABLE``
+        one (limited- or minimal-risk system) included; ``latest`` is the
+        most recent one as recorded.
         """
         comp = get_compliance()
         from admina.domains.compliance.eu_ai_act import (

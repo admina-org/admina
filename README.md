@@ -394,9 +394,9 @@ stops when they are not set.
 
 Real-time governance dashboard on port 3000:
 
-- **Governance Score** — 0-100 composite metric (data residency, audit coverage, attack rate, forensic integrity, EU AI Act compliance)
+- **Governance Score** — 0-100 composite metric (data residency, audit coverage, attack rate, forensic integrity, EU AI Act compliance). When the latest EU AI Act assessment is `NOT_APPLICABLE` (a limited- or minimal-risk system), that component is `null` in `GET /api/dashboard/score`, listed in `not_applicable`, and the score is rescaled over the other components
 - **Live Feed** — streaming governance events via WebSocket
-- **Compliance Gaps** — EU AI Act gap analysis with article-level detail
+- **Compliance Gaps** — EU AI Act gap analysis with article-level detail; a limited- or minimal-risk system is shown as "Articles 9–15 not required"
 - **Infrastructure Health** — proxy, Redis, forensic store, ClickHouse, OTEL status
 
 API backend: `GET /api/dashboard/score`, `/feed`, `/compliance`, `/sovereignty`, `/infra`, `/models`
@@ -1889,6 +1889,7 @@ production.
 | `CLICKHOUSE_HOST` | `localhost` | Event analytics (empty = no ClickHouse) |
 | `FORENSIC_BACKEND` | `memory` | Forensic store: `memory` \| `filesystem` \| `s3` (else `domains.compliance.forensic.backend` of `admina.yaml`) |
 | `FORENSIC_BASE_DIR` | *(empty)* | Directory of the `filesystem` store (else `domains.compliance.forensic.base_dir`) |
+| `ADMINA_EU_AI_ACT_ASSESSMENTS_PATH` | *(empty)* | JSON file keeping the last 100 EU AI Act assessments across restarts (empty: in memory only) |
 | `ADMINA_FORENSIC_FAIL_MODE` | `open` | A forensic record that cannot be written: `open` (logged, request served) \| `closed` (`503`, not forwarded) |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
 | `ADMINA_LOG_FORMAT` | `text` | Log output: `text` \| `json` |
@@ -1965,6 +1966,14 @@ curl -X POST http://localhost:8080/api/v1/audit \
 curl -X POST http://localhost:8080/api/compliance/classify \
   -H "Content-Type: application/json" \
   -d '{"description":"AI credit scoring","use_case":"lending","data_types":["financial"]}'
+
+# EU AI Act assessment of a limited-risk system (recorded as NOT_APPLICABLE)
+curl -X POST http://localhost:8080/api/compliance/gap-analysis \
+  -H "Content-Type: application/json" \
+  -d '{"risk_category":"limited","system_name":"Helpdesk bot"}'
+
+# The most recent EU AI Act assessment (404 without one)
+curl http://localhost:8080/api/compliance/gap-analysis/latest
 
 # Dashboard governance score
 curl http://localhost:8080/api/dashboard/score

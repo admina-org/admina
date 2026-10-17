@@ -557,6 +557,97 @@ class TestDashboardCompliance:
         assert data["has_assessment"] is True
         assert data["total_assessments"] >= 1
 
+    def test_compliance_with_a_not_applicable_latest(self) -> None:
+        """A limited-risk assessment counts as an assessment: has_assessment
+        is true and latest is the NOT_APPLICABLE result."""
+        from admina.domains.compliance.eu_ai_act import EUAIActCompliance
+
+        comp = EUAIActCompliance()
+        comp.gap_analysis("high", {})
+        latest = comp.gap_analysis("limited", {}, system_name="Helpdesk bot")
+        app = _build_test_app(compliance=comp)
+
+        async def go():
+            async with _client(app) as c:
+                return (await c.get("/api/dashboard/compliance")).json()
+
+        data = _run(go())
+        assert data["has_assessment"] is True
+        assert data["total_assessments"] == 2
+        assert data["latest"] == latest
+        assert data["latest"]["status"] == "NOT_APPLICABLE"
+
+
+class TestDashboardScoreNotApplicable:
+    """The EU AI Act component of GET /api/dashboard/score when the latest
+    assessment is NOT_APPLICABLE: left out of the score, which is rescaled
+    over the other components."""
+
+    @staticmethod
+    def _score(comp: Any, forensic_box: Any = None) -> dict:
+        app = _build_test_app(compliance=comp, forensic_box=forensic_box)
+
+        async def go():
+            async with _client(app) as c:
+                return (await c.get("/api/dashboard/score")).json()
+
+        return _run(go())
+
+    def test_not_applicable_is_excluded(self) -> None:
+        from admina.domains.compliance.eu_ai_act import EUAIActCompliance
+
+        comp = EUAIActCompliance()
+        comp.gap_analysis("minimal", {})
+        data = self._score(comp, forensic_box=_FakeForensicBox(has_records=False))
+        bd = data["breakdown"]
+        assert bd["eu_ai_act_coverage"] is None
+        assert data["not_applicable"] == ["eu_ai_act_coverage"]
+        assert data["max_score"] == 100
+        # data residency 25 + no blocked requests 15 = 40 of the 75
+        # applicable points.
+        assert bd["data_residency"] == 25 and bd["no_recent_attacks"] == 15
+        assert data["score"] == round(40 * 100 / 75)
+
+    def test_not_applicable_does_not_inflate_the_score(self) -> None:
+        """The 25 EU AI Act points are not granted to a limited-risk
+        system: the score is the share of the 75 applicable points."""
+        from admina.domains.compliance.eu_ai_act import EUAIActCompliance
+
+        comp = EUAIActCompliance()
+        comp.gap_analysis("limited", {})
+        data = self._score(comp, forensic_box=_FakeForensicBox(has_records=True))
+        assert data["breakdown"]["eu_ai_act_coverage"] is None
+        assert sum(v for v in data["breakdown"].values() if v is not None) == 75
+        assert data["score"] == 100
+
+    def test_voluntary_self_assessment_is_excluded(self) -> None:
+        from admina.domains.compliance.eu_ai_act import EUAIActCompliance
+
+        comp = EUAIActCompliance()
+        all_met = {k: [True] * 4 for k in ("risk_management", "record_keeping")}
+        comp.gap_analysis("limited", all_met, voluntary=True)
+        data = self._score(comp)
+        assert data["breakdown"]["eu_ai_act_coverage"] is None
+        assert data["not_applicable"] == ["eu_ai_act_coverage"]
+
+    def test_applicable_latest_keeps_the_component(self) -> None:
+        from admina.domains.compliance.eu_ai_act import EUAIActCompliance
+
+        comp = EUAIActCompliance()
+        comp.gap_analysis("limited", {})
+        comp.gap_analysis("high", {"record_keeping": [True] * 4})
+        data = self._score(comp, forensic_box=_FakeForensicBox(has_records=False))
+        assert data["breakdown"]["eu_ai_act_coverage"] == round(4 / 28 * 25)
+        assert data["not_applicable"] == []
+        assert data["score"] == sum(data["breakdown"].values())
+
+    def test_no_assessment_scores_zero_on_the_component(self) -> None:
+        from admina.domains.compliance.eu_ai_act import EUAIActCompliance
+
+        data = self._score(EUAIActCompliance())
+        assert data["breakdown"]["eu_ai_act_coverage"] == 0
+        assert data["not_applicable"] == []
+
 
 class TestDashboardSovereignty:
     """GET /api/dashboard/sovereignty"""

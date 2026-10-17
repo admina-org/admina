@@ -946,6 +946,35 @@ to `minimal`.
   identification by law enforcement). Admina does not model these.
 - **ISO/IEC 42001 and SOC 2** are not implemented.
 
+### Gap analysis (Articles 9–15)
+
+`EUAIActCompliance.gap_analysis()` (proxy: `POST
+/api/compliance/gap-analysis`) records an assessment for the risk category
+the operator declares, with an optional `system_name`:
+
+- `high` / `unacceptable`: the 28 checks of Articles 9–15 are scored from
+  the operator's declarations (`COMPLIANT` or `GAPS_FOUND`).
+- `limited` / `minimal`: Articles 9–15 do not apply. The assessment is
+  recorded with status `NOT_APPLICABLE`, no score and no checks; declared
+  checks are ignored unless `voluntary` is set, in which case they are kept
+  as a voluntary self-assessment.
+- An unknown category is rejected.
+
+The last 100 assessments are kept. In the proxy they persist across
+restarts when `ADMINA_EU_AI_ACT_ASSESSMENTS_PATH` names a JSON file
+(written atomically; an unreadable file is logged and ignored); otherwise
+they are kept in memory only. `GET /api/compliance/gap-analysis/latest`
+returns the most recent one.
+
+The Admina Score's "EU AI Act gap coverage" component (25 points) is the
+latest high-risk score × 25. When the latest assessment is
+`NOT_APPLICABLE` (voluntary or not) the component is reported as `null`,
+listed in `not_applicable`, and the score is rescaled to 100 over the
+other components, so a limited- or minimal-risk classification neither
+earns nor loses those points. The declared category is the operator's
+responsibility: the gap analysis does not check it against
+`classify_risk()`.
+
 ---
 
 ## 7b. NIS2 Self-Assessment
