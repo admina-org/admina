@@ -126,48 +126,61 @@ report = kit.gap_analysis(risk_category="high", current_compliance={...})
 ```bash
 # Recommended for new users: SDK + proxy + dashboard.
 # Lets you run `admina dev` and see the dashboard out of the box.
-pip install "admina[proxy]"
+uv add "admina[proxy]"
+# in an existing virtual environment: uv pip install "admina[proxy]"
+# with pip:                           pip install "admina[proxy]"
+
+# The `admina` command on your PATH, outside any project:
+uv tool install "admina[proxy]"
 
 # Everything (proxy + NLP + telemetry). Use this if you also want
 # spaCy-based NER for PII detection or OpenTelemetry export.
-pip install "admina[full]"
-python -m spacy download en_core_web_sm   # for [full] only
+uv add "admina[full]"
+# for [full] only: the spaCy English model, declared in the project
+uv add "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
 
 # Model-adapter provider SDKs (per-provider extras):
-pip install "admina[openai]"      # openai>=1.0
-pip install "admina[ollama]"      # ollama>=0.3
-pip install "admina[anthropic]"   # anthropic>=0.39
-pip install "admina[mistral]"     # mistralai>=1.0
-pip install "admina[gemini]"      # google-genai>=1.0
-pip install "admina[bedrock]"     # boto3>=1.34 (AWS Bedrock)
+uv add "admina[openai]"      # openai>=1.0
+uv add "admina[ollama]"      # ollama>=0.3
+uv add "admina[anthropic]"   # anthropic>=0.39
+uv add "admina[mistral]"     # mistralai>=1.0
+uv add "admina[gemini]"      # google-genai>=1.0
+uv add "admina[bedrock]"     # boto3>=1.34 (AWS Bedrock)
 
 # All provider SDKs at once:
-pip install "admina[adapters]"
+uv add "admina[adapters]"
 
 # Everything (proxy + NLP + telemetry + all adapters):
-pip install "admina[all]"
-python -m spacy download en_core_web_sm   # for [all] only
+uv add "admina[all]"
+# for [all] only: the spaCy English model, as for [full]
 
 # Optional: Rust-accelerated engine (auto-detected at runtime).
 # Opt-in extra — pulls in the admina-core wheel from PyPI.
-pip install "admina[rust]"
+uv add "admina[rust]"
 
 # The proxy for the OpenAI-compatible gateway only: without Redis,
 # ClickHouse, boto3 and the scientific stack (see "Embedded deployment").
-pip install "admina[proxy-minimal]"
+uv add "admina[proxy-minimal]"
 
 # Advanced: SDK only (no proxy, no dashboard, no `admina dev`).
 # Use this when embedding the SDK into another service and you don't
 # need the local dev server.
-pip install admina
+uv add admina
 ```
 
-> The PyPI distribution name is `admina`; the Python import
-> name is `admina` (e.g. `from admina import GovernedModel`). This is
-> a normal Python pattern — same as `python-dateutil` → `import dateutil`.
+> Each `uv add` line above adds a dependency to the `pyproject.toml` of the
+> current project (`uv init` creates one). In an existing virtual environment,
+> use `uv pip install` with the same argument; with pip, use `pip install`
+> with the same argument (for example `pip install "admina[full]"`), and
+> `python -m spacy download en_core_web_sm` for the spaCy model.
+> To upgrade: `uv add --upgrade-package admina "admina[proxy]"`,
+> `uv pip install -U "admina[proxy]"` or `pip install -U "admina[proxy]"`.
+
+> The PyPI distribution and the Python module are both named `admina`
+> (e.g. `from admina import GovernedModel`).
 
 > The Rust engine is an **optional, opt-in** accelerator. The default
-> `pip install admina` ships only the pure-Python implementation;
+> `admina` package ships only the pure-Python implementation;
 > `admina[rust]` adds the `admina-core` wheel, which Admina
 > auto-detects at runtime: under `ADMINA_ENGINE=auto` (the default) the
 > firewall and the loop breaker run on Rust whenever it is installed, as in
@@ -187,16 +200,21 @@ git clone https://github.com/admina-org/admina.git
 cd admina
 
 # Recommended: proxy + dashboard + infra deps (enables `admina dev`)
-pip install -e ".[proxy]"
+uv sync --extra proxy
+# in an existing virtual environment: uv pip install -e ".[proxy]"
+# with pip:                           pip install -e ".[proxy]"
 
 # Everything (proxy + NLP + telemetry)
-pip install -e ".[full]"
+uv sync --extra full
 
 # All model-adapter SDKs
-pip install -e ".[adapters]"
+uv sync --extra adapters
 
 # Everything (proxy + NLP + telemetry + all adapters)
-pip install -e ".[all]"
+uv sync --extra all
+
+# `uv sync` installs into .venv/: activate it (source .venv/bin/activate)
+# or prefix the commands below with `uv run`.
 
 # CLI workflow
 admina init my-project   # Scaffold a governed AI project
@@ -211,7 +229,7 @@ docker compose up --build        # Credentials printed at bootstrap
 # and pull a model first: ollama pull llama3.1:8b
 
 # Advanced: SDK only (no proxy, no dashboard)
-pip install -e .
+uv sync --no-dev         # with pip: pip install -e .
 python -c "from admina import GovernedModel; print('SDK ready')"
 ```
 
@@ -273,11 +291,11 @@ from admina import GovernedModel, GovernedData, GovernedAgent, ComplianceKit
 | Transport Adapter | MCP, HTTP REST |
 | Forensic Store | Filesystem, S3-compatible (boto3 — AWS S3, MinIO, R2, …) |
 | Auth Provider | API Key |
-| PII Engine | spaCy + Regex (default), Microsoft Presidio (`pip install admina[presidio]`, `ADMINA_PII_ENGINE=presidio`); engines of other packages through the `admina.pii_engines` entry-point group (see [PII engines](#pii-engines)) |
+| PII Engine | spaCy + Regex (default), Microsoft Presidio (`uv add "admina[presidio]"` or `pip install "admina[presidio]"`, `ADMINA_PII_ENGINE=presidio`); engines of other packages through the `admina.pii_engines` entry-point group (see [PII engines](#pii-engines)) |
 | Alert Channel | Log, Webhook |
 
 Model adapters lazy-import their provider SDK, so install the ones you
-use: `pip install admina[adapters]` for all of them, or a
+use: `uv add "admina[adapters]"` (with pip: `pip install "admina[adapters]"`) for all of them, or a
 single provider (`[openai]`, `[ollama]`, `[anthropic]`, `[mistral]`,
 `[gemini]`, `[bedrock]`). vLLM has no extra of its own — it serves an
 OpenAI-compatible API and subclasses the OpenAI adapter, so install
@@ -977,7 +995,7 @@ attempt. The `proxy-minimal` extra installs the proxy without Redis,
 ClickHouse, boto3, typer and the scientific stack of the Python loop breaker:
 
 ```bash
-pip install "admina[proxy-minimal]"
+uv pip install "admina[proxy-minimal]"   # with pip: pip install "admina[proxy-minimal]"
 ADMINA_ENABLED_SURFACES=gateway REDIS_URL= CLICKHOUSE_HOST= \
   ADMINA_API_KEY_FILE=/run/secrets/admina_api_key \
   uvicorn admina.proxy.main:app --host 0.0.0.0 --port 8080
@@ -1612,7 +1630,7 @@ ML-based content validation (toxic language, jailbreak, bias, PII via Presidio) 
 # manually from your local mirror or wheel cache; once available, the
 # plugin in admina/plugins/builtin/guards/guardrailsai_guard.py will
 # detect it automatically.
-pip install <your-guardrails-ai-wheel>
+uv pip install <your-guardrails-ai-wheel>   # with pip: pip install <your-guardrails-ai-wheel>
 ```
 
 Enable in `admina.yaml` under `agent_security.domains.guardrailsai`. All inference runs locally by default — no data leaves the deployment perimeter.
@@ -1703,9 +1721,9 @@ See [full integration docs](https://github.com/admina-org/admina/blob/main/docs/
 ## Performance — Hybrid Python + Rust engine
 
 The Rust core engine is an optional accelerator. The default
-`pip install admina` ships only the pure-Python implementation;
-enable the Rust engine with the opt-in extra `pip install
-"admina[rust]"` (or build from source for local development —
+`admina` package ships only the pure-Python implementation;
+enable the Rust engine with the opt-in extra `uv add "admina[rust]"`
+(with pip: `pip install "admina[rust]"`) (or build from source for local development —
 `maturin develop --release --manifest-path core-rust/Cargo.toml`, see
 [CONTRIBUTING.md](https://github.com/admina-org/admina/blob/main/CONTRIBUTING.md)). Under `ADMINA_ENGINE=auto` Admina
 runs the Rust firewall and loop breaker when the extension is installed and

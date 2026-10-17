@@ -36,6 +36,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from admina.core.install_hint import install_hint
+
 logger = logging.getLogger("admina.ai_infra.rag")
 
 
@@ -425,7 +427,7 @@ class OllamaEmbedder:
         except ImportError as exc:
             raise ImportError(
                 "The 'httpx' package is required for OllamaEmbedder. "
-                "Install it with: pip install httpx"
+                "Install it with: " + install_hint("httpx")
             ) from exc
 
         embeddings: list[list[float]] = []
@@ -471,7 +473,7 @@ class SentenceTransformerEmbedder:
             except ImportError as exc:
                 raise ImportError(
                     "The 'sentence-transformers' package is required. "
-                    "Install it with: pip install sentence-transformers"
+                    "Install it with: " + install_hint("sentence-transformers")
                 ) from exc
             self._model = SentenceTransformer(self.model_name)
             self._dimension = self._model.get_sentence_embedding_dimension()
@@ -714,7 +716,7 @@ class RAGPipeline:
         except ImportError as exc:
             raise ImportError(
                 "The 'chromadb' package is required for vector storage. "
-                "Install it with: pip install chromadb"
+                "Install it with: " + install_hint("chromadb")
             ) from exc
 
         client = chromadb.HttpClient(
@@ -758,7 +760,7 @@ class RAGPipeline:
         except ImportError as exc:
             raise ImportError(
                 "The 'chromadb' package is required for retrieval. "
-                "Install it with: pip install chromadb"
+                "Install it with: " + install_hint("chromadb")
             ) from exc
 
         client = chromadb.HttpClient(

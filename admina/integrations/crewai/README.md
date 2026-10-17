@@ -5,13 +5,16 @@ Govern every CrewAI agent step — LLM reasoning, tool invocations, and task out
 ## Install
 
 ```bash
-pip install -e ".[proxy,nlp]"   # Admina: loop breaker (numpy, scikit-learn) + NLP (spaCy for PII)
-pip install crewai              # Your CrewAI deps
+uv sync --extra proxy --extra nlp   # Admina: loop breaker (numpy, scikit-learn) + NLP (spaCy for PII)
+uv pip install crewai                # Your CrewAI deps
+# with pip: pip install -e ".[proxy,nlp]" crewai
 ```
 
-From PyPI: `pip install "admina[proxy,nlp]"`. Loop detection is on
-by default and needs numpy and scikit-learn (`[proxy]`), or the Rust loop
-breaker (`[rust]`); without either, pass `loop_detection=False`.
+From PyPI: `uv add "admina[proxy,nlp]"` (in an existing virtual environment
+`uv pip install "admina[proxy,nlp]"`, with pip `pip install "admina[proxy,nlp]"`).
+Loop detection is on by default and needs numpy and scikit-learn
+(`[proxy]`), or the Rust loop breaker (`[rust]`); without either, pass
+`loop_detection=False`.
 
 ## Quick Start
 

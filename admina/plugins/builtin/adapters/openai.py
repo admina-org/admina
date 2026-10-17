@@ -17,7 +17,7 @@
 Wraps the ``openai`` Python client to provide inference through
 OpenAI-compatible APIs (OpenAI, Azure OpenAI, vLLM, LiteLLM, etc.).
 
-Requires: ``pip install openai``  (optional dependency).
+Requires: ``uv pip install openai`` (or ``pip install openai``)  (optional dependency).
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ import os
 import time
 from typing import Any
 
+from admina.core.install_hint import install_hint
 from admina.plugins.base import BaseModelAdapter
 from admina.plugins.builtin.adapters._streaming import aiter_sync
 
@@ -82,7 +83,7 @@ class OpenAIAdapter(BaseModelAdapter):
             except ImportError as exc:
                 raise ImportError(
                     "The 'openai' package is required for OpenAIAdapter. "
-                    "Install it with: pip install openai"
+                    "Install it with: " + install_hint("openai")
                 ) from exc
         return self._client
 

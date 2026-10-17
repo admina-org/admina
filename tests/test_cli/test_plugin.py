@@ -108,7 +108,7 @@ class TestScaffoldPlugin:
 class TestPluginInstall:
     """Tests for ``admina plugin install``."""
 
-    @patch("admina.cli.main._pip_install")
+    @patch("admina.cli.main._install_package")
     def test_install_success(
         self,
         pip_mock: MagicMock,
@@ -121,7 +121,7 @@ class TestPluginInstall:
             assert result.exit_code == 0, result.output
             assert "Installed admina-adapter-bedrock" in result.output
 
-    @patch("admina.cli.main._pip_install")
+    @patch("admina.cli.main._install_package")
     def test_install_failure(
         self,
         pip_mock: MagicMock,
@@ -137,7 +137,7 @@ class TestPluginInstall:
             result = runner.invoke(app, ["plugin", "install", "nonexistent-pkg"])
             assert result.exit_code != 0
 
-    @patch("admina.cli.main._pip_install")
+    @patch("admina.cli.main._install_package")
     def test_install_updates_admina_yaml(
         self,
         pip_mock: MagicMock,
@@ -158,7 +158,7 @@ class TestPluginInstall:
             data = yaml.safe_load(yaml_path.read_text())
             assert "admina_adapter_bedrock" in data["plugins"]
 
-    @patch("admina.cli.main._pip_install")
+    @patch("admina.cli.main._install_package")
     def test_install_no_duplicate_in_yaml(
         self,
         pip_mock: MagicMock,

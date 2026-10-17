@@ -45,7 +45,8 @@ PII engine also lacks EU national-ID patterns and spaCy NER (it checks the
 Luhn sum of card numbers since 0.14.1). Python is the higher-recall engine; Rust is opt-in for
 latency-sensitive workloads where the narrower coverage is acceptable.
 
-Opt-in means the `[rust]` extra of a `pip install`. The official proxy
+Opt-in means the `[rust]` extra (`uv add "admina[rust]"` or
+`pip install "admina[rust]"`). The official proxy
 image installs `admina-core`, so under the default `ADMINA_ENGINE=auto` it
 runs the Rust firewall and loop breaker (the PII engine stays Python, with
 regular expressions only: the image has no spaCy model). Set
@@ -270,10 +271,12 @@ Detects and redacts PII in text. Three modes:
   opt-in via `ADMINA_ENGINE=rust`. Categories are individually
   toggleable from `admina.yaml`
   (`admina/domains/data_sovereignty/pii.py:41-108`).
-- **Regex + spaCy NER** (`pip install admina[nlp]`): adds named-entity
+- **Regex + spaCy NER** (`uv add "admina[nlp]"` or
+  `pip install "admina[nlp]"`): adds named-entity
   detection for `PERSON`, `ORG`, `GPE`, `LOC`. Python only
   (`admina/domains/data_sovereignty/pii.py:60-77`).
-- **Microsoft Presidio** (`pip install admina[presidio]`,
+- **Microsoft Presidio** (`uv add "admina[presidio]"` or
+  `pip install "admina[presidio]"`,
   selected with `ADMINA_PII_ENGINE=presidio` or `pii_engine: presidio`
   in `admina.yaml`): a third, opt-in detection engine. Presidio does
   **detection only** — Admina keeps its own masking, so the output
@@ -988,7 +991,7 @@ Two GDPR primitives:
 - **Records of Processing Activities (Art. 30)**: typed CRUD over a
   flat list of `ProcessingActivity` records. JSON-on-disk persistence
   is opt-in (set `ADMINA_GDPR_ROPA_PATH` or pass `storage_path=`); the
-  default is in-memory only so a fresh `pip install` never writes to
+  default is in-memory only so a fresh installation never writes to
   disk unbidden.
 - **DPIA template (Art. 35)**: renders a Markdown scaffold from
   operator-supplied facts (purpose, legal basis, data categories,

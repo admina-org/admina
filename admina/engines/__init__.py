@@ -458,8 +458,8 @@ class _PythonLoopBridge:
         except ImportError as exc:
             raise ImportError(
                 "The Python loop breaker needs numpy and scikit-learn: "
-                "pip install 'admina[proxy]' (or 'admina[rust]' "
-                "for the Rust loop breaker)"
+                "uv pip install 'admina[proxy]' or pip install 'admina[proxy]' "
+                "('admina[rust]' for the Rust loop breaker)"
             ) from exc
 
         self._impl = LoopBreaker(**kwargs)

@@ -18,7 +18,8 @@ vLLM serves an OpenAI-compatible API; this adapter reuses ``OpenAIAdapter``
 and points it at the local vLLM endpoint.  The model name must always be
 supplied by the caller (it is the HuggingFace model id loaded by the server).
 
-Requires: ``pip install openai``  (same dependency as the OpenAI adapter).
+Requires: ``uv pip install openai`` (or ``pip install openai``), the dependency of the
+OpenAI adapter.
 """
 
 from __future__ import annotations

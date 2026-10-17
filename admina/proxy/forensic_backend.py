@@ -44,6 +44,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from admina.core.install_hint import install_hint
 from admina.core.secretfile import SecretFileError
 from admina.domains.compliance.forensic import (
     ForensicBlackBox,
@@ -172,7 +173,9 @@ def _s3_store(settings: Any, fail_mode: str) -> ForensicBlackBox:
     try:
         import boto3
     except ImportError:
-        return _unavailable("s3", "FORENSIC_BACKEND=s3 needs boto3 (pip install boto3)", fail_mode)
+        return _unavailable(
+            "s3", f"FORENSIC_BACKEND=s3 needs boto3 ({install_hint('boto3')})", fail_mode
+        )
     kwargs: dict[str, Any] = {"service_name": "s3", "region_name": settings.FORENSIC_S3_REGION}
     if settings.FORENSIC_S3_ENDPOINT:
         kwargs["endpoint_url"] = settings.FORENSIC_S3_ENDPOINT

@@ -32,10 +32,14 @@ audited, EU AI Act compliance tracked. Works in-process (SDK) and over the netwo
 ## Install
 
 ```bash
-pip install "admina[proxy]"   # Recommended: SDK + proxy + dashboard
-pip install "admina[full]"    # + NLP (spaCy) + telemetry (OTEL)
-pip install admina            # SDK only — embed it in another service
+uv add "admina[proxy]"   # Recommended: SDK + proxy + dashboard
+uv add "admina[full]"    # + NLP (spaCy) + telemetry (OTEL)
+uv add admina            # SDK only — embed it in another service
 ```
+
+Each line adds Admina to the current uv project. In an existing virtual
+environment, use `uv pip install` with the same argument; with pip,
+`pip install` (for example `pip install "admina[proxy]"`).
 
 > Distribution name and import name: `admina` (up to 0.13.x the
 > distribution was `admina-framework`; see the

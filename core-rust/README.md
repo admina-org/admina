@@ -12,7 +12,9 @@ the four governance domains in Rust, exposed to Python via PyO3:
 ## Installation
 
 ```bash
-pip install admina-core
+uv add admina-core
+# in an existing virtual environment: uv pip install admina-core
+# with pip:                           pip install admina-core
 ```
 
 The Python framework auto-detects the Rust engine at runtime and falls

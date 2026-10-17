@@ -17,7 +17,7 @@
 Wraps the ``google-genai`` Python client (sync) to provide inference through
 the Google Gemini GenerateContent API.
 
-Requires: ``pip install 'admina[gemini]'``  (optional dependency).
+Requires: ``uv pip install 'admina[gemini]'`` (or ``pip install 'admina[gemini]'``)  (optional dependency).
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ import os
 import time
 from typing import Any
 
+from admina.core.install_hint import install_hint
 from admina.plugins.base import BaseModelAdapter
 
 logger = logging.getLogger("admina.plugins.adapters.gemini")
@@ -70,7 +71,7 @@ class GeminiAdapter(BaseModelAdapter):
             except ImportError as exc:
                 raise ImportError(
                     "The 'google-genai' package is required for GeminiAdapter. "
-                    "Install it with: pip install 'admina[gemini]'"
+                    "Install it with: " + install_hint("admina[gemini]")
                 ) from exc
             kwargs: dict[str, Any] = {}
             if self._api_key:

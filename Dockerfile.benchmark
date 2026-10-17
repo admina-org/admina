@@ -49,6 +49,6 @@ COPY sdk/ ./sdk/
 COPY tests/test_benchmark_14us.py ./tests/
 
 # Download spaCy model for PII benchmarks
-RUN uv pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl
+RUN uv pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 
 CMD ["pytest", "tests/test_benchmark_14us.py", "-v", "-s", "--tb=short", "--no-header", "-p", "no:cacheprovider", "--override-ini=addopts="]

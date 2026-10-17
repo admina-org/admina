@@ -13,6 +13,26 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+### Changed
+
+- Install commands name uv first and pip as the alternative: the README,
+  the docs, the MODEL_CARD, the integration READMEs, the plugin README
+  template, and the hints of error messages and warnings
+  (`uv pip install 'admina[proxy]' (or pip install 'admina[proxy]')`,
+  built by `admina.core.install_hint.install_hint`).
+- `admina plugin install` installs with `uv pip install --python
+  <interpreter>` when uv is on PATH, else with `python -m pip`: an
+  environment that uv created has no pip.
+
+### Fixed
+
+- `pyproject.toml` no longer sets `[tool.uv] default-extras`, a key that uv
+  does not have: every uv command warned that it could not parse the uv
+  settings. `make test` runs `uv run --extra proxy --extra nlp --extra
+  telemetry pytest`.
+- The air-gapped guide and `Dockerfile.benchmark` install the spaCy model
+  `en_core_web_sm` 3.8.0, which matches `spacy>=3.8`; they named 3.7.1.
+
 ## [0.14.2] — 2026-10-08
 
 Patch release: `admina-core` builds with Rust 1.85 again, and the proxy

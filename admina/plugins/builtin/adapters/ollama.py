@@ -17,7 +17,7 @@
 Wraps the ``ollama`` Python client to provide local LLM inference
 through the :class:`BaseModelAdapter` interface.
 
-Requires: ``pip install ollama``  (optional dependency).
+Requires: ``uv pip install ollama`` (or ``pip install ollama``)  (optional dependency).
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ import os
 import time
 from typing import Any
 
+from admina.core.install_hint import install_hint
 from admina.plugins.base import BaseModelAdapter
 from admina.plugins.builtin.adapters._streaming import aiter_sync
 
@@ -67,7 +68,7 @@ class OllamaAdapter(BaseModelAdapter):
             except ImportError as exc:
                 raise ImportError(
                     "The 'ollama' package is required for OllamaAdapter. "
-                    "Install it with: pip install ollama"
+                    "Install it with: " + install_hint("ollama")
                 ) from exc
         return self._client
 
