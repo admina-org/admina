@@ -728,6 +728,36 @@ the message text of `POST /v1/chat/completions`, in characters (the text of
 every message, as scanned); longer requests get 413 (`invalid_request_error`,
 code `prompt_too_long`) before any governance check.
 
+### MCP routing to several servers
+
+`/mcp` forwards to `UPSTREAM_MCP_URL`. To put several MCP servers behind
+one proxy, set `ROUTING_CONFIG_PATH` to a routing file (JSON, or YAML with a
+`.yaml`/`.yml` suffix):
+
+```yaml
+default_upstream: http://localhost:9000
+routes:
+  github:
+    upstream_url: http://github-mcp:8000/mcp
+    headers: { Authorization: "Bearer <token>" }
+    tools: [create_issue, git_push]
+  files:
+    upstream_url: http://files-mcp:8000/mcp
+    tools: [read_file, write_file]
+```
+
+A request picks a route in one of two ways:
+
+- **By path**: `POST /mcp/route/<name>` goes to that route's `upstream_url`.
+- **By tool name**: a call on `/mcp` whose `params.name` is listed in a
+  route's `tools` goes to that route (`tools/call` for `git_push` above goes
+  to `github`). A tool not listed by any route goes to `UPSTREAM_MCP_URL`.
+
+`tools` is a list of tool names; anything else, or a tool listed by two
+routes, stops the proxy at startup. The tools are declared, not discovered:
+list each tool a server provides that should be routed to it. `GET /api/stats`
+reports the routes and the number of mapped tools under `routing`.
+
 ### PII engines
 
 `ADMINA_PII_ENGINE` (or `pii_engine` in `admina.yaml`, default `spacy-regex`)
@@ -1854,6 +1884,7 @@ production.
 | `ADMINA_CONFIG` | *(empty)* | `admina.yaml` to load (empty: current directory, then package directory) |
 | `ADMINA_ENABLED_SURFACES` | *(empty = all)* | Surfaces served: `gateway`, `mcp`, `integration`, `compliance`, `dashboard` |
 | `UPSTREAM_MCP_URL` | `http://localhost:9000` | Default upstream MCP server |
+| `ROUTING_CONFIG_PATH` | *(empty)* | Routing file for several MCP servers (see [MCP routing to several servers](#mcp-routing-to-several-servers)) |
 | `REDIS_URL` | `redis://localhost:6379/0` | Session state + rate limiting (empty = no Redis) |
 | `CLICKHOUSE_HOST` | `localhost` | Event analytics (empty = no ClickHouse) |
 | `FORENSIC_BACKEND` | `memory` | Forensic store: `memory` \| `filesystem` \| `s3` (else `domains.compliance.forensic.backend` of `admina.yaml`) |
