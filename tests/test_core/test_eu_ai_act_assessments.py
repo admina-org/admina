@@ -199,9 +199,33 @@ def test_a_corrupt_file_starts_empty_with_a_warning(tmp_path, caplog, content):
         c = EUAIActCompliance(storage_path=path)
     assert c.assessments == []
     assert any(str(path) in rec.getMessage() for rec in caplog.records)
-    # The next assessment replaces the corrupt file.
+    # The corrupt file is kept aside, unchanged, before anything is written.
+    (kept,) = [p for p in tmp_path.iterdir() if p.name.startswith("eu-ai-act.json.corrupt-")]
+    assert kept.read_bytes() == content
+    assert any(kept.name in rec.getMessage() for rec in caplog.records)
     c.gap_analysis("minimal", {})
     assert len(json.loads(path.read_text(encoding="utf-8"))) == 1
+    assert kept.read_bytes() == content
+
+
+def test_an_unreadable_file_is_never_overwritten(tmp_path, caplog, monkeypatch):
+    path = tmp_path / "eu-ai-act.json"
+    path.write_text('[{"risk_category": "high"}]', encoding="utf-8")
+    real_read = Path.read_text
+
+    def unreadable(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError(13, "Permission denied")
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable)
+    with caplog.at_level(logging.WARNING, logger="admina.eu_ai_act"):
+        c = EUAIActCompliance(storage_path=path)
+        r = c.gap_analysis("minimal", {})
+    monkeypatch.undo()
+    assert c.latest() == r  # kept in memory
+    assert json.loads(path.read_text(encoding="utf-8")) == [{"risk_category": "high"}]
+    assert any("not overwritten" in rec.getMessage() for rec in caplog.records)
 
 
 def test_a_missing_file_starts_empty_silently(tmp_path, caplog):

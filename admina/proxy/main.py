@@ -1474,8 +1474,10 @@ def _gap_analysis_args(body: dict) -> dict[str, Any]:
     """Validate the body of a gap analysis: ``risk_category`` (default
     ``high``), ``current_compliance`` (an object), ``system_name`` (a string)
     and ``voluntary`` (a boolean). 400 on a value of the wrong type."""
-    current_compliance = body.get("current_compliance") or {}
-    if not isinstance(current_compliance, dict):
+    current_compliance = body.get("current_compliance")
+    if current_compliance is None:
+        current_compliance = {}
+    elif not isinstance(current_compliance, dict):
         raise HTTPException(status_code=400, detail="current_compliance must be an object")
     system_name = body.get("system_name")
     if system_name is not None and not isinstance(system_name, str):
@@ -1500,17 +1502,19 @@ def _gap_analysis_args(body: dict) -> dict[str, Any]:
         "default `high`), `current_compliance` (`{requirement: [bool, ...]}`), "
         "optional `system_name`, optional `voluntary`.\n\n"
         "`high` / `unacceptable`: gap analysis of Articles 9-15, `applicable` "
-        "true, status `COMPLIANT` or `GAPS_FOUND`.\n\n"
+        "true, status `COMPLIANT` or `GAPS_FOUND`; `voluntary` has no effect.\n\n"
         "`limited` / `minimal`: Articles 9-15 do not apply; the assessment is "
-        "recorded with `applicable` false, status `NOT_APPLICABLE`, "
-        "`compliance_score` null and `total_checks` 0, and `current_compliance` "
-        "is ignored. With `voluntary: true` the checks of `current_compliance` "
-        "are kept as a voluntary self-assessment, not counted in the Admina "
+        "recorded with `applicable` false and status `NOT_APPLICABLE`. Without "
+        "`voluntary`, `compliance_score` is null, `total_checks` 0 and "
+        "`current_compliance` is ignored. With `voluntary: true` the checks of "
+        "`current_compliance` are scored (`compliance_score`, `total_checks`, "
+        "`gaps`) as a voluntary self-assessment, not counted in the Admina "
         "Score.\n\n"
         "Every assessment carries `risk_category` and `system_name`. The proxy "
         "keeps the last 100, in the file named by "
         "`ADMINA_EU_AI_ACT_ASSESSMENTS_PATH` when set. An unknown category or "
-        "a value of the wrong type answers 400."
+        "a field of the wrong type answers 400; a body that is not a JSON "
+        "object answers 422."
     ),
 )
 async def gap_analysis(request: Request, body: dict) -> dict[str, Any]:
@@ -1527,9 +1531,10 @@ async def gap_analysis(request: Request, body: dict) -> dict[str, Any]:
     tags=["compliance"],
     summary="The most recent EU AI Act assessment",
     description=(
-        "The last assessment recorded by `POST /api/compliance/gap-analysis` "
-        "or `POST /api/compliance/report`, as that route returned it; 404 "
-        "when none is recorded."
+        "The last assessment recorded: the response of "
+        "`POST /api/compliance/gap-analysis`, or the `gap_analysis` field of "
+        "the report of `POST /api/compliance/report`; 404 when none is "
+        "recorded."
     ),
 )
 async def gap_analysis_latest(request: Request) -> dict[str, Any]:
@@ -1544,6 +1549,13 @@ async def gap_analysis_latest(request: Request) -> dict[str, Any]:
     "/api/compliance/report",
     tags=["compliance"],
     summary="Generate a structured EU AI Act compliance report",
+    description=(
+        "Body: `description`, `use_case` and `data_types` (classified into a "
+        "risk category), `system_name`, `current_compliance` and `voluntary` "
+        "as for `POST /api/compliance/gap-analysis`. The gap analysis of the "
+        "classified category is recorded as an assessment and returned in "
+        "the `gap_analysis` field of the report."
+    ),
 )
 async def generate_compliance_report(request: Request, body: dict) -> dict[str, Any]:
     state = _get_state(request)
@@ -1557,6 +1569,7 @@ async def generate_compliance_report(request: Request, body: dict) -> dict[str, 
         classification["risk_category"],
         args["current_compliance"],
         system_name=args["system_name"],
+        voluntary=args["voluntary"],
     )
     report = state.compliance.generate_report(
         body.get("system_name", "Unknown System"),
@@ -1892,6 +1905,15 @@ class _McpOutcome:
         if self.decision is not None:
             self.decision = replace(
                 self.decision, action="BLOCK", risk_level=risk_level, domain="response_guard"
+            )
+
+    def sandbox_refused(self, invalid: bool) -> None:
+        """The allowed call of a sandboxed tool did not run: the decision
+        becomes a ``BLOCK`` (invalid arguments) or an ``ERROR`` (sandbox
+        unavailable or busy) of the ``sandbox`` domain."""
+        if self.decision is not None:
+            self.decision = replace(
+                self.decision, action="BLOCK" if invalid else "ERROR", domain="sandbox"
             )
 
     def record(self, state: ProxyState, duration_s: float) -> None:
@@ -2395,6 +2417,7 @@ async def _mcp_sandbox_call(
         logger.warning(
             "Sandboxed tool %r not executed for event %s (%s)", tool, event_id, run.error
         )
+        outcome.sandbox_refused(invalid=run.error == "invalid")
         status, content = sandbox_error_response(body, event_id, run)
         return JSONResponse(status_code=status, content=content)
 

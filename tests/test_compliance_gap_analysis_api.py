@@ -92,10 +92,24 @@ def test_missing_category_defaults_to_high(proxy):
         {"risk_category": "medium"},
         {"risk_category": 3},
         {"risk_category": "high", "current_compliance": [True]},
+        {"risk_category": "high", "current_compliance": []},
+        {"risk_category": "high", "current_compliance": ""},
+        {"risk_category": "high", "current_compliance": 0},
+        {"risk_category": "high", "current_compliance": False},
         {"risk_category": "limited", "system_name": 7},
         {"risk_category": "limited", "voluntary": "yes"},
     ],
-    ids=["unknown", "not_a_string", "compliance_not_object", "name_not_string", "voluntary"],
+    ids=[
+        "unknown",
+        "not_a_string",
+        "compliance_not_object",
+        "compliance_empty_list",
+        "compliance_empty_string",
+        "compliance_zero",
+        "compliance_false",
+        "name_not_string",
+        "voluntary",
+    ],
 )
 def test_invalid_bodies_answer_400_and_record_nothing(proxy, body):
     responses, state = serve([_post(body), _latest()])
@@ -148,3 +162,20 @@ def test_markdown_report_shows_a_not_applicable_assessment(proxy):
     text = responses[1].text
     assert "None%" not in text
     assert "not applicable" in text.lower()
+
+
+def test_the_report_route_keeps_a_voluntary_self_assessment(proxy):
+    body = {
+        "system_name": "Helpdesk bot",
+        "description": "chatbot",
+        "use_case": "support",
+        "voluntary": True,
+        "current_compliance": {"record_keeping": [True] * 4},
+    }
+    report = with_key({"method": "POST", "url": "/api/compliance/report", "json": body})
+    responses, _ = serve([report, _latest()])
+    assert responses[0].status_code == 200
+    latest = responses[1].json()
+    assert latest == responses[0].json()["gap_analysis"]
+    assert latest["status"] == "NOT_APPLICABLE"
+    assert latest["voluntary"] is True and latest["total_checks"] > 0

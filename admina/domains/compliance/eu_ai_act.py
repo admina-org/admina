@@ -25,6 +25,7 @@ atomically and read back at startup (in the proxy:
 
 import json
 import logging
+import os
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -295,13 +296,16 @@ class EUAIActCompliance:
                 (reported with ``lang`` ``"custom"``).
             storage_path: JSON file of the assessments, read here and
                 rewritten atomically after each one; ``None`` = in memory
-                only. A missing file starts empty; an unreadable or
-                malformed one is logged and starts empty too.
+                only. A missing file starts empty. A malformed one is
+                renamed to ``<name>.corrupt-<UTC time>`` and the store starts
+                empty; one that cannot be read (or renamed) is left as it is
+                and the assessments are kept in memory only. Both are logged.
 
         Raises:
             ValueError: An unknown language or risk class.
         """
         self.storage_path = Path(storage_path) if storage_path else None
+        self._write_blocked = False
         self.assessments: list[dict] = self._load()
         languages = list(TERM_LANGUAGES if term_languages is None else term_languages)
         unknown = [lang for lang in languages if lang not in TERMS]
@@ -387,22 +391,59 @@ class EUAIActCompliance:
         if self.storage_path is None or not self.storage_path.exists():
             return []
         try:
-            data = json.loads(self.storage_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            text = self.storage_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            self._set_aside(f"not UTF-8 ({exc.reason})")
+            return []
+        except OSError as exc:
+            # Its content is unknown: the file is left as it is.
+            self._write_blocked = True
             logger.warning(
-                "Failed to load EU AI Act assessments from %s: %s", self.storage_path, exc
+                "Failed to read EU AI Act assessments from %s (%s); the file is not "
+                "overwritten and new assessments are kept in memory only",
+                self.storage_path,
+                exc,
             )
             return []
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            self._set_aside(f"invalid JSON ({exc.msg})")
+            return []
         if not isinstance(data, list) or not all(isinstance(a, dict) for a in data):
-            logger.warning(
-                "Ignoring EU AI Act assessments in %s: not a list of objects", self.storage_path
-            )
+            self._set_aside("not a list of objects")
             return []
         return data[-MAX_ASSESSMENTS:]
 
+    def _set_aside(self, reason: str) -> None:
+        """Rename the malformed file to ``<name>.corrupt-<UTC time>`` so that
+        the next assessment does not replace its content; when it cannot be
+        renamed, it is not overwritten either."""
+        path = self.storage_path
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        kept = path.with_name(f"{path.name}.corrupt-{stamp}")
+        try:
+            os.replace(path, kept)
+        except OSError as exc:
+            self._write_blocked = True
+            logger.warning(
+                "Ignoring EU AI Act assessments in %s: %s; it could not be renamed (%s), so "
+                "it is not overwritten and new assessments are kept in memory only",
+                path,
+                reason,
+                exc,
+            )
+            return
+        logger.warning(
+            "Ignoring EU AI Act assessments in %s: %s; the file was moved to %s",
+            path,
+            reason,
+            kept.name,
+        )
+
     def _save(self) -> None:
-        if self.storage_path is None:
-            return  # in-memory mode
+        if self.storage_path is None or self._write_blocked:
+            return  # in-memory mode, or a file that must not be replaced
         try:
             ensure_directory(self.storage_path.parent)
             data = json.dumps(self.assessments, indent=2, ensure_ascii=False)

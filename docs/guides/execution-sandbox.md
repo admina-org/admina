@@ -176,10 +176,15 @@ plugin_config:
 Invalid values stop the proxy at startup with the key named, and so does
 `network: egress`: network access through an allowlist is not supported
 yet. An unknown provider and an unknown key of `plugin_config.docker` stop
-it too. A provider that is not ready (engine unreachable, image missing,
-`runsc` not registered) does not: the proxy starts, `/health` reports
-`degraded`, and the sandboxed tools are refused until it is ready. The
-other tools are not affected.
+it too. A provider that is not ready (engine unreachable, an image of the
+configured tools missing, `runsc` not registered) does not: the proxy
+starts and `/health` reports `degraded`. The check runs at startup and
+every 30 seconds, on the images of the configured tools (`defaults.image`
+and the images that tools set); it does not hold calls back. A call that
+cannot run is refused with `sandbox_unavailable` and never forwarded; the
+other tools are not affected. `/health` reports the runtime as
+`<engine>/default` for `runtime: runc` (no `--runtime` is passed, so the
+engine's default runtime runs) and `<engine>/runsc` for gVisor.
 
 `runtime` is set in the sandbox section, not in `plugin_config.docker`.
 
@@ -226,7 +231,10 @@ every 30 seconds; the ones still running are removed at shutdown.
   `admina_sandbox_errors_total{reason="invalid|busy|unavailable"}`,
   `admina_sandbox_timeouts_total`, `admina_sandbox_oom_total`,
   `admina_sandbox_duration_seconds` (histogram), `admina_sandbox_inflight`,
-  `admina_sandbox_ready`.
+  `admina_sandbox_ready`. A call that did not run is counted in
+  `admina_requests_total{surface="mcp"}` and its `governance.decision`
+  event as `BLOCK` (invalid arguments) or `ERROR` (sandbox unavailable or
+  busy), with domain `sandbox`.
 - **`/health`**: `sandbox` is `null` when off; otherwise `provider`,
   `ready` (the last check, at startup and every 30 seconds), `runtime`,
   `detail`, `inflight` and `tools`. `status` is `degraded` while `ready` is

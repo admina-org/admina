@@ -1260,8 +1260,8 @@ def doctor() -> None:
                 "https://github.com/explosion/spacy-models/releases/download/"
                 f"en_core_web_sm-{model_ver}/en_core_web_sm-{model_ver}-py3-none-any.whl"
             )
-            click.echo(f"        Install with:  {sys.executable} -m spacy download en_core_web_sm")
-            click.echo(f"        For uv venvs:  uv pip install {wheel_url}")
+            click.echo(f"        Install with:  uv pip install {wheel_url}")
+            click.echo(f"        With pip:      {sys.executable} -m spacy download en_core_web_sm")
     except ImportError:
         click.echo(
             "    spacy                --    not installed "

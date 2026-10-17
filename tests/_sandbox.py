@@ -75,7 +75,8 @@ class FakeSandbox(BaseExecutionSandbox):
             image_digest="sha256:" + "0" * 64,
         )
 
-    async def health(self) -> dict:
+    async def health(self, images: tuple[str, ...] = ()) -> dict:
+        self.health_images = list(images)
         ready = self.config.get("ready", True)
         return {"ready": ready, "detail": "" if ready else "fake not ready", "runtime": "fake/none"}
 

@@ -51,6 +51,7 @@ import tarfile
 import threading
 import time
 import uuid
+from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -310,7 +311,10 @@ class DockerSandbox(BaseExecutionSandbox):
 
     @property
     def runtime_label(self) -> str:
-        return f"{self.settings.engine}/{self.settings.runtime}"
+        """``<engine>/runsc`` for gVisor; ``<engine>/default`` for runc, which
+        passes no ``--runtime`` and so runs the engine's default runtime."""
+        runtime = "runsc" if self.settings.runtime == "runsc" else "default"
+        return f"{self.settings.engine}/{runtime}"
 
     # ── CLI ────────────────────────────────────────────────────
 
@@ -528,8 +532,9 @@ class DockerSandbox(BaseExecutionSandbox):
 
     # ── Lifecycle ──────────────────────────────────────────────
 
-    async def health(self) -> dict:
-        base = {"runtime": self.runtime_label, "image": self.settings.image}
+    async def health(self, images: Sequence[str] = ()) -> dict:
+        images = tuple(images) or (self.settings.image,)
+        base = {"runtime": self.runtime_label, "image": images[0]}
         # Docker lists its runtimes; Podman resolves --runtime when the
         # container is created, so for it only the engine is checked here.
         template = (
@@ -557,10 +562,11 @@ class DockerSandbox(BaseExecutionSandbox):
                 "ready": False,
                 "detail": "runtime runsc is not registered with the engine",
             }
-        try:
-            await self._image_digest(self.settings.image)
-        except SandboxError as exc:
-            return {**base, "ready": False, "detail": str(exc)}
+        for image in images:
+            try:
+                await self._image_digest(image)
+            except SandboxError as exc:
+                return {**base, "ready": False, "detail": str(exc)}
         return {**base, "ready": True, "detail": ""}
 
     async def reap(self) -> int:

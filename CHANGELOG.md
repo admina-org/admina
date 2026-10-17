@@ -13,6 +13,73 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.15.1] — 2026-10-17
+
+Patch release: `POST /api/v1/audit` refuses sandbox records, a sandboxed
+call that did not run is counted as refused, the sandbox health checks the
+images of the configured tools, and a malformed file of EU AI Act
+assessments is kept aside instead of overwritten. Upgrading is
+recommended.
+
+### Security
+
+- `POST /api/v1/audit` refuses records of type `sandbox_execution` (`400`),
+  as for the other record types the proxy writes itself. In 0.15.0 a client
+  with an audit key could write a record of that type into the forensic
+  chain.
+
+### Fixed
+
+- **Refused sandbox calls.** A sandboxed `/mcp` call that did not run is
+  counted as `BLOCK` (invalid arguments, `400`) or `ERROR` (sandbox
+  unavailable or busy, `503`), with domain `sandbox`, in
+  `admina_requests_total`, the request counters and the
+  `governance.decision` event. In 0.15.0 it was counted as `ALLOW`.
+- **Sandbox health.** `BaseExecutionSandbox.health()` receives the images
+  of the configured tools (`defaults.image` and the images that tools
+  set), and `DockerSandbox` checks those.
+  - In 0.15.0 it checked `plugin_config.docker.image`, so a deployment
+    with its own `defaults.image` stayed `degraded`.
+  - A provider whose `health()` takes no argument is still called without
+    one.
+  - With `runtime: runc` no `--runtime` is passed, and the runtime is
+    reported as `<engine>/default`.
+- **EU AI Act assessments file.** A malformed file of
+  `ADMINA_EU_AI_ACT_ASSESSMENTS_PATH` is renamed to
+  `<name>.corrupt-<UTC time>` before the store starts empty, so the next
+  assessment does not replace its content. A file that cannot be read, or
+  renamed, is not written: the assessments are kept in memory only.
+- **`current_compliance`.** The gap-analysis routes answer `400` for a
+  `current_compliance` that is not an object: an empty list, an empty
+  string, `0` or `false` was taken as `{}`.
+- **Reports.** `POST /api/compliance/report` passes `voluntary` to the gap
+  analysis, as `POST /api/compliance/gap-analysis` does.
+
+### Documentation
+
+- **Gap-analysis routes.** The descriptions say that:
+  - `voluntary` has no effect for `high` and `unacceptable`;
+  - a voluntary self-assessment carries `compliance_score`,
+    `total_checks` and `gaps`;
+  - a body that is not a JSON object answers `422`;
+  - `/latest` returns the `gap_analysis` field of a report.
+
+  The `[0.15.0]` entries are corrected to match.
+- **README, MCP routing.**
+  - Only a `tools/call` is routed by tool name.
+  - A route without `upstream_url` uses `UPSTREAM_MCP_URL/mcp`.
+  - `default_upstream` of the routing file is only reported in
+    `/api/stats`.
+- **spaCy model.** It is installed as a wheel with `uv pip install`, or
+  with `uv tool install "admina[proxy,nlp]" --with "en-core-web-sm @
+  <wheel URL>"`. `admina doctor` and the warnings name the uv command
+  first.
+- **GuardrailsAI.** The guard is configured under
+  `plugin_config.guardrailsai`; `agent_security.domains.guardrailsai` is
+  not read.
+- **Coordination corpus.** `admina redteam` does not score
+  `coordination.jsonl`, which the tests replay.
+
 ## [0.15.0] — 2026-10-17
 
 Minor release: an execution sandbox for the tools of `/mcp`; EU AI Act
@@ -64,8 +131,9 @@ the install hints.
 
 - **Every risk category is recorded.** `POST /api/compliance/gap-analysis`
   records an assessment for `limited` and `minimal` systems too, with
-  status `NOT_APPLICABLE`, `compliance_score: null` and `total_checks: 0`;
-  `applicable` and `message` are kept. Every assessment carries
+  status `NOT_APPLICABLE`, and without `voluntary: true` with
+  `compliance_score: null` and `total_checks: 0` (with it, the scored
+  checks of the self-assessment); `applicable` and `message` are kept. Every assessment carries
   `risk_category` and `system_name`, and the engine keeps the last 100.
 - **Admina Score.** When the latest EU AI Act assessment is
   `NOT_APPLICABLE`, the "EU AI Act gap coverage" component of the Admina
@@ -102,8 +170,8 @@ the install hints.
   - A `prompts/get` named like a listed tool is not routed by tool name.
   - A route without `upstream_url` uses `UPSTREAM_MCP_URL/mcp`.
 - **Gap-analysis input.** `POST /api/compliance/gap-analysis` answers 400
-  for an unknown risk category or a malformed body, instead of recording or
-  ignoring it. The Markdown compliance report no longer prints `None%` for
+  for an unknown risk category or a field of the wrong type, instead of
+  recording or ignoring it; a body that is not a JSON object answers 422. The Markdown compliance report no longer prints `None%` for
   a not-applicable assessment.
 - **uv settings.** `pyproject.toml` no longer sets
   `[tool.uv] default-extras`, a key that uv does not have: every uv command
@@ -2440,7 +2508,8 @@ environment in `docker-compose.benchmark.yml`.
 
 ---
 
-[Unreleased]: https://github.com/admina-org/admina/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/admina-org/admina/compare/v0.15.1...HEAD
+[0.15.1]: https://github.com/admina-org/admina/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/admina-org/admina/compare/v0.14.2...v0.15.0
 [0.14.2]: https://github.com/admina-org/admina/compare/v0.14.1...v0.14.2
 [0.14.1]: https://github.com/admina-org/admina/compare/v0.14.0...v0.14.1

@@ -171,8 +171,14 @@ uv add admina
 > Each `uv add` line above adds a dependency to the `pyproject.toml` of the
 > current project (`uv init` creates one). In an existing virtual environment,
 > use `uv pip install` with the same argument; with pip, use `pip install`
-> with the same argument (for example `pip install "admina[full]"`), and
-> `python -m spacy download en_core_web_sm` for the spaCy model.
+> with the same argument (for example `pip install "admina[full]"`).
+> The spaCy model is a wheel, not a PyPI package. In an environment that uv
+> created (which has no pip) install the wheel itself:
+> `uv pip install "<wheel URL>"`, or, for the `admina` command of
+> `uv tool install`, `uv tool install "admina[proxy,nlp]" --with
+> "en-core-web-sm @ <wheel URL>"`. With pip, `python -m spacy download
+> en_core_web_sm` installs it (one model per command). The wheel URL of
+> `en_core_web_sm` 3.8.0 is https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl.
 > To upgrade: `uv add --upgrade-package admina "admina[proxy]"`,
 > `uv pip install -U "admina[proxy]"` or `pip install -U "admina[proxy]"`.
 
@@ -336,8 +342,10 @@ result (`valid`, `records`, `reason`, `sequence_number`, `checkpoint`,
 the records after it.
 
 `admina redteam` measures the injection firewall, the PII redactor and the
-loop breaker on the corpora of the package (`admina/redteam/corpora/`), on
-every available engine (`--engine both|python|rust`), then prints the
+loop breaker on the corpora of the package (`admina/redteam/corpora/`:
+`injection`, `pii` and `loop`; `coordination.jsonl` there is the corpus of
+the coordination detector, which `tests/test_coordination_corpus.py` replays
+and `admina redteam` does not score), on every available engine (`--engine both|python|rust`), then prints the
 Markdown scorecard and writes the JSON one to `--out` (`--format
 md|json|both`; `--corpus NAME` runs one corpus). `scripts/redteam.py` runs
 the same command.
@@ -736,7 +744,6 @@ one proxy, set `ROUTING_CONFIG_PATH` to a routing file (JSON, or YAML with a
 `.yaml`/`.yml` suffix):
 
 ```yaml
-default_upstream: http://localhost:9000
 routes:
   github:
     upstream_url: http://github-mcp:8000/mcp
@@ -750,14 +757,19 @@ routes:
 A request picks a route in one of two ways:
 
 - **By path**: `POST /mcp/route/<name>` goes to that route's `upstream_url`.
-- **By tool name**: a call on `/mcp` whose `params.name` is listed in a
-  route's `tools` goes to that route (`tools/call` for `git_push` above goes
-  to `github`). A tool not listed by any route goes to `UPSTREAM_MCP_URL`.
+- **By tool name**: a `tools/call` on `/mcp` whose `params.name` is listed
+  in a route's `tools` goes to that route (`git_push` above goes to
+  `github`). Other methods (`prompts/get`, `resources/read`, ...) are not
+  routed by name, and a tool not listed by any route goes to
+  `UPSTREAM_MCP_URL`. A route without `upstream_url` uses
+  `UPSTREAM_MCP_URL/mcp`.
 
 `tools` is a list of tool names; anything else, or a tool listed by two
 routes, stops the proxy at startup. The tools are declared, not discovered:
 list each tool a server provides that should be routed to it. `GET /api/stats`
-reports the routes and the number of mapped tools under `routing`.
+reports the routes and the number of mapped tools under `routing`. A
+`default_upstream` key of the file is only reported there: unrouted calls go
+to `UPSTREAM_MCP_URL`.
 
 ### PII engines
 
@@ -973,7 +985,8 @@ admits API-key requests, stamped `user:api_key_user`; `api_key` is the stamp
 when the key comes only from `ADMINA_API_KEY_FILE` or `.env`. An
 `event_type` of the records the proxy writes itself (`mcp_request`,
 `mcp_response`, `gateway_request`, `gateway_response`, `gateway_response_scan`,
-`policy_violation`, `chain_state_rebuilt`) is refused with `400`.
+`policy_violation`, `chain_state_rebuilt`, `sandbox_execution`) is refused with
+`400`.
 `ADMINA_AUDIT_APPEND_KEY` (or `ADMINA_AUDIT_APPEND_KEY_FILE`) is a key that
 this route accepts besides the API key and every other route refuses; unset
 (the default), the route needs the API key.
@@ -1711,7 +1724,11 @@ ML-based content validation (toxic language, jailbreak, bias, PII via Presidio) 
 uv pip install <your-guardrails-ai-wheel>   # with pip: pip install <your-guardrails-ai-wheel>
 ```
 
-Enable in `admina.yaml` under `agent_security.domains.guardrailsai`. All inference runs locally by default — no data leaves the deployment perimeter.
+The guard runs on every governed request once `guardrails-ai` is installed;
+its settings are read from `plugin_config.guardrailsai` in `admina.yaml`
+(`inference_mode: local`, the only mode accepted, and `validators`, see
+`admina.yaml.example`). Inference runs locally: no data leaves the deployment
+perimeter.
 
 </details>
 

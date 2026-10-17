@@ -219,7 +219,8 @@ class PIIRedactor:
             except OSError:
                 logger.warning(
                     "spaCy model '%s' not found — using regex-only mode "
-                    "(run: python -m spacy download %s)",
+                    "(install its wheel with uv pip install, or with pip: "
+                    "python -m spacy download %s)",
                     model_name,
                     model_name,
                 )

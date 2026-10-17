@@ -274,7 +274,7 @@ def test_run_sequence(fake_cli):
     assert result.stderr == b"warning\n" and result.stderr_truncated is False
     assert result.files == (SandboxFile("out/r.txt", b"result"),)
     assert result.oom_killed is False and result.timed_out is False
-    assert result.runtime == "docker/runc"
+    assert result.runtime == "docker/default"
     assert result.image_digest.startswith("sha256:")
     assert result.network_observed is False
     # Admina's environment is not passed to the container.
@@ -340,9 +340,21 @@ def test_missing_binary_is_unavailable():
     assert asyncio.run(sandbox.health())["ready"] is False
 
 
+def test_health_checks_the_images_it_is_given(fake_cli):
+    status = asyncio.run(_sandbox(fake_cli).health(images=("registry/own:1", "registry/own:2")))
+    assert status["ready"] is True
+    inspected = [call[-1] for call in fake_cli() if call[:2] == ["image", "inspect"]]
+    assert inspected == ["registry/own:1", "registry/own:2"]
+
+
+def test_runtime_label_names_the_engine_default():
+    assert DockerSandbox().runtime_label == "docker/default"
+    assert DockerSandbox({"runtime": "runsc"}).runtime_label == "docker/runsc"
+
+
 def test_health(fake_cli, monkeypatch):
     status = asyncio.run(_sandbox(fake_cli).health())
-    assert status["ready"] is True and status["runtime"] == "docker/runc"
+    assert status["ready"] is True and status["runtime"] == "docker/default"
     assert asyncio.run(_sandbox(fake_cli, runtime="runsc").health())["ready"] is False
     monkeypatch.setenv("FAKE_DOCKER_MODE", "noinfo")
     assert "not reachable" in asyncio.run(_sandbox(fake_cli).health())["detail"]
