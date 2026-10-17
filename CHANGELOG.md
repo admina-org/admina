@@ -64,8 +64,9 @@ the install hints.
 
 - **Every risk category is recorded.** `POST /api/compliance/gap-analysis`
   records an assessment for `limited` and `minimal` systems too, with
-  status `NOT_APPLICABLE`, `compliance_score: null` and `total_checks: 0`;
-  `applicable` and `message` are kept. Every assessment carries
+  status `NOT_APPLICABLE`, and without `voluntary: true` with
+  `compliance_score: null` and `total_checks: 0` (with it, the scored
+  checks of the self-assessment); `applicable` and `message` are kept. Every assessment carries
   `risk_category` and `system_name`, and the engine keeps the last 100.
 - **Admina Score.** When the latest EU AI Act assessment is
   `NOT_APPLICABLE`, the "EU AI Act gap coverage" component of the Admina
@@ -102,8 +103,8 @@ the install hints.
   - A `prompts/get` named like a listed tool is not routed by tool name.
   - A route without `upstream_url` uses `UPSTREAM_MCP_URL/mcp`.
 - **Gap-analysis input.** `POST /api/compliance/gap-analysis` answers 400
-  for an unknown risk category or a malformed body, instead of recording or
-  ignoring it. The Markdown compliance report no longer prints `None%` for
+  for an unknown risk category or a field of the wrong type, instead of
+  recording or ignoring it; a body that is not a JSON object answers 422. The Markdown compliance report no longer prints `None%` for
   a not-applicable assessment.
 - **uv settings.** `pyproject.toml` no longer sets
   `[tool.uv] default-extras`, a key that uv does not have: every uv command

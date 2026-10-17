@@ -88,7 +88,8 @@ def compare(committed: dict, current: dict) -> dict:
                 msg = (
                     f"{detector}/{engine}: pinned measurement environment not reproduced — "
                     f"baseline mode '{base_mode}' vs current '{cur_mode}'. Match the env "
-                    "(e.g. `python -m spacy download en_core_web_sm`) or regenerate the baseline."
+                    "(e.g. install the en_core_web_sm wheel with `uv pip install`, or "
+                    "`python -m spacy download en_core_web_sm` with pip) or regenerate the baseline."
                 )
                 (failures if engine == "python" else notes).append(msg)
                 continue

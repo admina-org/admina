@@ -171,8 +171,14 @@ uv add admina
 > Each `uv add` line above adds a dependency to the `pyproject.toml` of the
 > current project (`uv init` creates one). In an existing virtual environment,
 > use `uv pip install` with the same argument; with pip, use `pip install`
-> with the same argument (for example `pip install "admina[full]"`), and
-> `python -m spacy download en_core_web_sm` for the spaCy model.
+> with the same argument (for example `pip install "admina[full]"`).
+> The spaCy model is a wheel, not a PyPI package. In an environment that uv
+> created (which has no pip) install the wheel itself:
+> `uv pip install "<wheel URL>"`, or, for the `admina` command of
+> `uv tool install`, `uv tool install "admina[proxy,nlp]" --with
+> "en-core-web-sm @ <wheel URL>"`. With pip, `python -m spacy download
+> en_core_web_sm` installs it (one model per command). The wheel URL of
+> `en_core_web_sm` 3.8.0 is https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl.
 > To upgrade: `uv add --upgrade-package admina "admina[proxy]"`,
 > `uv pip install -U "admina[proxy]"` or `pip install -U "admina[proxy]"`.
 
@@ -736,7 +742,6 @@ one proxy, set `ROUTING_CONFIG_PATH` to a routing file (JSON, or YAML with a
 `.yaml`/`.yml` suffix):
 
 ```yaml
-default_upstream: http://localhost:9000
 routes:
   github:
     upstream_url: http://github-mcp:8000/mcp
@@ -750,14 +755,19 @@ routes:
 A request picks a route in one of two ways:
 
 - **By path**: `POST /mcp/route/<name>` goes to that route's `upstream_url`.
-- **By tool name**: a call on `/mcp` whose `params.name` is listed in a
-  route's `tools` goes to that route (`tools/call` for `git_push` above goes
-  to `github`). A tool not listed by any route goes to `UPSTREAM_MCP_URL`.
+- **By tool name**: a `tools/call` on `/mcp` whose `params.name` is listed
+  in a route's `tools` goes to that route (`git_push` above goes to
+  `github`). Other methods (`prompts/get`, `resources/read`, ...) are not
+  routed by name, and a tool not listed by any route goes to
+  `UPSTREAM_MCP_URL`. A route without `upstream_url` uses
+  `UPSTREAM_MCP_URL/mcp`.
 
 `tools` is a list of tool names; anything else, or a tool listed by two
 routes, stops the proxy at startup. The tools are declared, not discovered:
 list each tool a server provides that should be routed to it. `GET /api/stats`
-reports the routes and the number of mapped tools under `routing`.
+reports the routes and the number of mapped tools under `routing`. A
+`default_upstream` key of the file is only reported there: unrouted calls go
+to `UPSTREAM_MCP_URL`.
 
 ### PII engines
 
