@@ -23,10 +23,11 @@
   &nbsp;<a href="https://pypi.org/project/admina/"><img src="https://img.shields.io/pypi/dm/admina?style=flat-square&label=downloads" alt="PyPI downloads"></a>
 </p>
 
-<p align="center">
-  <a href="https://deepwiki.com/admina-org/admina"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
-  &nbsp;<a href="https://admina.org/docs"><img src="https://img.shields.io/badge/docs-admina.org-blue?style=flat-square" alt="Docs"></a>
-</p>
+<div align="center">
+
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/admina-org/admina) &nbsp;[![Docs](https://img.shields.io/badge/docs-admina.org-blue?style=flat-square)](https://admina.org/docs)
+
+</div>
 
 <p align="center">
   <a href="#quick-start"><img src="https://img.shields.io/badge/⚡%20Quick%20Start-2%20min-32CD32?style=for-the-badge" alt="Quick Start" height="40"></a>

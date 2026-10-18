@@ -32,9 +32,10 @@ recommended.
 
 - **Refused sandbox calls.** A sandboxed `/mcp` call that did not run is
   counted as `BLOCK` (invalid arguments, `400`) or `ERROR` (sandbox
-  unavailable or busy, `503`), with domain `sandbox`, in
-  `admina_requests_total`, the request counters and the
-  `governance.decision` event. In 0.15.0 it was counted as `ALLOW`.
+  unavailable or busy, `503`) in `admina_requests_total` and the request
+  counters. A `BLOCK` also has its `governance.decision` event (domain
+  `sandbox`) and ClickHouse row; an `ERROR`, like a pipeline failure, is
+  only counted. In 0.15.0 it was counted as `ALLOW`.
 - **Sandbox health.** `BaseExecutionSandbox.health()` receives the images
   of the configured tools (`defaults.image` and the images that tools
   set), and `DockerSandbox` checks those.

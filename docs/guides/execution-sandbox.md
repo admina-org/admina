@@ -232,9 +232,12 @@ every 30 seconds; the ones still running are removed at shutdown.
   `admina_sandbox_timeouts_total`, `admina_sandbox_oom_total`,
   `admina_sandbox_duration_seconds` (histogram), `admina_sandbox_inflight`,
   `admina_sandbox_ready`. A call that did not run is counted in
-  `admina_requests_total{surface="mcp"}` and its `governance.decision`
-  event as `BLOCK` (invalid arguments) or `ERROR` (sandbox unavailable or
-  busy), with domain `sandbox`.
+  `admina_requests_total{surface="mcp"}` as `BLOCK` (invalid arguments)
+  or `ERROR` (sandbox unavailable or busy). A `BLOCK` also has its
+  `governance.decision` event (domain `sandbox`) and ClickHouse row; an
+  `ERROR`, like a pipeline failure, is only counted. Both are in the
+  `<event_id>:sandbox` forensic record and in
+  `admina_sandbox_errors_total{reason}`.
 - **`/health`**: `sandbox` is `null` when off; otherwise `provider`,
   `ready` (the last check, at startup and every 30 seconds), `runtime`,
   `detail`, `inflight` and `tools`. `status` is `degraded` while `ready` is
