@@ -10,7 +10,7 @@ Set Padding 24
 Set TypingSpeed 45ms
 
 Hide
-Type 'python() { uv run --with ollama python "$@"; }'
+Type 'python() { uv run --no-sync --with ollama python "$@"; }'
 Enter
 Type 'python demo.py >/dev/null 2>&1 && clear'
 Enter

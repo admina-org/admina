@@ -43,7 +43,7 @@
 **Scaffold a project and boot the governed proxy + dashboard — no Docker:**
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/admina-org/admina/main/resources/admina-init-dev.gif" alt="admina init → admina dev → Ready on localhost:3000" width="900">
+  <img src="https://raw.githubusercontent.com/admina-org/admina/main/resources/admina-init-dev.gif" alt="admina → admina init → admina dev → Ready on localhost:3000" width="900">
 </p>
 
 **Wrap any model in a few lines — PII is stripped before the model ever sees it:**
