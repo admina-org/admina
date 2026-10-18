@@ -13,6 +13,15 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+### Added
+
+- `admina` without arguments prints a two-line banner (Heimdall, the name,
+  the version) before the help. In an interactive terminal the commands
+  print one line with the version on standard error; not with `--help`,
+  `--version` or `--json`, nor when standard error is not a terminal.
+  `ADMINA_NO_BANNER=1` turns the banner off; `NO_COLOR=1` drops the
+  colours.
+
 ## [0.15.1] — 2026-10-17
 
 Patch release: `POST /api/v1/audit` refuses sandbox records, a sandboxed

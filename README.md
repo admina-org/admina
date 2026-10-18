@@ -331,6 +331,13 @@ admina redteam --format md # Detection-efficacy scorecard of the firewall, PII a
 admina redteam --corpora-dir corpora/ --config admina.yaml --baseline baseline.json --gate
 ```
 
+`admina` without arguments prints the Heimdall banner, then the help. In an
+interactive terminal every command prints one line with the version on
+standard error (`(O,O) Admina <version>`), never with `--help`, `--version` or
+`--json`, and never when standard error is not a terminal (pipes, CI).
+`ADMINA_NO_BANNER=1` turns both off; `NO_COLOR=1` prints them without
+colours.
+
 `admina forensic export` and `admina forensic verify` read the directory of a
 `filesystem` forensic store (`--dir`, default `$FORENSIC_BASE_DIR`) and never
 write to it, so they can run while the proxy does. `export` writes the

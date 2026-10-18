@@ -201,10 +201,49 @@ def _scaffold_project(
     return created
 
 
-@click.group()
+_TAGLINE = "governed AI development framework"
+_HEIMDALL = (" (O,O)", " /)_)")
+_NO_BANNER_FLAGS = frozenset({"--help", "-h", "--json", "--version"})
+
+
+def _style(text: str, **kwargs: object) -> str:
+    """Apply click styling unless NO_COLOR is set."""
+    if os.environ.get("NO_COLOR"):
+        return text
+    return click.style(text, **kwargs)  # type: ignore[arg-type]
+
+
+def _banner() -> str:
+    """Two-line Heimdall banner shown by ``admina`` without arguments."""
+    owl = [_style(line, fg="green", bold=True) for line in _HEIMDALL]
+    name = _style("Admina", fg="cyan", bold=True)
+    return f"{owl[0]}  {name} {__version__}\n{owl[1]}   {_TAGLINE}\n"
+
+
+def _compact_banner_enabled(args: list[str]) -> bool:
+    """One-line banner on stderr: interactive terminals only, never with
+    help, version or JSON output, and off with ADMINA_NO_BANNER."""
+    if os.environ.get("ADMINA_NO_BANNER"):
+        return False
+    if any(arg in _NO_BANNER_FLAGS for arg in args):
+        return False
+    return sys.stderr.isatty()
+
+
+@click.group(invoke_without_command=True)
 @click.version_option(version=__version__, prog_name="admina")
-def app() -> None:
+@click.pass_context
+def app(ctx: click.Context) -> None:
     """Admina — governed AI development framework."""
+    if ctx.invoked_subcommand is None:
+        if not os.environ.get("ADMINA_NO_BANNER"):
+            click.echo(_banner())
+        click.echo(ctx.get_help())
+        return
+    if _compact_banner_enabled(sys.argv[1:]):
+        owl = _style(_HEIMDALL[0].strip(), fg="green", bold=True)
+        name = _style("Admina", fg="cyan", bold=True)
+        click.echo(f"{owl} {name} {__version__}", err=True)
 
 
 @app.command()
