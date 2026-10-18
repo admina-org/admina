@@ -25,8 +25,10 @@ vhs sdk.tape                # -> ../sdk-3lines.gif
 ## Notes
 
 - The `admina` shell function defined inside `initdev.tape` runs `admina`
-  without arguments as it is, and for the other commands masks the generated
-  credentials and filters uvicorn access logs so the boot ends cleanly on the
+  without arguments as it is; the other commands run under `script` (a
+  pseudo-terminal, so the version line on stderr is printed as in a
+  terminal), and their output is filtered to mask the generated
+  credentials and drop the uvicorn access logs, so the boot ends cleanly on the
   "Ready" banner — it does not change Admina's behaviour.
 - `demo.py` pins `gemma3:1b` and `temperature: 0` for a deterministic, short
   reply. Swap the model for any tag you have pulled.
