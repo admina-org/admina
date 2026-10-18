@@ -73,6 +73,8 @@ KNOWN_VARIABLES = frozenset(
         "ADMINA_FORENSIC_STATE_KEY",
         "ADMINA_FORENSIC_STATE_KEY_FILE",
         "ADMINA_GDPR_ROPA_PATH",
+        # CLI.
+        "ADMINA_NO_BANNER",
         # SDK.
         "ADMINA_RETRY_BASE_DELAY_S",
         "ADMINA_RETRY_JITTER",

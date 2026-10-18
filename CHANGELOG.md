@@ -13,6 +13,20 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.15.2] — 2026-10-18
+
+Patch release: the `admina` CLI prints a banner. No change to the proxy,
+the SDK or the engines.
+
+### Added
+
+- `admina` without arguments prints a two-line banner (Heimdall, the name,
+  the version) before the help. In an interactive terminal the commands
+  print one line with the version on standard error; not with `--help`,
+  `--version` or `--json`, nor when standard error is not a terminal.
+  `ADMINA_NO_BANNER=1` turns the banner off; `NO_COLOR=1` drops the
+  colours.
+
 ## [0.15.1] — 2026-10-17
 
 Patch release: `POST /api/v1/audit` refuses sandbox records, a sandboxed
@@ -2509,7 +2523,8 @@ environment in `docker-compose.benchmark.yml`.
 
 ---
 
-[Unreleased]: https://github.com/admina-org/admina/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/admina-org/admina/compare/v0.15.2...HEAD
+[0.15.2]: https://github.com/admina-org/admina/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/admina-org/admina/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/admina-org/admina/compare/v0.14.2...v0.15.0
 [0.14.2]: https://github.com/admina-org/admina/compare/v0.14.1...v0.14.2

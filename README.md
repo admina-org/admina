@@ -43,7 +43,7 @@
 **Scaffold a project and boot the governed proxy + dashboard — no Docker:**
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/admina-org/admina/main/resources/admina-init-dev.gif" alt="admina init → admina dev → Ready on localhost:3000" width="900">
+  <img src="https://raw.githubusercontent.com/admina-org/admina/main/resources/admina-init-dev.gif" alt="admina → admina init → admina dev → Ready on localhost:3000" width="900">
 </p>
 
 **Wrap any model in a few lines — PII is stripped before the model ever sees it:**
@@ -330,6 +330,13 @@ admina forensic verify     # Verify the forensic chain (read-only, JSON result)
 admina redteam --format md # Detection-efficacy scorecard of the firewall, PII and loop detectors
 admina redteam --corpora-dir corpora/ --config admina.yaml --baseline baseline.json --gate
 ```
+
+`admina` without arguments prints the Heimdall banner, then the help. In an
+interactive terminal every command prints one line with the version on
+standard error (`(O,O) Admina <version>`), never with `--help`, `--version` or
+`--json`, and never when standard error is not a terminal (pipes, CI).
+`ADMINA_NO_BANNER=1` turns both off; `NO_COLOR=1` prints them without
+colours.
 
 `admina forensic export` and `admina forensic verify` read the directory of a
 `filesystem` forensic store (`--dir`, default `$FORENSIC_BASE_DIR`) and never
