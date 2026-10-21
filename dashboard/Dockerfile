@@ -1,5 +1,5 @@
 # Base image pinned by digest; update the tag and the digest together.
-FROM nginx:alpine@sha256:df221db836e1754089190208cee7eeda94f233197056426eda74a43ab1abeac2
+FROM nginx:alpine@sha256:892bb2152464f0c5d8972593a5f5afaf8054552580b699d95f8ff4af08c2d33d
 LABEL org.opencontainers.image.title="admina-dashboard" \
       org.opencontainers.image.description="Admina dashboard served by nginx" \
       org.opencontainers.image.url="https://admina.org" \
