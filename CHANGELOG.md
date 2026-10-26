@@ -13,6 +13,84 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.15.3] — 2026-10-26
+
+Patch release: the proxy image runs Python 3.14 and is about 600 MB
+smaller, the locked dependencies are at their latest versions, and
+FastAPI's own OpenTelemetry instrumentation is off in the proxy.
+Upgrading the proxy image is recommended.
+
+### Security
+
+- The proxy image is built on `python:3.14-slim` (Python 3.14.9) instead
+  of `python:3.11-slim` (Python 3.11.16). The CPython fixes released in
+  October 2026 (`tarfile` extraction filters, `zipfile` decompression
+  bounds, `ssl`/`asyncio` argument validation, `urllib.request` credential
+  scoping, among others) are in the image.
+- The proxy app passes `telemetry=` to FastAPI with tracing, metrics, logs
+  and operation spans off. FastAPI 0.160 and later instrument requests
+  through the global OpenTelemetry providers, which the proxy sets for its
+  governance spans, and their logs of validation failures carry the input
+  values, before any redaction. FastAPI versions before 0.160 ignore the
+  argument.
+- `uv.lock`: `filelock` 4.2.4 (CVE-2026-112940, CVE-2026-112913,
+  CVE-2026-112907; reached through `presidio-analyzer`) and `setuptools`
+  84.2.1 (GHSA-xmj3-9gf7-h52w; reached through `spacy`). Both advisories
+  affect features Admina does not call (`filelock.ReadWriteLock`, legacy
+  wheel installation on Windows).
+- The default image of the execution sandbox is the current
+  `python:3.12-slim` digest
+  (`sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704`,
+  Python 3.12.15 with the Debian updates of 2026-10-21). With the sandbox
+  enabled and no `sandbox.image` in admina.yaml, pull the new image before
+  upgrading: the sandbox does not pull images, and refuses calls while the
+  image is missing.
+
+### Changed
+
+- Proxy image: 1.09 GB (full) and 807 MB (slim) instead of 1.72 GB and
+  1.24 GB. The application and its dependencies are owned by root and
+  read-only for the `admina` user, which owns `/app/.admina` only (the
+  final `chown -R /app` copied the virtual environment into one more
+  layer). uv and the Rust toolchain are used at build time and are not in
+  the images. Bytecode is compiled at build time.
+- `admina-core` is compiled in the image with the toolchain of the official
+  `rust:1.99-slim-trixie` image instead of the rustc of the Debian
+  packages (1.85). The minimum supported Rust (`rust-version`) is 1.88,
+  needed by `sha2` 0.11; CI runs `cargo check` with it, so a dependency
+  update that needs a newer rustc fails CI.
+- `uv.lock` and `core-rust/Cargo.lock` carry the latest versions of all the
+  dependencies within the declared ranges, among them FastAPI 0.162,
+  Starlette 1.10, uvicorn 0.54, pydantic 2.14, redis 8.1,
+  clickhouse-connect 1.11, protobuf 7, spaCy 3.8.16, scikit-learn 1.9 and
+  numpy 2.5 (2.4 on Python 3.11).
+- `admina[anthropic]` accepts `anthropic>=0.39,<3`. The adapter uses
+  `Anthropic(api_key=)`, `messages.create` and the `content`/`usage`
+  fields of the response, unchanged in 2.x; in 2.x `messages.create` has
+  no `temperature` parameter, so a `temperature` passed to the adapter is
+  refused by the client.
+- `admina[proxy]` accepts `numpy>=1.24,<3` (was `<2`). numpy 1.26 has no
+  wheels for Python 3.13 and 3.14, so `pip install admina[proxy]` there
+  built it from source.
+- FastAPI 0.160 and later depend on `opentelemetry-api`, so
+  `admina[proxy-minimal]` installs it. `admina doctor` reports the
+  `telemetry` extra from `opentelemetry-sdk`.
+- Python 3.14 is supported and tested in CI (classifier added to `admina`
+  and `admina-core`). The proxy image uses the interpreter of the base
+  image (`UV_PYTHON_PREFERENCE=only-system`, `UV_PYTHON_DOWNLOADS=never`);
+  `.python-version` (3.11, the minimum supported version) applies to the
+  development environment only.
+- The `dev` dependency group replaces `safety` with `pip-audit`, and
+  `pytest-cov` may be 7.x. CI runs `pip-audit` on every package of
+  `uv.lock` and fails on a known vulnerability; `make ci-audit` runs it
+  after `cargo audit`. Removing `safety` also removes `nltk` from the lock
+  (GHSA-8mgp-746c-j5xp, no fixed release).
+- ruff 0.17 (lock and pre-commit). `ruff format` leaves the Markdown files
+  alone, so the examples in the docs keep their aligned comments.
+- The dashboard image is on the current `nginx:alpine` digest. The mock MCP
+  server and mock agent images, the air-gapped guide and `make ci-linux`
+  use `python:3.14-slim`.
+
 ## [0.15.2] — 2026-10-18
 
 Patch release: the `admina` CLI prints a banner. No change to the proxy,
@@ -2523,7 +2601,8 @@ environment in `docker-compose.benchmark.yml`.
 
 ---
 
-[Unreleased]: https://github.com/admina-org/admina/compare/v0.15.2...HEAD
+[Unreleased]: https://github.com/admina-org/admina/compare/v0.15.3...HEAD
+[0.15.3]: https://github.com/admina-org/admina/compare/v0.15.2...v0.15.3
 [0.15.2]: https://github.com/admina-org/admina/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/admina-org/admina/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/admina-org/admina/compare/v0.14.2...v0.15.0

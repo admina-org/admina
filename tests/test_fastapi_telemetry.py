@@ -28,7 +28,6 @@ import subprocess
 import sys
 
 import pytest
-
 from _proxy_app import subprocess_env
 
 _SCRIPT = """
