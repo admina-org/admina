@@ -675,11 +675,24 @@ def _init_clickhouse_tables(client):
 
 
 # ── FastAPI App ──────────────────────────────────────────────
+# FastAPI 0.160+ traces requests, records metrics and logs validation
+# failures (with the input values) through the global OpenTelemetry
+# providers. The proxy exports its own governance spans, after redaction;
+# FastAPI's own telemetry is off. Older FastAPI versions ignore the argument.
+FASTAPI_TELEMETRY = {
+    "tracing": False,
+    "metrics": False,
+    "logs": False,
+    "operation_spans": False,
+    "auto_configure": False,
+}
+
 app = FastAPI(
     title="Admina Governance Proxy",
     description="AI Governance & Security for Autonomous Agents",
     version=__version__,
     lifespan=lifespan,
+    telemetry=FASTAPI_TELEMETRY,
     servers=[
         {"url": "http://localhost:3000", "description": "Dashboard (nginx proxy)"},
         {"url": "http://localhost:8080", "description": "Proxy (direct)"},
