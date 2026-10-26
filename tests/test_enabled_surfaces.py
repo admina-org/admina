@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -225,8 +226,9 @@ def test_surfaces_that_run_the_loop_breaker_build_it(proxy, surfaces):
 # ── Routes of disabled surfaces are not mounted ───────────────
 
 _ROUTES = (
-    "import json; from admina.proxy.main import app; "
-    "print(json.dumps({'routes': sorted({getattr(r, 'path', '') for r in app.routes}), "
+    f"import json, sys; sys.path.insert(0, {str(Path(__file__).parent)!r}); "
+    "from _routes import route_paths; from admina.proxy.main import app; "
+    "print(json.dumps({'routes': sorted(route_paths(app)), "
     "'openapi': sorted(app.openapi()['paths'])}))"
 )
 

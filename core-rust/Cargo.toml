@@ -15,11 +15,12 @@
 
 [package]
 name = "admina_core"
-version = "0.15.2"
+version = "0.15.3"
 edition = "2021"
-# The rustc of Debian, with which the proxy image builds the crate; clippy
-# reports the standard-library APIs that are newer (incompatible_msrv).
-rust-version = "1.85"
+# The oldest rustc that builds the crate and its dependencies (sha2 0.11
+# needs 1.88). Building the sdist needs it; CI checks the crate with it, and
+# clippy reports the standard-library APIs that are newer (incompatible_msrv).
+rust-version = "1.88"
 description = "Admina governance engines — Rust core with Python bindings"
 license = "Apache-2.0"
 

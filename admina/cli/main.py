@@ -1241,7 +1241,8 @@ def doctor() -> None:
             ("spacy", "spacy"),
         ],
         "telemetry": [
-            ("opentelemetry", "opentelemetry-api"),
+            # opentelemetry-api alone comes with FastAPI (0.160+).
+            ("opentelemetry.sdk", "opentelemetry-sdk"),
         ],
     }
     extras_status: dict[str, str] = {}

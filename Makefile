@@ -87,10 +87,10 @@ status:
 
 .PHONY: ci-local ci-versions ci-lint ci-security ci-python ci-rust ci-wheel ci-linux ci-audit
 
-CI_PYTHONS ?= 3.11 3.12 3.13
+CI_PYTHONS ?= 3.11 3.12 3.13 3.14
 CI_SPACY_EN := en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
 CI_SPACY_IT := it-core-news-sm @ https://github.com/explosion/spacy-models/releases/download/it_core_news_sm-3.8.0/it_core_news_sm-3.8.0-py3-none-any.whl
-CI_LINUX_IMAGE ?= python:3.11-slim
+CI_LINUX_IMAGE ?= python:3.14-slim
 CI_LINUX_CONTAINER ?= admina-ci-linux
 CI_LINUX_CPUS ?= 0-3
 
@@ -186,6 +186,10 @@ ci-linux:
 # the advisory database.
 ci-audit:
 	cd core-rust && cargo audit --deny warnings
+	uv export --frozen --all-extras --all-groups --no-hashes \
+		--no-emit-project --no-emit-package admina-core > .ci-audit-requirements.txt
+	uv run --no-sync pip-audit -r .ci-audit-requirements.txt --no-deps --disable-pip; \
+		status=$$?; rm -f .ci-audit-requirements.txt; exit $$status
 
 help:
 	@echo ""

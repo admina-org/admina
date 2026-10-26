@@ -1133,9 +1133,10 @@ class TestDashboardLiveWebSocket:
     """WS /api/dashboard/live"""
 
     def test_websocket_route_registered(self) -> None:
+        from _routes import route_paths
+
         app = _build_test_app()
-        routes = [r.path for r in app.routes]
-        assert "/api/dashboard/live" in routes
+        assert "/api/dashboard/live" in route_paths(app)
 
     def test_websocket_rejects_without_credential(self) -> None:
         from starlette.testclient import TestClient
