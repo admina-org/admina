@@ -76,7 +76,7 @@ _MINIMAL = textwrap.dedent(
 
     class Blocker:
         def find_spec(self, name, path=None, target=None):
-            if name.split(".")[0] in BLOCKED:
+            if any(name == b or name.startswith(b + ".") for b in BLOCKED):
                 raise ModuleNotFoundError(f"blocked: {{name}}")
             return None
 
@@ -132,7 +132,10 @@ NOT_IN_PROXY_MINIMAL = (
     "scipy",
     "sklearn",
     "spacy",
-    "opentelemetry",
+    # opentelemetry-api is a dependency of FastAPI from 0.160 on; the SDK and
+    # the exporters come with the telemetry extra.
+    "opentelemetry.sdk",
+    "opentelemetry.exporter",
     "typer",
     "admina_core",
 )

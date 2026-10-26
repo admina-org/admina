@@ -51,8 +51,10 @@ def test_command_targets_the_page_origin():
 
 
 def test_gap_analysis_accepts_post_only():
+    from _routes import served_routes
+
     from admina.proxy.main import app
 
-    routes = [r for r in app.routes if getattr(r, "path", "") == "/api/compliance/gap-analysis"]
+    routes = [r for p, r in served_routes(app.routes) if p == "/api/compliance/gap-analysis"]
     assert len(routes) == 1
     assert routes[0].methods == {"POST"}

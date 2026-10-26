@@ -12,8 +12,10 @@ Thank you for your interest in contributing to Admina! This project is maintaine
 | macOS (Intel) | macOS 12 Monterey+ (x86_64) | ✅ Tested in CI |
 | Windows | — | ❌ Not supported (Docker stack requires Linux containers) |
 
-Python 3.11, 3.12 and 3.13 are tested in CI. The `.python-version` file pins 3.11
-for reproducibility; [uv](https://docs.astral.sh/uv/) manages this automatically.
+Python 3.11, 3.12, 3.13 and 3.14 are tested in CI. The `.python-version` file
+pins 3.11, the minimum supported version, for the development environment;
+[uv](https://docs.astral.sh/uv/) manages this automatically. The proxy image
+runs Python 3.14.
 
 ## Development Setup
 
@@ -118,8 +120,10 @@ uv run ruff format .
 # Source code scan
 uv run bandit -r admina/ core/ sdk/ domains/ plugins/ cli/ proxy/ -ll -q
 
-# Dependency vulnerability scan (advisory — does not block contribution)
-uv run safety check --full-report
+# Dependency vulnerability scan of uv.lock (also run by CI)
+uv export --frozen --all-extras --all-groups --no-hashes \
+  --no-emit-project --no-emit-package admina-core > /tmp/requirements.txt
+uv run pip-audit -r /tmp/requirements.txt --no-deps --disable-pip
 ```
 
 ### Run the Full Stack Locally

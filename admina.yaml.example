@@ -225,7 +225,7 @@ domains:
     # It needs a Docker or Podman engine the proxy can reach. Access to the
     # Docker socket is root on the host: prefer rootless Docker or Podman.
     # Pull the image first (nothing is pulled at request time):
-    #   docker pull python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+    #   docker pull python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704
     # See docs/guides/execution-sandbox.md and MODEL_CARD.md §5d.
     sandbox:
       enabled: false

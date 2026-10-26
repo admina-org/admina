@@ -8,18 +8,29 @@
 #              files (docker build --target slim)
 #
 # Base images are pinned by digest; update each tag and digest together.
+# uv and the Rust toolchain are used at build time only: neither is in the
+# final images.
+
+FROM ghcr.io/astral-sh/uv:0.13.5@sha256:32a7bb39b496babbd997b0a39a4d66c126bdaf5661b302bf6f06abda8deca6ff AS uv
+FROM rust:1.99-slim-trixie@sha256:1a939748a7cbab172de91a014e3804a97af1394a8c844faa67fce9401c4e40fb AS rust-toolchain
 
 # Stage 1: Build Rust core. A failed build fails the image build.
-FROM python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e AS rust-builder
+FROM python:3.14-slim@sha256:35caba83af2fe6da9a5d922f9b0156f21d1246a48278c58a08bd253303ba42e8 AS rust-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl build-essential rustc cargo && \
+    build-essential && \
     rm -rf /var/lib/apt/lists/*
 
-# Install uv for fast Python package management
-COPY --from=ghcr.io/astral-sh/uv:0.11.7@sha256:240fb85ab0f263ef12f492d8476aa3a2e4e1e333f7d67fbdd923d00a506a516a /uv /bin/uv
+# The toolchain of the official Rust image (same Debian release as the
+# Python image), not the rustc of the Debian packages.
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
+COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
 
-RUN uv pip install --system --no-cache maturin
+RUN --mount=from=uv,source=/uv,target=/bin/uv \
+    uv pip install --system --no-cache maturin
 
 WORKDIR /build
 COPY core-rust/ ./core-rust/
@@ -27,13 +38,13 @@ COPY core-rust/ ./core-rust/
 RUN cd core-rust && maturin build --release
 
 # Stage 2: application sources of the slim image (no dashboard files)
-FROM python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e AS slim-sources
+FROM python:3.14-slim@sha256:35caba83af2fe6da9a5d922f9b0156f21d1246a48278c58a08bd253303ba42e8 AS slim-sources
 
 COPY admina/ /src/admina/
 RUN rm -rf /src/admina/dashboard/static
 
 # Stage 3: runtime base of both images
-FROM python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e AS runtime
+FROM python:3.14-slim@sha256:35caba83af2fe6da9a5d922f9b0156f21d1246a48278c58a08bd253303ba42e8 AS runtime
 
 LABEL org.opencontainers.image.title="admina-proxy" \
       org.opencontainers.image.description="Admina governance proxy: MCP proxy and OpenAI-compatible gateway" \
@@ -49,13 +60,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:0.11.7@sha256:240fb85ab0f263ef12f492d8476aa3a2e4e1e333f7d67fbdd923d00a506a516a /uv /bin/uv
-
 COPY LICENSE NOTICE /usr/share/licenses/admina/
 
 # Deps come from the locked project manifest — single source of truth
-COPY pyproject.toml uv.lock .python-version ./
+COPY pyproject.toml uv.lock ./
+# The interpreter of the base image, never a uv-managed download
+# (.python-version, not copied, is the version of the development
+# environment).
+ENV UV_PYTHON_PREFERENCE="only-system" \
+    UV_PYTHON_DOWNLOADS="never" \
+    UV_NO_CACHE="1" \
+    UV_COMPILE_BYTECODE="1"
 ENV VIRTUAL_ENV="/app/.venv"
 ENV PATH="/app/.venv/bin:$PATH"
 
@@ -67,7 +82,7 @@ RUN chmod +x /docker-entrypoint.sh
 # (FORENSIC_BACKEND=filesystem) and to the file of the EU AI Act
 # assessments (ADMINA_EU_AI_ACT_ASSESSMENTS_PATH). Each image creates
 # /app/.admina/forensic and /app/.admina/compliance, the directories of the
-# compose files, before /app is given to this user, so a volume mounted
+# compose files, before /app/.admina is given to this user, so a volume mounted
 # there starts owned by the same user.
 RUN groupadd --system --gid 10001 admina && \
     useradd --system --uid 10001 --gid admina --no-create-home --shell /sbin/nologin admina
@@ -83,25 +98,33 @@ CMD ["uvicorn", "admina.proxy.main:app", "--host", "0.0.0.0", "--port", "8080", 
 # Slim image: the proxy extra and the Rust engine, no dashboard files
 FROM runtime AS slim
 
-RUN uv sync --frozen --no-dev --no-install-project --extra proxy
-
-COPY --from=rust-builder /build/core-rust/target/wheels/ /tmp/wheels/
-RUN uv pip install /tmp/wheels/*.whl && rm -rf /tmp/wheels
+RUN --mount=from=uv,source=/uv,target=/bin/uv \
+    --mount=from=rust-builder,source=/build/core-rust/target/wheels,target=/tmp/wheels \
+    uv sync --frozen --no-dev --no-install-project --extra proxy && \
+    uv pip install /tmp/wheels/*.whl
 
 COPY --from=slim-sources /src/admina/ ./admina/
+RUN python -m compileall -q /app/admina
 
-RUN mkdir -p /app/.admina/forensic /app/.admina/compliance && chown -R admina:admina /app
+# The application and its dependencies stay owned by root; the admina user
+# owns only /app/.admina, where the proxy writes.
+RUN mkdir -p /app/.admina/forensic /app/.admina/compliance && \
+    chown -R admina:admina /app/.admina
 USER admina
 
 # Full image (default target)
 FROM runtime AS full
 
-RUN uv sync --frozen --no-dev --no-install-project --extra proxy --extra nlp --extra telemetry
-
-COPY --from=rust-builder /build/core-rust/target/wheels/ /tmp/wheels/
-RUN uv pip install /tmp/wheels/*.whl && rm -rf /tmp/wheels
+RUN --mount=from=uv,source=/uv,target=/bin/uv \
+    --mount=from=rust-builder,source=/build/core-rust/target/wheels,target=/tmp/wheels \
+    uv sync --frozen --no-dev --no-install-project --extra proxy --extra nlp --extra telemetry && \
+    uv pip install /tmp/wheels/*.whl
 
 COPY admina/ ./admina/
+RUN python -m compileall -q /app/admina
 
-RUN mkdir -p /app/.admina/forensic /app/.admina/compliance && chown -R admina:admina /app
+# The application and its dependencies stay owned by root; the admina user
+# owns only /app/.admina, where the proxy writes.
+RUN mkdir -p /app/.admina/forensic /app/.admina/compliance && \
+    chown -R admina:admina /app/.admina
 USER admina

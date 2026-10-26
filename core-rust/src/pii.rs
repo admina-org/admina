@@ -50,7 +50,7 @@ fn luhn_valid(_text: &str, caps: &Captures) -> bool {
             }
         })
         .sum();
-    !digits.is_empty() && sum % 10 == 0
+    !digits.is_empty() && sum.is_multiple_of(10)
 }
 
 fn is_word(c: char) -> bool {

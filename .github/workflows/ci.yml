@@ -90,10 +90,15 @@ jobs:
         # with explicit `# nosec` comments.
         run: uv run bandit -r admina/ -lll -q
 
-      # Dependency vulnerability scanning is handled by GitHub Dependabot
-      # (Settings → Code security) which runs continuously against the same
-      # manifest. The legacy `safety check` is deprecated; `safety scan`
-      # requires a Safety CLI account login that does not work in CI.
+      - name: pip-audit (locked dependencies)
+        # Every package of uv.lock (all extras and groups) against the
+        # PyPA/OSV advisory database. admina-core is built from ./core-rust
+        # and audited by cargo audit (make ci-audit).
+        run: |
+          uv export --frozen --all-extras --all-groups --no-hashes \
+            --no-emit-project --no-emit-package admina-core > "$RUNNER_TEMP/requirements.txt"
+          uv run pip-audit -r "$RUNNER_TEMP/requirements.txt" --no-deps --disable-pip \
+            --progress-spinner off
 
   # ── Python: tests + coverage ────────────────────────────────
   python-tests:
@@ -104,7 +109,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -237,6 +242,16 @@ jobs:
         run: |
           cd core-rust
           PYO3_PYTHON=$(uv python find 3.11) cargo clippy -- -D warnings
+
+      - name: cargo check with the minimum supported Rust (rust-version)
+        # rust-version of Cargo.toml: the oldest rustc that builds admina-core
+        # from its sdist. A dependency update that needs a newer rustc fails
+        # here instead of on the machines of the users.
+        run: |
+          cd core-rust
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
+          rustup toolchain install "$msrv" --profile minimal
+          PYO3_PYTHON=$(uv python find 3.11) cargo +"$msrv" check --locked --lib
 
       # Build the cdylib extension and verify it imports. cargo test --lib
       # above only exercises the rlib; this step gates that the `[rust]` extra

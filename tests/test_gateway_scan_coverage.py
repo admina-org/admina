@@ -173,17 +173,32 @@ def _nested_lists(levels: int, leaf: object) -> object:
     return value
 
 
-# Deeper than the JSON parser reads on any supported Python version.
+# Far past the depth limit, and past what the JSON parser reads with the
+# default 8 MB stack. The depth at which the parser raises RecursionError
+# depends on the platform and on the stack size (Python 3.14 measures the C
+# stack), so the tests force that outcome with the out_of_stack fixture.
 _TOO_DEEP_TO_READ = 100_000
 
 
 def _arguments_too_deep_to_read(leaf: str) -> str:
-    """JSON text of the string *leaf* inside more nested arrays than
-    ``json.loads`` reads: parsing it raises ``RecursionError``."""
-    arguments = "[" * _TOO_DEEP_TO_READ + leaf + "]" * _TOO_DEEP_TO_READ
-    with pytest.raises(RecursionError):
-        json.loads(arguments)
-    return arguments
+    """JSON text of the string *leaf* inside _TOO_DEEP_TO_READ nested arrays."""
+    return "[" * _TOO_DEEP_TO_READ + leaf + "]" * _TOO_DEEP_TO_READ
+
+
+@pytest.fixture()
+def out_of_stack(monkeypatch):
+    """The JSON parser of the scan policy raises RecursionError on text
+    nested _TOO_DEEP_TO_READ levels, as it does when the stack runs out."""
+    from admina.domains.agent_security import scan_policy
+
+    loads = scan_policy.json.loads
+
+    def limited(text, *args, **kwargs):
+        if isinstance(text, str) and text.startswith("[" * _TOO_DEEP_TO_READ):
+            raise RecursionError("maximum recursion depth exceeded")
+        return loads(text, *args, **kwargs)
+
+    monkeypatch.setattr(scan_policy.json, "loads", limited)
 
 
 def _escaped(text: str) -> str:
@@ -302,12 +317,16 @@ def test_arguments_nested_past_the_depth_limit_are_blocked():
     assert recorder.request["checks"]["scan_depth"] == SCAN_DEPTH
 
 
+@pytest.mark.parametrize("parser", ["as_on_this_platform", "out_of_stack"])
 @pytest.mark.parametrize(
     "leaf", [json.dumps(BENIGN), _escaped(OVERRIDE)], ids=["benign", "escaped_override"]
 )
-def test_arguments_too_deep_to_read_as_json_are_blocked(leaf):
-    # Nested past what the JSON parser reads, so past the depth limit too:
-    # the raw string is scanned and the request is blocked for its depth.
+def test_arguments_too_deep_to_read_as_json_are_blocked(leaf, parser, request):
+    # Nested far past the depth limit: whether the parser reads them (the
+    # walk stops at the limit) or runs out of stack (the raw string is
+    # scanned), the request is blocked for its depth.
+    if parser == "out_of_stack":
+        request.getfixturevalue("out_of_stack")
     arguments = _arguments_too_deep_to_read(leaf)
     body = {"model": "example-model", "messages": [QUESTION, _tool_call(arguments)]}
     resp, upstream, recorder = _send(body)
@@ -442,7 +461,7 @@ def test_request_texts_hold_arguments_that_are_not_json_as_they_are(arguments):
     assert scanned.truncated is False
 
 
-def test_request_texts_hold_arguments_too_deep_to_read_as_they_are_and_truncated():
+def test_request_texts_hold_arguments_too_deep_to_read_as_they_are_and_truncated(out_of_stack):
     from admina.domains.agent_security.scan_policy import request_texts
 
     arguments = _arguments_too_deep_to_read(json.dumps("leaf text"))

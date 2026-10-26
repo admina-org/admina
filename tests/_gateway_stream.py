@@ -206,7 +206,9 @@ def gateway_app(
     )
     for name, value in (state or {}).items():
         setattr(proxy_state, name, value)
-    app = FastAPI()
+    # FastAPI's own telemetry is off, as in the proxy app
+    # (admina.proxy.main.FASTAPI_TELEMETRY).
+    app = FastAPI(telemetry={"tracing": False, "metrics": False, "logs": False})
     app.include_router(
         create_gateway_endpoints(get_state=lambda: proxy_state, get_settings=lambda: cfg)
     )

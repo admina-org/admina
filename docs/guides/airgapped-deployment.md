@@ -34,7 +34,7 @@ load on the air-gapped host.
 
 ```bash
 # On a host with Internet access:
-docker pull python:3.11-slim
+docker pull python:3.14-slim
 docker pull nginx:alpine
 docker pull clickhouse/clickhouse-server:24.3
 docker pull redis:7-alpine
@@ -45,7 +45,7 @@ docker pull otel/opentelemetry-collector-contrib:0.96.0
 #   docker pull chrislusf/seaweedfs:latest
 
 docker save \
-    python:3.11-slim \
+    python:3.14-slim \
     nginx:alpine \
     clickhouse/clickhouse-server:24.3 \
     redis:7-alpine \
