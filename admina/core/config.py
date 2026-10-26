@@ -111,7 +111,7 @@ _HEX64 = re.compile(r"[0-9a-fA-F]{64}")
 #: (linux/amd64 and linux/arm64 among others). Pull it once before enabling
 #: the sandbox: nothing is pulled on the request path.
 SANDBOX_DEFAULT_IMAGE = (
-    "python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1"
+    "python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704"
 )
 
 #: How a sandboxed tool's arguments become a command
