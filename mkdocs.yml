@@ -49,6 +49,7 @@ nav:
       - Quick Start: guides/quickstart.md
       - Architecture: guides/architecture.md
       - Integrations: guides/integrations.md
+      - Bifrost: guides/bifrost.md
       - Air-gapped deployment: guides/airgapped-deployment.md
       - Execution sandbox: guides/execution-sandbox.md
       - Upgrading to 0.13: guides/upgrade-0.13.md

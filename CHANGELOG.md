@@ -13,6 +13,16 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+### Added
+
+- Bifrost integration: the OpenAI-compatible gateway with the Bifrost LLM
+  gateway as its upstream. `docs/guides/bifrost.md` describes what Admina
+  governs and what stays outside it (other Bifrost endpoints, tools run by
+  Bifrost's Agent Mode, response content in Bifrost's logs), the settings of
+  both and the checks; `examples/bifrost/` runs Bifrost and the Admina proxy
+  with Docker Compose. Tested with the 0.15.3 proxy image and Bifrost
+  v2.3.2.
+
 ## [0.15.3] — 2026-10-26
 
 Patch release: the proxy image runs Python 3.14 and is about 600 MB
