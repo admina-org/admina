@@ -1,0 +1,70 @@
+# Copyright © 2025–2026 Stefano Noferi & Admina contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# The Admina proxy in front of the Bifrost LLM gateway, with Ollama on the
+# host as the provider. See docs/guides/bifrost.md.
+#
+#   mkdir -p secrets
+#   openssl rand -hex 32 > secrets/admina_api_key
+#   printf 'sk-bf-%s' "$(openssl rand -hex 24)" > secrets/bifrost_vk
+#   printf 'BIFROST_VK_ADMINA=%s\n' "$(cat secrets/bifrost_vk)" > .env
+#   docker compose up -d
+#
+# Clients call Admina on http://localhost:8080/v1. Bifrost has no host port:
+# it is reachable only on the compose network, so every request goes
+# through Admina.
+
+services:
+  bifrost:
+    image: maximhq/bifrost:v2.3.2
+    environment:
+      OLLAMA_URL: http://host.docker.internal:11434
+      BIFROST_VK_ADMINA: ${BIFROST_VK_ADMINA:?set BIFROST_VK_ADMINA}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - bifrost-data:/app/data
+      - ./bifrost.json:/app/data/config.json:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      start_period: 30s
+      start_interval: 2s
+
+  admina:
+    image: ghcr.io/admina-org/admina-proxy:0.15.3
+    depends_on:
+      bifrost:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      ADMINA_API_KEY_FILE: /run/secrets/admina_api_key
+      ADMINA_GATEWAY_UPSTREAM: http://bifrost:8080/v1
+      ADMINA_GATEWAY_UPSTREAM_API_KEY_FILE: /run/secrets/bifrost_vk
+      FORENSIC_BACKEND: filesystem
+      FORENSIC_BASE_DIR: /app/.admina/forensic
+    secrets: [admina_api_key, bifrost_vk]
+    volumes:
+      - admina-forensic:/app/.admina/forensic
+
+secrets:
+  admina_api_key:
+    file: ./secrets/admina_api_key
+  bifrost_vk:
+    file: ./secrets/bifrost_vk
+
+volumes:
+  bifrost-data:
+  admina-forensic:

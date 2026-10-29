@@ -1,0 +1,27 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "providers": {
+    "ollama": {
+      "keys": [
+        {
+          "name": "ollama-local",
+          "value": "",
+          "models": ["*"],
+          "weight": 1.0,
+          "ollama_key_config": { "url": "env.OLLAMA_URL" }
+        }
+      ],
+      "network_config": { "allow_private_network": true }
+    }
+  },
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "vk-admina",
+        "name": "admina-proxy",
+        "value": "env.BIFROST_VK_ADMINA",
+        "allow_all_providers": true
+      }
+    ]
+  }
+}

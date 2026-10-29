@@ -1819,6 +1819,29 @@ crew = Crew(agents=[agent], tasks=[task], task_callback=admina_task_callback)
 
 </details>
 
+<details>
+<summary><strong>Bifrost</strong> — the OpenAI-compatible gateway in front of the Bifrost LLM gateway</summary>
+
+<br>
+
+The gateway forwards governed chat completions to Bifrost, which selects the
+provider; requests the firewall blocks never reach it. Point the gateway at
+Bifrost and give it a Bifrost virtual key:
+
+```bash
+ADMINA_GATEWAY_UPSTREAM=http://bifrost:8080/v1
+ADMINA_GATEWAY_UPSTREAM_API_KEY_FILE=/run/secrets/bifrost_vk
+```
+
+Governed: `/v1/chat/completions` (requests, tool results in the messages,
+responses). Not governed: the other Bifrost endpoints, tools that Bifrost
+runs itself (Agent Mode) and response content in Bifrost's own logs. The
+[Bifrost guide](https://github.com/admina-org/admina/blob/main/docs/guides/bifrost.md)
+details the scope; [`examples/bifrost/`](https://github.com/admina-org/admina/tree/main/examples/bifrost) runs both with
+Docker Compose.
+
+</details>
+
 See [full integration docs](https://github.com/admina-org/admina/blob/main/docs/guides/integrations.md) for details.
 
 ## Performance — Hybrid Python + Rust engine

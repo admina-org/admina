@@ -271,6 +271,18 @@ Multi-agent crews: each agent can have its own `AdminaStepCallback` with indepen
 
 [Full README](https://github.com/admina-org/admina/tree/main/integrations/crewai)
 
+### Bifrost
+
+The proxy's OpenAI-compatible gateway (`/v1`) uses the
+[Bifrost](https://github.com/maximhq/bifrost) LLM gateway as its upstream:
+Admina governs each chat completion, Bifrost selects the provider. No code
+runs inside Bifrost; the integration is configuration only. Other Bifrost
+endpoints, and tools that Bifrost executes itself, are outside Admina: see
+[What the integration covers](bifrost.md#what-the-integration-covers).
+
+[Bifrost guide](bifrost.md) ·
+[Docker Compose example](https://github.com/admina-org/admina/tree/main/examples/bifrost)
+
 ---
 
 ## Building Your Own Integration
