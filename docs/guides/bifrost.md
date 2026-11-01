@@ -14,7 +14,7 @@ flowchart LR
 ```
 
 The integration is configuration only: no Admina code runs inside Bifrost and
-no Bifrost plugin is needed. Tested with the `admina-proxy` 0.15.3 image,
+no Bifrost plugin is needed. Tested with the `admina-proxy` 0.15.4 image,
 Bifrost v2.3.2 and Ollama 0.40.13 (`gemma3:1b`).
 
 ## What the integration covers
@@ -32,11 +32,11 @@ after. In detail:
 
 What the integration does not cover:
 
-- **Other Bifrost endpoints.** The Admina gateway serves `/v1/chat/completions`
-  and `/v1/models` only; `/v1/embeddings`, `/v1/responses`,
-  `/v1/completions`, audio and image endpoints, the Anthropic and GenAI
-  compatible endpoints (`/anthropic`, `/genai`) and the Bifrost MCP gateway
-  (`/mcp`) are not served (404 on Admina). A client that calls them on
+- **Other Bifrost endpoints.** Of the OpenAI API, the Admina gateway serves
+  `/v1/chat/completions` and `/v1/models` only; `/v1/embeddings`,
+  `/v1/responses`, `/v1/completions`, audio and image endpoints, the
+  Anthropic and GenAI compatible endpoints (`/anthropic`, `/genai`) and the
+  Bifrost MCP gateway (`/mcp`) are not served (404 on Admina). A client that calls them on
   Bifrost directly is not governed.
 - **Tools that Bifrost runs itself.** By default Bifrost does not execute
   tool calls: the client runs them and sends the results in its next request,

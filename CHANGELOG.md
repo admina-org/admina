@@ -13,6 +13,32 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+## [0.15.4] — 2026-11-01
+
+Patch release: the proxy image runs Python 3.14.10, the default image of
+the execution sandbox Python 3.12.16, and the Bifrost integration is
+documented. Upgrading the proxy image is recommended.
+
+### Security
+
+- The proxy image is built on the current `python:3.14-slim` digest
+  (`sha256:cd89c30eda26ee911a4611b18680086e0ea42e6f5f8cbe653d07fa7958c9cec8`,
+  Python 3.14.10 instead of 3.14.9). Python 3.14.10 fixes CVE-2026-115557:
+  the `ssl` module distrusts the compromised eMudhra intermediate CA keys.
+  The proxy opens TLS connections to the gateway upstreams, the upstream MCP
+  servers, S3 and the OTLP collector.
+- The default image of the execution sandbox is the current
+  `python:3.12-slim` digest
+  (`sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159`,
+  Python 3.12.16, with the same fix). With the sandbox enabled and no
+  `sandbox.image` in admina.yaml, pull the new image before upgrading: the
+  sandbox does not pull images, and refuses calls while the image is
+  missing.
+- `uv.lock`: `pyasn1` 0.6.5 (CVE-2026-119194, CVE-2026-119195,
+  CVE-2026-119196, CVE-2026-119197: quadratic CPU use in BER/DER decoding).
+  It is reached only through the `gemini` extra (`google-genai` →
+  `google-auth`) and is not in the images.
+
 ### Added
 
 - Bifrost integration: the OpenAI-compatible gateway with the Bifrost LLM
@@ -20,8 +46,14 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
   governs and what stays outside it (other Bifrost endpoints, tools run by
   Bifrost's Agent Mode, response content in Bifrost's logs), the settings of
   both and the checks; `examples/bifrost/` runs Bifrost and the Admina proxy
-  with Docker Compose. Tested with the 0.15.3 proxy image and Bifrost
+  with Docker Compose. Tested with the 0.15.4 proxy image and Bifrost
   v2.3.2.
+
+### Changed
+
+- The proxy image compiles `admina-core` with the current
+  `rust:1.99-slim-trixie` digest, and the dashboard image is on the current
+  `nginx:alpine` digest.
 
 ## [0.15.3] — 2026-10-26
 
@@ -2611,7 +2643,8 @@ environment in `docker-compose.benchmark.yml`.
 
 ---
 
-[Unreleased]: https://github.com/admina-org/admina/compare/v0.15.3...HEAD
+[Unreleased]: https://github.com/admina-org/admina/compare/v0.15.4...HEAD
+[0.15.4]: https://github.com/admina-org/admina/compare/v0.15.3...v0.15.4
 [0.15.3]: https://github.com/admina-org/admina/compare/v0.15.2...v0.15.3
 [0.15.2]: https://github.com/admina-org/admina/compare/v0.15.1...v0.15.2
 [0.15.1]: https://github.com/admina-org/admina/compare/v0.15.0...v0.15.1

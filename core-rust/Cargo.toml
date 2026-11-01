@@ -15,7 +15,7 @@
 
 [package]
 name = "admina_core"
-version = "0.15.3"
+version = "0.15.4"
 edition = "2021"
 # The oldest rustc that builds the crate and its dependencies (sha2 0.11
 # needs 1.88). Building the sdist needs it; CI checks the crate with it, and

@@ -43,7 +43,7 @@ services:
       start_interval: 2s
 
   admina:
-    image: ghcr.io/admina-org/admina-proxy:0.15.3
+    image: ghcr.io/admina-org/admina-proxy:0.15.4
     depends_on:
       bifrost:
         condition: service_healthy

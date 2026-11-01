@@ -99,7 +99,7 @@ written turns the response into a 503; the execution has already happened.
   digest; nothing is pulled at request time:
 
   ```bash
-  docker pull python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704
+  docker pull python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
   ```
 
   Another image must provide `sleep` and `tar` (and `python` or `sh` for
@@ -145,7 +145,7 @@ domains:
       max_concurrent: 4           # executions at once
       queue_timeout_seconds: 5    # wait for a free slot, then refuse
       defaults:                   # every tool, unless it sets its own
-        image: "python:3.12-slim@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704"
+        image: "python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159"
         timeout_seconds: 30       # wall clock; the container is killed at the end
         memory_mb: 256            # memory = memory + swap
         cpus: 1.0
