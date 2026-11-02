@@ -13,7 +13,7 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
-## [0.15.4] — 2026-11-01
+## [0.15.4] — 2026-11-02
 
 Patch release: the proxy image runs Python 3.14.10, the default image of
 the execution sandbox Python 3.12.16, and the Bifrost integration is
