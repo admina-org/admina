@@ -133,8 +133,11 @@ def test_the_request_duration_includes_the_upstream(proxy):
 
     responses, _ = serve([ALLOW, METRICS], gateway=slow)
     samples = _samples(responses[-1].text)
-    assert samples['admina_request_duration_seconds_sum{surface="gateway"}'] >= 0.3
-    assert samples['admina_governance_duration_seconds_sum{surface="gateway"}'] < 0.3
+    request = samples['admina_request_duration_seconds_sum{surface="gateway"}']
+    governance = samples['admina_governance_duration_seconds_sum{surface="gateway"}']
+    # The 0.3 s of the upstream are in the request duration and not in the
+    # governance one, whatever the governance pipeline takes on the runner.
+    assert request - governance >= 0.3
 
 
 def test_the_average_latency_is_the_mean_request_duration(proxy):
