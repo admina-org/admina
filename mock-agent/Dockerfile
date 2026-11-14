@@ -1,4 +1,4 @@
-FROM python:3.14-slim
+FROM python:3.15-slim
 WORKDIR /app
 RUN pip install --no-cache-dir httpx
 COPY main.py .
