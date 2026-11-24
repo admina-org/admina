@@ -13,6 +13,14 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+### Changed
+
+- `admina-core` no longer depends on `chrono`, which RustSec reports as
+  unmaintained (RUSTSEC-2026-0543). The `timestamp_iso` and `timestamp_ms`
+  of `RustHashChain.record()` come from `std::time`, with the same format:
+  RFC 3339 in UTC with a `+00:00` offset and a fraction of 3, 6 or 9 digits,
+  left out for a whole second.
+
 ## [0.15.4] — 2026-11-02
 
 Patch release: the proxy image runs Python 3.14.10, the default image of

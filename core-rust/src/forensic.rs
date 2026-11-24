@@ -12,9 +12,53 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use chrono::Utc;
 use pyo3::prelude::*;
 use sha2::{Digest, Sha256};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// The current time as RFC 3339 UTC text and as milliseconds since the epoch.
+fn now_utc() -> (String, i64) {
+    let since_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = since_epoch.as_secs() as i64;
+    let millis = secs * 1000 + i64::from(since_epoch.subsec_millis());
+    (rfc3339_utc(secs, since_epoch.subsec_nanos()), millis)
+}
+
+/// RFC 3339 text of a UTC instant, `YYYY-MM-DDTHH:MM:SS[.fff[fff[fff]]]+00:00`:
+/// the fraction takes 3, 6 or 9 digits, the fewest that hold every non-zero
+/// digit, and is left out for a whole second.
+fn rfc3339_utc(secs: i64, nanos: u32) -> String {
+    let (year, month, day) = civil_from_days(secs.div_euclid(86_400));
+    let in_day = secs.rem_euclid(86_400);
+    let (hour, minute, second) = (in_day / 3600, in_day % 3600 / 60, in_day % 60);
+    let fraction = if nanos == 0 {
+        String::new()
+    } else if nanos.is_multiple_of(1_000_000) {
+        format!(".{:03}", nanos / 1_000_000)
+    } else if nanos.is_multiple_of(1_000) {
+        format!(".{:06}", nanos / 1_000)
+    } else {
+        format!(".{:09}", nanos)
+    };
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}{fraction}+00:00")
+}
+
+/// The proleptic Gregorian date of a day counted from 1970-01-01
+/// (H. Hinnant, "chrono-Compatible Low-Level Date Algorithms").
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    (year, month, day)
+}
 
 /// SHA-256 hash chain for forensic black box integrity.
 #[pyclass]
@@ -40,9 +84,7 @@ impl RustHashChain {
     fn record(&mut self, event_id: &str, data: &str) -> PyResult<Py<PyAny>> {
         self.sequence += 1;
         self.total_records += 1;
-        let now = Utc::now();
-        let timestamp_iso = now.to_rfc3339();
-        let timestamp_ms = now.timestamp_millis();
+        let (timestamp_iso, timestamp_ms) = now_utc();
 
         // Build hash input: sequence + previous_hash + event_id + data + timestamp
         let hash_input = format!(
@@ -120,6 +162,38 @@ impl RustHashChain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_rfc3339_whole_seconds() {
+        assert_eq!(rfc3339_utc(0, 0), "1970-01-01T00:00:00+00:00");
+        assert_eq!(rfc3339_utc(951_782_400, 0), "2000-02-29T00:00:00+00:00");
+        assert_eq!(rfc3339_utc(1_763_978_400, 0), "2025-11-24T10:00:00+00:00");
+        assert_eq!(rfc3339_utc(4_102_444_799, 0), "2099-12-31T23:59:59+00:00");
+        assert_eq!(rfc3339_utc(253_402_300_799, 0), "9999-12-31T23:59:59+00:00");
+    }
+
+    #[test]
+    fn test_rfc3339_fraction_has_3_6_or_9_digits() {
+        assert_eq!(rfc3339_utc(0, 500_000_000), "1970-01-01T00:00:00.500+00:00");
+        assert_eq!(
+            rfc3339_utc(0, 123_456_000),
+            "1970-01-01T00:00:00.123456+00:00"
+        );
+        assert_eq!(
+            rfc3339_utc(0, 123_456_789),
+            "1970-01-01T00:00:00.123456789+00:00"
+        );
+        assert_eq!(rfc3339_utc(0, 1_000), "1970-01-01T00:00:00.000001+00:00");
+        assert_eq!(rfc3339_utc(0, 1), "1970-01-01T00:00:00.000000001+00:00");
+    }
+
+    #[test]
+    fn test_record_timestamps_agree() {
+        let (iso, ms) = now_utc();
+        let secs = ms.div_euclid(1000);
+        assert!(iso.starts_with(&rfc3339_utc(secs, 0)[..19]));
+        assert!(ms > 1_763_978_400_000);
+    }
 
     #[test]
     fn test_sha256_known_value() {
