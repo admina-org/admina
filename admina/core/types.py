@@ -78,6 +78,8 @@ class EventType(str, Enum):
     # The completion record of a gateway call (same event_id as its request).
     GATEWAY_RESPONSE = "gateway_response"
     GATEWAY_RESPONSE_SCAN = "gateway_response_scan"
+    # The reviewed tool calls of a completion (ADMINA_GATEWAY_TOOL_CALL_GATE).
+    GATEWAY_TOOL_CALL = "gateway_tool_call"
     # A request of POST /api/v1/validate (a ClickHouse row; no forensic record).
     VALIDATE_REQUEST = "validate_request"
     INJECTION_DETECTED = "injection_detected"

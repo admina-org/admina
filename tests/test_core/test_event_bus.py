@@ -34,6 +34,7 @@ class TestEventType:
             "GATEWAY_REQUEST",
             "GATEWAY_RESPONSE",
             "GATEWAY_RESPONSE_SCAN",
+            "GATEWAY_TOOL_CALL",
             "VALIDATE_REQUEST",
             "INJECTION_DETECTED",
             "PII_REDACTED",

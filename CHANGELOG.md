@@ -13,6 +13,28 @@ stability commitment. See [ROADMAP.md](ROADMAP.md) for planned milestones.
 
 ## [Unreleased]
 
+### Added
+
+- `ADMINA_GATEWAY_TOOL_CALL_GATE` (default `false`): the gateway reviews the
+  tool calls of each completion before the client receives them, streaming or
+  not. A call is flagged when the request does not declare its tool, when its
+  arguments are not JSON, or when a destination in its arguments does not pass
+  the egress policy. In `enforce` mode a flagged call is replaced by a text
+  notice; otherwise it is sent and recorded with `would_action`. In a stream
+  the fragments of each call are held until the finish chunk of its choice.
+- Forensic record `gateway_tool_call`: names, checks, destinations and the
+  SHA-256 of the arguments of the calls of a completion, never the arguments.
+  `POST /api/v1/audit` refuses this `event_type`.
+- Egress surface `gateway_tool_calls`. A policy with `surfaces` unset includes
+  it; it applies only with the gate on.
+- `analyze(..., read_commands=True)` of the egress stage reads the values of
+  the keys `command`, `cmd` and `script` as shell commands
+  (`admina.domains.agent_security.command_destinations`). The other surfaces do
+  not use it.
+- `admina egress suggest-allowlist` also reads the destinations of the
+  `gateway_tool_call` records.
+- Guide [Coding agents](docs/guides/coding-agents.md).
+
 ## [0.15.4] — 2026-11-02
 
 Patch release: the proxy image runs Python 3.14.10, the default image of

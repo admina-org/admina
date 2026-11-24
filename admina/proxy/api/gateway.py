@@ -190,6 +190,13 @@ from admina.proxy.gateway_scan import (
     GatewayScanConfig,
     scan_config_of,
 )
+from admina.proxy.gateway_tool_gate import (
+    CallReview,
+    StreamToolGate,
+    ToolCallGate,
+    gate_completion,
+    tool_call_record,
+)
 from admina.proxy.gateway_transport import DEFAULT_STREAM_MODE, total_deadline
 from admina.proxy.gateway_upstreams import UPSTREAM_HEADER, GatewayUpstream, GatewayUpstreams
 from admina.proxy.pipeline_executor import PipelineExecutor, PipelineTimeout
@@ -719,6 +726,13 @@ class _StreamedText:
         return item
 
 
+# Last event of a stream whose tool calls could not be reviewed.
+_TOOL_CALLS_NOT_REVIEWED = _error(
+    "The tool calls of the response could not be reviewed.",
+    "server_error",
+    "tool_call_review_failed",
+)
+
 # Last event of a stream whose redaction did not finish.
 _RESPONSE_NOT_REDACTED = _error(
     "The response could not be redacted.", "server_error", "response_redaction_failed"
@@ -980,6 +994,74 @@ def _finish(
     return _Finished(
         response,
         partial(_end_call, state, call, response.status_code, delivery, body, on_decision),
+    )
+
+
+def _tool_gate(state: Any, cfg: Any, body: dict) -> ToolCallGate | None:
+    """The tool call gate of a request with JSON *body*, when it is on."""
+    if not cfg.ADMINA_GATEWAY_TOOL_CALL_GATE:
+        return None
+    return ToolCallGate(
+        body,
+        egress_policy_for(state.egress_policy, "gateway_tool_calls"),
+        cfg.GOVERNANCE_MODE,
+        resolve_egress_mode(cfg.GOVERNANCE_MODE),
+    )
+
+
+async def _gated_lines(
+    lines: AsyncIterator[str],
+    gate: ToolCallGate,
+    review: Callable[[Callable[[], Any]], Awaitable[Any]],
+    record: Callable[[list[CallReview]], Awaitable[None]],
+) -> AsyncIterator[str]:
+    """Upstream SSE *lines* with the tool calls of the stream held and
+    reviewed (see :mod:`admina.proxy.gateway_tool_gate`). A review that takes
+    time runs through *review*; when that returns None the stream ends with
+    one ``data: {"error": ...}`` event and the calls held are not sent. Each
+    review is passed to *record* before its calls are sent."""
+    stream_gate = StreamToolGate(gate)
+
+    async def steps() -> AsyncIterator[Any]:
+        async for line in lines:
+            job = partial(stream_gate.line, line)
+            yield await review(job) if stream_gate.due(line) else job()
+        yield await review(stream_gate.end) if stream_gate.due("") else stream_gate.end()
+
+    async for step in steps():
+        if step is None:
+            yield f"data: {json.dumps({'error': _TOOL_CALLS_NOT_REVIEWED})}"
+            return
+        if step.reviews:
+            await record(step.reviews)
+        for line in step.lines:
+            yield line
+
+
+async def _record_tool_calls(
+    forensic_box: Any,
+    reviews: list[CallReview],
+    *,
+    request_event_id: str,
+    agent_id: str,
+    session_id: str,
+    upstream: str,
+    stream: bool,
+) -> None:
+    """Write the forensic record of the reviewed tool calls of a completion."""
+    if not reviews:
+        return
+    await _record(
+        forensic_box,
+        tool_call_record(
+            reviews,
+            event_id=uuid.uuid4().hex,
+            request_event_id=request_event_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            upstream=upstream,
+            stream=stream,
+        ),
     )
 
 
@@ -1370,6 +1452,15 @@ async def _governed_call(
     forward_body = {**fields, "messages": fwd_messages}
     client = state.gateway_http_client
     deadline = total_deadline(cfg)
+    gate = _tool_gate(state, cfg, body)
+    record_calls = partial(
+        _record_tool_calls,
+        state.forensic_box,
+        request_event_id=event_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        upstream=route.name,
+    )
 
     if stream:
         forward_body["stream"] = True
@@ -1397,17 +1488,25 @@ async def _governed_call(
             return _as_received(upstream.status_code, upstream.headers, content)
 
         try:
-            passthrough = getattr(
-                state, "gateway_stream_mode", DEFAULT_STREAM_MODE
-            ) == "passthrough" and not _transforms_response(cfg)
+            passthrough = (
+                getattr(state, "gateway_stream_mode", DEFAULT_STREAM_MODE) == "passthrough"
+                and not _transforms_response(cfg)
+                and gate is None
+            )
             if passthrough:
                 chunks: AsyncIterator[Any] = _sse_events(upstream.aiter_bytes())
                 content_type = upstream.headers.get("content-type") or "text/event-stream"
             else:
                 pii = state.pii_redactor if cfg.PII_REDACTION_ENABLED else None
-                chunks = _governed_sse_stream(
-                    upstream.aiter_lines(), pii, partial(_redacted, state, cfg)
-                )
+                lines: AsyncIterator[str] = upstream.aiter_lines()
+                if gate is not None:
+                    lines = _gated_lines(
+                        lines,
+                        gate,
+                        partial(_redacted, state, cfg),
+                        partial(record_calls, stream=True),
+                    )
+                chunks = _governed_sse_stream(lines, pii, partial(_redacted, state, cfg))
                 content_type = "text/event-stream"
             scan = None
             if _scans_response(cfg):
@@ -1442,8 +1541,21 @@ async def _governed_call(
     except (TimeoutError, httpx.RequestError) as exc:
         return _failure_response(route, exc, call)
     call.upstream_status = resp.status_code
+    content = resp.content
+    if gate is not None and _is_success(resp.status_code):
+        gated = _json_object(content)
+        if gated is None:
+            return _error_response(502, _UPSTREAM_INVALID)
+        outcome = await _redacted(state, cfg, partial(gate_completion, gated, gate))
+        if outcome is None:
+            _blocked_after_upstream(call, "response_tool_gate")
+            return _block_response(cfg, model, False, call.categories)
+        changed, reviews = outcome
+        await record_calls(reviews, stream=False)
+        if changed:
+            content = json.dumps(gated).encode()
     if _scans_response(cfg) and _is_success(resp.status_code):
-        completion = _json_object(resp.content)
+        completion = _json_object(content)
         if completion is not None:
             checked = await _scan_response(
                 state,
@@ -1461,8 +1573,8 @@ async def _governed_call(
                 call.categories = firewall_categories(checked.checks.get("response_firewall"))
                 return _block_response(cfg, model, False, call.categories)
     if not (_transforms_response(cfg) and _is_success(resp.status_code)):
-        return _as_received(resp.status_code, resp.headers, resp.content)
-    data = _json_object(resp.content)
+        return _as_received(resp.status_code, resp.headers, content)
+    data = _json_object(content)
     if data is None:
         return _error_response(502, _UPSTREAM_INVALID)
     redacted = await _redacted(state, cfg, partial(_redacted_completion, data, state.pii_redactor))

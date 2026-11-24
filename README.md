@@ -993,6 +993,7 @@ admits API-key requests, stamped `user:api_key_user`; `api_key` is the stamp
 when the key comes only from `ADMINA_API_KEY_FILE` or `.env`. An
 `event_type` of the records the proxy writes itself (`mcp_request`,
 `mcp_response`, `gateway_request`, `gateway_response`, `gateway_response_scan`,
+`gateway_tool_call`,
 `policy_violation`, `chain_state_rebuilt`, `sandbox_execution`) is refused with
 `400`.
 `ADMINA_AUDIT_APPEND_KEY` (or `ADMINA_AUDIT_APPEND_KEY_FILE`) is a key that
@@ -1018,9 +1019,10 @@ the gateway's pipeline threads only with `gateway`.
 
 **Egress per surface.** `agent_security.egress.surfaces` in `admina.yaml`
 lists the surfaces the egress stage runs on, among `gateway` (the text of
-the chat messages of `POST /v1/chat/completions`), `mcp` (the arguments of
-`/mcp` tool calls), `integration` (`/api/v1/validate`) and `sdk`
-(`GovernedModel.ask()` and `stream()`). Unset, the stage runs on every one;
+the chat messages of `POST /v1/chat/completions`), `gateway_tool_calls` (the
+tool calls of its completions, see [Tool call gate](#tool-call-gate)), `mcp`
+(the arguments of `/mcp` tool calls), `integration` (`/api/v1/validate`) and
+`sdk` (`GovernedModel.ask()` and `stream()`). Unset, the stage runs on every one;
 an empty list runs it on none. An unknown name, or a value that is not a
 list, stops the proxy at startup (the SDK raises `ValueError`). To check
 tool calls only:
@@ -1425,6 +1427,64 @@ proxy's event loop wakes up a task that sleeps 0.1 s at a time (buckets from
 1 ms to 5 s, with `_sum` and `_count`): the time the loop spent on other work
 before it could run it. It stays around a millisecond while nothing holds up
 the loop.
+
+#### Tool call gate
+
+`ADMINA_GATEWAY_TOOL_CALL_GATE=true` (default `false`) reviews the tool calls
+of each completion before the client receives them, streaming or not. See also
+[Coding agents](https://github.com/admina-org/admina/blob/main/docs/guides/coding-agents.md).
+
+| Check | A call is flagged when |
+|---|---|
+| `declared` | the request does not declare its tool in `tools` or `functions` |
+| `arguments` | its arguments are not JSON (empty arguments are a call without arguments) |
+| `egress` | a destination in its arguments does not pass the egress policy of the `gateway_tool_calls` surface |
+
+The `egress` check runs only with an egress policy that lists the surface (a
+policy without `surfaces` does). It reads the arguments like the `mcp` surface
+and, in addition, the values of the keys `command`, `cmd` and `script` as shell
+commands, split as a POSIX shell splits them: a URL anywhere in the command,
+`user@host:path`, `host:path` as an argument of `scp` or `rsync`, and the target
+of `curl`, `wget`, `http`, `https`, `ssh`, `sftp`, `ftp`, `telnet`, `nc`, `ncat`
+or `netcat`. A destination built when the command runs (`$HOST`, `$(...)`,
+backticks) is unresolvable, and is refused like any other. A URL in the text of
+a command, such as a commit message, counts as a destination.
+
+| Mode | A flagged call |
+|---|---|
+| `enforce` (`egress`: also `ADMINA_EGRESS_MODE=enforce`) | is taken out of the completion. A notice (``[admina] blocked call to `<name>`: <reason>``) is added to the text of the choice, and a choice left with no call ends with `finish_reason: "stop"` |
+| `observe`, `dry-run`, or `ADMINA_EGRESS_MODE` other than `enforce` for `egress` | is sent; its record has `would_action: "BLOCK"` |
+
+A non-streaming completion without a blocked call is sent as received. One that
+is not a JSON object gets 502 (code `upstream_invalid_response`). A review over
+the time budget (`ADMINA_GATEWAY_PIPELINE_TIMEOUT`), in every governance mode,
+gets the block message (`finish_reason: "content_filter"`).
+
+A stream is relayed as in `governed` mode, whatever
+`ADMINA_GATEWAY_STREAM_MODE` says. Text and comment lines go on as they come.
+The fragments of each call are held until the finish chunk of its choice, the
+end of the stream or `data: [DONE]`, then sent in one chunk, with the calls of
+the choice renumbered from 0. When the upstream fails first, the calls held are
+not sent. A review over the time budget ends the stream with one
+`data: {"error": ...}` event (code `tool_call_review_failed`).
+
+The gate reads the arguments before PII redaction, which then applies to what
+it sends. With the gate on, each completion with tool calls has a forensic
+record, one per choice in a stream, written before its calls are sent, with
+`event_type: "gateway_tool_call"`, `request_event_id`, `stream`, `action`,
+`risk_level`, `would_action` when a call was flagged and not blocked, and
+`calls`, one entry per call:
+
+```json
+{"name": "bash", "choice": 0, "action": "BLOCK", "check": "egress",
+ "reason": "destination not on the egress allowlist: evil.example",
+ "destinations": ["evil.example"], "arguments_sha256": "<64 hex>"}
+```
+
+The record never holds the arguments. The gate reads the arguments of a call,
+not what its tool does when it runs: a program that assembles its destination
+from parts is not covered, nor is a program the agent wrote earlier and now
+runs (see the [model card](MODEL_CARD.md)).
 
 #### Firewall ruleset
 
