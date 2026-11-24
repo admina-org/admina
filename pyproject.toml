@@ -149,7 +149,7 @@ openai = ["openai>=1.0,<4"]
 ollama = ["ollama>=0.3,<1"]
 anthropic = ["anthropic>=0.39,<3"]
 mistral = ["mistralai>=1.0,<4"]
-gemini = ["google-genai>=1.0,<3"]
+gemini = ["google-genai>=1.0,<4"]
 bedrock = ["boto3>=1.34,<2"]
 adapters = ["admina[openai,ollama,anthropic,mistral,gemini,bedrock]"]
 # Microsoft Presidio as a selectable PII engine. Presidio does detection only;
