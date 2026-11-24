@@ -118,6 +118,7 @@ PROXY_RECORD_TYPES = frozenset(
         EventType.GATEWAY_REQUEST,
         EventType.GATEWAY_RESPONSE,
         EventType.GATEWAY_RESPONSE_SCAN,
+        EventType.GATEWAY_TOOL_CALL,
         EventType.POLICY_VIOLATION,
         EventType.CHAIN_STATE_REBUILT,
         EventType.SANDBOX_EXECUTION,

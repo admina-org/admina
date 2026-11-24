@@ -23,8 +23,9 @@ security boundary.
 The stage runs on the surfaces the policy lists
 (``agent_security.egress.surfaces``, default every one of
 :data:`EGRESS_SURFACES`): ``gateway`` (``/v1/chat/completions``, the text of
-the chat messages), ``mcp`` (``/mcp`` tool calls), ``integration``
-(``/api/v1/validate``) and ``sdk`` (``GovernedModel.ask()`` and
+the chat messages), ``gateway_tool_calls`` (the tool calls of its completions,
+with ``ADMINA_GATEWAY_TOOL_CALL_GATE`` on), ``mcp`` (``/mcp`` tool calls),
+``integration`` (``/api/v1/validate``) and ``sdk`` (``GovernedModel.ask()`` and
 ``stream()``). Each surface asks :func:`egress_policy_for` for its policy.
 """
 
@@ -41,6 +42,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from admina.core.types import RiskLevel
+from admina.domains.agent_security.command_destinations import command_destinations
 from admina.domains.governance import SCAN_DEPTH
 
 __all__ = [
@@ -59,7 +61,7 @@ __all__ = [
 logger = logging.getLogger("admina.egress")
 
 #: Surfaces the egress stage can run on (``agent_security.egress.surfaces``).
-EGRESS_SURFACES = ("gateway", "mcp", "integration", "sdk")
+EGRESS_SURFACES = ("gateway", "gateway_tool_calls", "mcp", "integration", "sdk")
 
 # The walks below stop at the pipeline's SCAN_DEPTH, so egress and the
 # PII/firewall walk agree on how deep a payload is inspected: a call the
@@ -102,6 +104,9 @@ _HOST_RX = re.compile(
 # entry (see EgressPolicy._compile_entry) — never inside _host_from_string,
 # where a bare English word must not become a "host".
 _SINGLE_LABEL_RX = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+
+# Argument names whose value is a shell command (see analyze's read_commands).
+_COMMAND_KEYS = frozenset({"command", "cmd", "script"})
 
 # Argument names that carry a request payload by convention.
 _PAYLOAD_KEYS = frozenset({"body", "data", "payload", "json", "content", "text", "params"})
@@ -369,16 +374,49 @@ def _remote_hint(obj: Any, depth: int = 0) -> bool | None:
     return None
 
 
+def _command_strings(obj: Any, depth: int = 0) -> Iterable[tuple[str, str]]:
+    """``(key, command)`` for each value under a key of :data:`_COMMAND_KEYS`:
+    a string, or a list of strings (an argument vector)."""
+    if depth > SCAN_DEPTH:
+        return
+    if isinstance(obj, list):
+        for item in obj:
+            yield from _command_strings(item, depth + 1)
+    elif isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(key, str) and key.lower() in _COMMAND_KEYS:
+                if isinstance(value, str):
+                    yield key, value
+                    continue
+                if isinstance(value, list) and all(isinstance(item, str) for item in value):
+                    yield key, " ".join(value)
+                    continue
+            yield from _command_strings(value, depth + 1)
+
+
 def analyze(
     params: Any,
     tool_name: str = "",
     read_only_tools: frozenset[str] = frozenset(),
+    *,
+    read_commands: bool = False,
 ) -> EgressIntent:
-    """Characterise the outbound intent and payload shape of a tool call."""
+    """Characterise the outbound intent and payload shape of a tool call.
+
+    With *read_commands*, the values under a command key (:data:`_COMMAND_KEYS`)
+    are read as shell commands too (see
+    :mod:`admina.domains.agent_security.command_destinations`).
+    """
     hosts: list[str] = []
     network_keys: list[str] = []
     unresolved: list[str] = []
     truncated = _walk(params, 0, hosts, network_keys, unresolved)
+    if read_commands:
+        for key, command in _command_strings(params):
+            found = command_destinations(command)
+            hosts.extend(host for host in found.hosts if host not in hosts)
+            if found.unresolved:
+                unresolved.append(key)
 
     # A region of the arguments the walk never reached taints the call, the
     # same way an individual field that could not be resolved does — and it

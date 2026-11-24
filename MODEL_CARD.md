@@ -353,8 +353,11 @@ stage is wired into five governed surfaces — `/mcp`,
 `GovernedModel.stream()` — after PII redaction and before pluggable
 governance guards, so a denied destination never reaches third-party
 guard code. `agent_security.egress.surfaces` in `admina.yaml` limits it to
-some of them (`gateway`, `mcp`, `integration`, `sdk`; unset = all): with
-`gateway` left out, the text of chat messages is not evaluated.
+some of them (`gateway`, `gateway_tool_calls`, `mcp`, `integration`, `sdk`;
+unset = all): with `gateway` left out, the text of chat messages is not
+evaluated. `gateway_tool_calls` is the sixth surface: the tool calls of the
+completions of `/v1/chat/completions`, with `ADMINA_GATEWAY_TOOL_CALL_GATE` on
+(see "Tool call gate of the gateway" below).
 
 ### Coverage is not uniform across those five surfaces
 
@@ -382,7 +385,33 @@ On the four prompt-shaped surfaces the stage usually finds nothing,
 because a prompt is not a tool call. That is not a defect of those
 surfaces — they govern model calls, not tool calls — but it does mean
 "runs on five surfaces" must not be read as "five surfaces are equally
-protected". The destination control is a `/mcp` control in practice.
+protected". The destination control is a `/mcp` control in practice, and a
+`gateway_tool_calls` control where the tool call gate is on.
+
+### Tool call gate of the gateway
+
+Without the gate, a tool call in a completion of `/v1/chat/completions` reaches
+the client with no decision on it: its `arguments` are redacted, and the firewall
+reads them only in the next request, after the client has run the call.
+
+The gate decides before the client gets the call. It adds what `/mcp` lacks for
+shell tools: it reads `command`, `cmd` and `script` as shell commands. What it
+does not establish:
+
+- **It reads text, it does not run anything.** A program that builds its
+  destination (`python -c` with `socket.create_connection((host, 443))`), a
+  script the agent wrote in an earlier call, an alias, a tool it does not list
+  as a network client (`socat`, `dig`, `git push` to a remote configured
+  earlier): none of these names a destination it can read.
+- **Scheme-less decimal or hexadecimal addresses** in the target of a client
+  (`curl 2130706433`) are not read. With a scheme they are, and match no
+  allowlist entry unless listed.
+- **A sudo option with a value** ends command position (`sudo -u root curl
+  host`), so the target is not read.
+- **A URL in the text of a command** (a commit message, an `echo`) counts as a
+  destination: a false positive under `enforce`. Run in `observe` first.
+- **It does not sandbox.** An allowlisted host is allowed for any content, and
+  the gate does not look at what a call reads or writes on the client.
 
 ### `GovernedAgent.call()` has no egress control
 

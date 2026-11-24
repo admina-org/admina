@@ -195,6 +195,7 @@ PROXY_TYPES = [
     "gateway_request",
     "gateway_response",
     "gateway_response_scan",
+    "gateway_tool_call",
     "policy_violation",
     "chain_state_rebuilt",
     "sandbox_execution",

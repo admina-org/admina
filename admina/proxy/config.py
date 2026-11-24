@@ -347,6 +347,10 @@ class Settings(BaseSettings):
     # flagged in enforce mode, replaced by the block message; a streamed one
     # is scanned when the stream ends and the result is only recorded.
     ADMINA_GATEWAY_SCAN_RESPONSE: bool = False
+    # Review the tool calls of each completion before the client gets them:
+    # the tool must be declared by the request, and the destinations of the
+    # arguments must pass the egress policy (see admina.proxy.gateway_tool_gate).
+    ADMINA_GATEWAY_TOOL_CALL_GATE: bool = False
 
     @field_validator("DASHBOARD_COOKIE_SECURE", mode="before")
     @classmethod

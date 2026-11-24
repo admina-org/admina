@@ -158,6 +158,7 @@ def _gateway_settings() -> SimpleNamespace:
         ADMINA_GATEWAY_SCAN_ROLES="system,user,assistant,tool",
         ADMINA_GATEWAY_PIPELINE_TIMEOUT=0.0,
         ADMINA_GATEWAY_SCAN_RESPONSE=False,
+        ADMINA_GATEWAY_TOOL_CALL_GATE=False,
         ADMINA_GATEWAY_SCAN_POLICY_ENABLED=False,
         ADMINA_GATEWAY_BLOCK_STATUS=200,
         ADMINA_GATEWAY_REQUEST_ID_HEADER="",
@@ -553,7 +554,7 @@ def test_surfaces_unset_runs_the_stage_on_every_surface():
     from admina.core.config import EgressConfig
     from admina.domains.agent_security.egress import EGRESS_SURFACES
 
-    assert EGRESS_SURFACES == ("gateway", "mcp", "integration", "sdk")
+    assert EGRESS_SURFACES == ("gateway", "gateway_tool_calls", "mcp", "integration", "sdk")
     assert EgressConfig().surfaces is None
     assert _policy().surfaces == frozenset(EGRESS_SURFACES)
     assert _surfaces_policy(None).surfaces == frozenset(EGRESS_SURFACES)

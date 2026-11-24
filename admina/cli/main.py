@@ -1601,6 +1601,21 @@ def egress() -> None:
     """Inspect and manage the egress policy."""
 
 
+def _recorded_destinations(event: dict) -> list:
+    """The lists of destinations of a forensic *event*: ``checks.egress``, and
+    each entry of ``calls`` of a ``gateway_tool_call`` record."""
+    found = []
+    checks = event.get("checks")
+    egress = checks.get("egress") if isinstance(checks, dict) else None
+    if isinstance(egress, dict):
+        found.append(egress.get("destinations"))
+    calls = event.get("calls")
+    for call in calls if isinstance(calls, list) else ():
+        if isinstance(call, dict):
+            found.append(call.get("destinations"))
+    return found
+
+
 @egress.command("suggest-allowlist")
 @click.option(
     "--since",
@@ -1636,18 +1651,12 @@ def suggest_allowlist(since: int, forensic_dir: str | None) -> None:
         event = record.get("event", record)
         if not isinstance(event, dict):
             continue
-        check = event.get("checks") or {}
-        if not isinstance(check, dict):
-            continue
-        egress = check.get("egress") or {}
-        if not isinstance(egress, dict):
-            continue
-        destinations = egress.get("destinations") or []
-        if not isinstance(destinations, list):
-            continue
-        for dest in destinations:
-            if isinstance(dest, str) and dest:
-                seen.add(dest)
+        for destinations in _recorded_destinations(event):
+            if not isinstance(destinations, list):
+                continue
+            for dest in destinations:
+                if isinstance(dest, str) and dest:
+                    seen.add(dest)
 
     if not seen:
         click.echo(f"No egress observations found in {base} for the last {since} day(s).")

@@ -52,6 +52,7 @@ nav:
       - Bifrost: guides/bifrost.md
       - Air-gapped deployment: guides/airgapped-deployment.md
       - Execution sandbox: guides/execution-sandbox.md
+      - Coding agents: guides/coding-agents.md
       - Upgrading to 0.13: guides/upgrade-0.13.md
       - The admina package name: guides/package-name.md
   - SDK Reference:
