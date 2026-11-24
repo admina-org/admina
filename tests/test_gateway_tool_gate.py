@@ -651,5 +651,5 @@ def test_suggest_allowlist_reads_the_destinations_of_the_tool_call_records(tmp_p
         app, ["egress", "suggest-allowlist", "--forensic-dir", str(tmp_path)]
     )
     assert result.exit_code == 0
-    assert "evil.example" in result.output
-    assert "github.com" in result.output
+    entries = [line.strip() for line in result.output.splitlines() if line.startswith("        - ")]
+    assert entries == ["- evil.example", "- github.com"]
